@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  auratest-ai:
+    build: .
+    container_name: auratest-ai
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./screenshots:/app/screenshots
+      - ./generated-scripts:/app/generated-scripts
+    # If using local Ollama, you might need this to access host.docker.internal
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001

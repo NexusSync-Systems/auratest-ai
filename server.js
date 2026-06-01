@@ -138,7 +138,9 @@ app.post('/api/run-test', async (req, res) => {
       type: 'completed',
       bugs: result.bugs,
       summary: result.summary,
-      success: result.success
+      success: result.success,
+      performanceMetrics: result.performanceMetrics,
+      generatedScript: result.generatedScript
     });
   })
   .catch((err) => {
@@ -151,6 +153,30 @@ app.post('/api/run-test', async (req, res) => {
       summary: `Test selhal: ${err.message}`
     });
   });
+});
+
+// 1.5 Trigger Autonomous Test (CI/CD integration - Synchronous)
+app.post('/api/trigger-test', async (req, res) => {
+  const { url, goal, mode, headless, maxSteps, testLogin, testPassword } = req.body;
+  if (!url) return res.status(400).json({ error: 'Chybí URL pro test.' });
+
+  const llmConfig = {
+    provider: 'ollama',
+    model: 'llama3',
+    host: 'http://localhost:11434',
+    headless: headless !== false,
+    maxSteps: parseInt(maxSteps) || 10,
+    mode: mode || 'smoke_test',
+    testLogin: testLogin || '',
+    testPassword: testPassword || ''
+  };
+
+  try {
+    const result = await runAutonomousTest(url, goal || 'Automatický CI/CD test', llmConfig, () => {});
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // 2. Compare Pages (Prod vs Preview Diff)

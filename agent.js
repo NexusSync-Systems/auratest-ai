@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
 import { diffWords } from 'diff';
 import path from 'path';
+import fs from 'fs';
 
 // Helper to query LLM (Ollama or apfel/OpenAI-compatible)
 async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llama3', host = 'http://localhost:11434') {
@@ -257,6 +258,30 @@ async function extractPageTexts(page) {
 /**
  * Runs an autonomous AI QA Test Session on a given URL.
  */
+function generatePlaywrightScript(steps, startUrl) {
+  let script = `import { test, expect } from '@playwright/test';\n\n`;
+  script += `test('Autonomously generated AI test', async ({ page }) => {\n`;
+  script += `  await page.goto('${startUrl}');\n\n`;
+  
+  for (const step of steps) {
+    if (!step.action || step.action === 'finish') continue;
+    script += `  // Step ${step.step}: ${step.reasoning || step.action}\n`;
+    if (step.action === 'click' && step.target) {
+      script += `  await page.click('[data-qa-id="${step.target}"]');\n`;
+    } else if (step.action === 'type' && step.target) {
+      script += `  await page.fill('[data-qa-id="${step.target}"]', '${step.value}');\n`;
+    } else if (step.action === 'scroll') {
+      script += `  await page.mouse.wheel(0, ${step.value === 'down' ? 500 : -500});\n`;
+    } else if (step.action === 'navigate' && step.target) {
+      script += `  await page.goto('${step.target}');\n`;
+    } else if (step.action === 'wait') {
+      script += `  await page.waitForTimeout(2000);\n`;
+    }
+  }
+  script += `\n  // Doplňte vlastní asserty (např. expect(page).toHaveTitle(...))\n});\n`;
+  return script;
+}
+
 export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, sessionId = 'session_default') {
   const browser = await chromium.launch({ headless: llmConfig.headless !== false });
   const context = await browser.newContext({
@@ -269,6 +294,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
   let currentStep = 1;
   const maxSteps = llmConfig.maxSteps || 10;
   let isFinished = false;
+  let performanceMetrics = null;
 
   // Listen to console messages and errors
   const consoleLogs = [];
@@ -593,6 +619,22 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
 
       currentStep++;
     }
+
+    // --- FÁZE 3: Získání výkonnostních a SEO metrik ---
+    try {
+      performanceMetrics = await page.evaluate(() => {
+        const timing = performance.getEntriesByType('navigation')[0] || {};
+        return {
+          loadTimeMs: timing.loadEventEnd ? Math.round(timing.loadEventEnd - timing.startTime) : null,
+          domInteractiveMs: timing.domInteractive ? Math.round(timing.domInteractive - timing.startTime) : null,
+          title: document.title,
+          h1Count: document.querySelectorAll('h1').length
+        };
+      });
+    } catch (e) {
+      console.log("Could not fetch performance metrics", e.message);
+    }
+
   } catch (err) {
     console.error('Test execution failed:', err);
     bugs.push(`Katastrofická chyba testu: ${err.message}`);
@@ -600,11 +642,22 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
     await browser.close();
   }
 
+  // --- FÁZE 2: Generování Playwright kódu ---
+  const generatedScript = generatePlaywrightScript(steps, url);
+  const scriptsDir = path.join(process.cwd(), 'generated-scripts');
+  if (!fs.existsSync(scriptsDir)) {
+    fs.mkdirSync(scriptsDir, { recursive: true });
+  }
+  const scriptPath = path.join(scriptsDir, `test-${Date.now()}.spec.ts`);
+  fs.writeFileSync(scriptPath, generatedScript, 'utf8');
+
   return {
     success: bugs.length === 0,
     steps,
     bugs: [...new Set(bugs)], // unique values
-    summary: isFinished ? 'Test úspěšně dokončen.' : 'Test dosáhl limitu maximálního počtu kroků.'
+    summary: isFinished ? 'Test úspěšně dokončen.' : 'Test dosáhl limitu maximálního počtu kroků.',
+    performanceMetrics,
+    generatedScript
   };
 }
 

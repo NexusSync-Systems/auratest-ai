@@ -170,7 +170,7 @@ export default function App() {
           url: agentUrl,
           goal: testMode === 'monkey' 
             ? 'Průzkumné testování bez zadání (Monkey Mode - bez AI)' 
-            : (testMode === 'smart_monkey' ? 'Chytrý průzkumný test s AI (Smart Monkey)' : agentGoal),
+            : (testMode === 'smoke_test' ? 'Automatický 3-fázový Smoke Test (AI řízené)' : (testMode === 'smart_monkey' ? 'Chytrý průzkumný test s AI (Smart Monkey)' : agentGoal)),
           model: ollamaModel,
           host: ollamaHost,
           headless,
@@ -431,6 +431,7 @@ export default function App() {
                         >
                           <option value="ai">Cílený (AI Agent)</option>
                           <option value="smart_monkey">Chytrý průzkum s AI (Smart Monkey)</option>
+                          <option value="smoke_test">Automatický Smoke Test</option>
                           <option value="monkey">Náhodný (Monkey Test bez AI)</option>
                         </select>
                       </div>
@@ -466,11 +467,11 @@ export default function App() {
                         value={
                           testMode === 'monkey' 
                             ? 'Automatické průzkumné procházení (Monkey Mode) - AI není aktivní.' 
-                            : (testMode === 'smart_monkey' ? 'Chytré autonomní testování (Smart Monkey) - AI prochází a hledá chyby.' : agentGoal)
+                            : (testMode === 'smoke_test' ? 'Automatický 3-fázový Smoke Test (Veřejná část -> Přihlášení -> Zabezpečená část). AI si aplikaci prozkoumá samo.' : (testMode === 'smart_monkey' ? 'Chytré autonomní testování (Smart Monkey) - AI prochází a hledá chyby.' : agentGoal))
                         }
                         onChange={(e) => setAgentGoal(e.target.value)}
                         placeholder="Např. Otestuj registrační formulář s neplatným e-mailem a ověř, zda se zobrazí červené chybové hlášení."
-                        disabled={testMode === 'monkey' || testMode === 'smart_monkey'}
+                        disabled={testMode === 'monkey' || testMode === 'smart_monkey' || testMode === 'smoke_test'}
                         required={testMode === 'ai'}
                       />
                     </div>
@@ -527,6 +528,23 @@ export default function App() {
                           </div>
                         </div>
 
+                        {activeSession.performanceMetrics && (
+                          <div style={{ display: 'flex', gap: '8px', margin: '12px 0', fontSize: '0.85rem' }}>
+                            <div style={{ flex: 1, backgroundColor: 'var(--bg-primary)', padding: '8px', borderRadius: '4px', textAlign: 'center' }}>
+                              <div style={{ opacity: 0.7, fontSize: '0.7rem', textTransform: 'uppercase' }}>Načtení stránky</div>
+                              <div style={{ fontWeight: 'bold', color: activeSession.performanceMetrics.loadTimeMs < 2000 ? 'var(--text-success)' : 'var(--text-warning)' }}>
+                                {activeSession.performanceMetrics.loadTimeMs ? `${activeSession.performanceMetrics.loadTimeMs} ms` : 'N/A'}
+                              </div>
+                            </div>
+                            <div style={{ flex: 1, backgroundColor: 'var(--bg-primary)', padding: '8px', borderRadius: '4px', textAlign: 'center' }}>
+                              <div style={{ opacity: 0.7, fontSize: '0.7rem', textTransform: 'uppercase' }}>Základní SEO (Title)</div>
+                              <div style={{ fontWeight: 'bold' }}>
+                                {activeSession.performanceMetrics.title ? '✅ OK' : '❌ Chybí'}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
                         {activeSession.bugs && activeSession.bugs.length > 0 ? (
                           <div className="bugs-container">
                             <h4 className="bugs-title">Detekované problémy ({activeSession.bugs.length})</h4>
@@ -549,6 +567,17 @@ export default function App() {
                         ) : (
                           <div className="success-banner">
                             🎉 Nebyly nalezeny žádné chyby! Aplikace vypadá stabilně.
+                          </div>
+                        )}
+                        
+                        {activeSession.generatedScript && (
+                          <div style={{ marginTop: '16px' }}>
+                            <h4 style={{ fontSize: '0.9rem', marginBottom: '8px' }}>Vygenerovaný Playwright Skript</h4>
+                            <div style={{ backgroundColor: '#1e1e1e', padding: '12px', borderRadius: '6px', maxHeight: '200px', overflowY: 'auto' }}>
+                              <pre style={{ margin: 0, fontSize: '0.75rem', fontFamily: 'monospace', color: '#d4d4d4', whiteSpace: 'pre-wrap' }}>
+                                {activeSession.generatedScript}
+                              </pre>
+                            </div>
                           </div>
                         )}
                         <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
