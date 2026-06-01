@@ -430,6 +430,7 @@ export default function App() {
                           onChange={(e) => setTestMode(e.target.value)}
                         >
                           <option value="ai">Cílený (AI Agent)</option>
+                          <option value="crawler">Spider (Prohledat web s AI)</option>
                           <option value="smart_monkey">Chytrý průzkum s AI (Smart Monkey)</option>
                           <option value="smoke_test">Automatický Smoke Test</option>
                           <option value="monkey">Náhodný (Monkey Test bez AI)</option>
@@ -542,6 +543,17 @@ export default function App() {
                                 {activeSession.performanceMetrics.title ? '✅ OK' : '❌ Chybí'}
                               </div>
                             </div>
+                          </div>
+                        )}
+
+                        {activeSession.videoUrl && (
+                          <div style={{ marginTop: '16px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-color)', backgroundColor: '#000' }}>
+                            <div style={{ padding: '6px 12px', fontSize: '0.75rem', backgroundColor: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>Záznam testu</div>
+                            <video 
+                              controls 
+                              src={`http://localhost:3001${activeSession.videoUrl}`}
+                              style={{ width: '100%', display: 'block', maxHeight: '400px' }}
+                            />
                           </div>
                         )}
 

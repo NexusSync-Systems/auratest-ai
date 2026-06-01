@@ -282,10 +282,51 @@ function generatePlaywrightScript(steps, startUrl) {
   return script;
 }
 
+export async function extractInternalLinks(startUrl) {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const internalLinks = [];
+  try {
+    await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    const baseUrl = new URL(startUrl);
+    const hrefs = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+    });
+    
+    // Filter internal links and deduplicate
+    for (const href of hrefs) {
+      if (!href) continue;
+      try {
+        const u = new URL(href, startUrl);
+        // Remove hash
+        u.hash = '';
+        if (u.origin === baseUrl.origin && u.pathname !== baseUrl.pathname) {
+          internalLinks.push(u.href);
+        }
+      } catch (e) {
+        // invalid URL
+      }
+    }
+  } catch (err) {
+    console.error("Failed to extract links:", err.message);
+  } finally {
+    await browser.close();
+  }
+  return [...new Set(internalLinks)].slice(0, 3); // Return top 3 max
+}
+
+
 export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, sessionId = 'session_default') {
   const browser = await chromium.launch({ headless: llmConfig.headless !== false });
+  const videosDir = path.join(process.cwd(), 'videos');
+  if (!fs.existsSync(videosDir)) {
+    fs.mkdirSync(videosDir, { recursive: true });
+  }
+
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 720 }
+    viewport: { width: 1280, height: 720 },
+    recordVideo: { dir: videosDir }
   });
   const page = await context.newPage();
 
@@ -638,9 +679,21 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
   } catch (err) {
     console.error('Test execution failed:', err);
     bugs.push(`Katastrofická chyba testu: ${err.message}`);
-  } finally {
-    await browser.close();
   }
+
+  let videoUrl = null;
+  try {
+    if (page.video()) {
+      const videoPath = await page.video().path();
+      videoUrl = `/api/videos/${path.basename(videoPath)}`;
+    }
+  } catch (e) {
+    console.log("Mohlo selhat získání cesty k videu", e.message);
+  }
+
+  // Musí se zavřít až po zjištění cesty k videu
+  await browser.close();
+
 
   // --- FÁZE 2: Generování Playwright kódu ---
   const generatedScript = generatePlaywrightScript(steps, url);
@@ -657,7 +710,8 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
     bugs: [...new Set(bugs)], // unique values
     summary: isFinished ? 'Test úspěšně dokončen.' : 'Test dosáhl limitu maximálního počtu kroků.',
     performanceMetrics,
-    generatedScript
+    generatedScript,
+    videoUrl
   };
 }
 

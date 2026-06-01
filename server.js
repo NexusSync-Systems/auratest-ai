@@ -4,7 +4,7 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
-import { runAutonomousTest, comparePages, auditTranslations } from './agent.js';
+import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks } from './agent.js';
 import { fetchTranslations } from './db-connector.js';
 
 const app = express();
@@ -20,6 +20,12 @@ if (!fs.existsSync(screenshotsDir)) {
   fs.mkdirSync(screenshotsDir, { recursive: true });
 }
 app.use('/api/screenshots', express.static(screenshotsDir));
+
+const videosDir = path.join(__dirname, 'videos');
+if (!fs.existsSync(videosDir)) {
+  fs.mkdirSync(videosDir, { recursive: true });
+}
+app.use('/api/videos', express.static(videosDir));
 
 const PORT = process.env.PORT || 3001;
 
@@ -117,42 +123,82 @@ app.post('/api/run-test', async (req, res) => {
     testPassword: testPassword || ''
   };
 
-  runAutonomousTest(url, sessionData.goal, llmConfig, (stepInfo) => {
-    // Progress callback
-    if (stepInfo.step === 0) {
-      broadcastToSession(sessionId, { type: 'progress', message: stepInfo.detail });
-      return;
-    }
+  (async () => {
+    try {
+      if (mode === 'crawler') {
+        broadcastToSession(sessionId, { type: 'progress', message: '🕷️ CRAWLER: Hledám podstránky na webu...' });
+        const links = await extractInternalLinks(url);
+        const targetUrls = [url, ...links].slice(0, 4); // home + max 3 links
 
-    sessionData.steps.push(stepInfo);
-    
-    // Check if step returned bugs (from agent logic)
-    // In agent.js, we also populate bugs on the run result, but we can stream them here too
-    broadcastToSession(sessionId, { type: 'step', step: stepInfo });
-  }, sessionId)
-  .then((result) => {
-    sessionData.status = 'completed';
-    sessionData.bugs = result.bugs;
-    sessionData.summary = result.summary;
-    broadcastToSession(sessionId, {
-      type: 'completed',
-      bugs: result.bugs,
-      summary: result.summary,
-      success: result.success,
-      performanceMetrics: result.performanceMetrics,
-      generatedScript: result.generatedScript
-    });
-  })
-  .catch((err) => {
-    sessionData.status = 'failed';
-    sessionData.summary = `Selhání testu: ${err.message}`;
-    sessionData.bugs.push(`Kritická chyba backendu: ${err.message}`);
-    broadcastToSession(sessionId, {
-      type: 'failed',
-      error: err.message,
-      summary: `Test selhal: ${err.message}`
-    });
-  });
+        let totalBugs = [];
+        let combinedScripts = '';
+        let lastPerformance = null;
+        let lastVideoUrl = null;
+
+        for (const targetUrl of targetUrls) {
+          broadcastToSession(sessionId, { type: 'progress', message: `🕷️ CRAWLER: Otevírám ${targetUrl}` });
+          const result = await runAutonomousTest(targetUrl, 'Prozkoumat funkčnost', { ...llmConfig, maxSteps: 5 }, (stepInfo) => {
+            if (stepInfo.step === 0) return;
+            stepInfo.action = `[${new URL(targetUrl).pathname}] ${stepInfo.action || ''}`;
+            sessionData.steps.push(stepInfo);
+            broadcastToSession(sessionId, { type: 'step', step: stepInfo });
+          }, sessionId);
+
+          totalBugs.push(...result.bugs);
+          lastPerformance = result.performanceMetrics || lastPerformance;
+          lastVideoUrl = result.videoUrl || lastVideoUrl;
+          if (result.generatedScript) {
+            combinedScripts += `\n// --- Test pro ${targetUrl} ---\n` + result.generatedScript;
+          }
+        }
+
+        sessionData.status = 'completed';
+        sessionData.bugs = [...new Set(totalBugs)];
+        sessionData.summary = `Crawler prozkoumal ${targetUrls.length} stránek. Nalezeno ${sessionData.bugs.length} chyb.`;
+        broadcastToSession(sessionId, {
+          type: 'completed',
+          bugs: sessionData.bugs,
+          summary: sessionData.summary,
+          success: sessionData.bugs.length === 0,
+          generatedScript: combinedScripts,
+          performanceMetrics: lastPerformance,
+          videoUrl: lastVideoUrl
+        });
+
+      } else {
+        const result = await runAutonomousTest(url, sessionData.goal, llmConfig, (stepInfo) => {
+          if (stepInfo.step === 0) {
+            broadcastToSession(sessionId, { type: 'progress', message: stepInfo.detail });
+            return;
+          }
+          sessionData.steps.push(stepInfo);
+          broadcastToSession(sessionId, { type: 'step', step: stepInfo });
+        }, sessionId);
+
+        sessionData.status = 'completed';
+        sessionData.bugs = result.bugs;
+        sessionData.summary = result.summary;
+        broadcastToSession(sessionId, {
+          type: 'completed',
+          bugs: result.bugs,
+          summary: result.summary,
+          success: result.success,
+          performanceMetrics: result.performanceMetrics,
+          generatedScript: result.generatedScript,
+          videoUrl: result.videoUrl
+        });
+      }
+    } catch (err) {
+      sessionData.status = 'failed';
+      sessionData.summary = `Selhání testu: ${err.message}`;
+      sessionData.bugs.push(`Kritická chyba backendu: ${err.message}`);
+      broadcastToSession(sessionId, {
+        type: 'failed',
+        error: err.message,
+        summary: `Test selhal: ${err.message}`
+      });
+    }
+  })();
 });
 
 // 1.5 Trigger Autonomous Test (CI/CD integration - Synchronous)
