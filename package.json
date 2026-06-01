@@ -1,0 +1,30 @@
+{
+  "name": "auratest-ai",
+  "version": "1.0.0",
+  "description": "Local AI QA Agent",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev:server": "node --watch server.js",
+    "frontend:install": "cd frontend && npm install",
+    "frontend:dev": "cd frontend && npm run dev",
+    "install:all": "npm install && npm run frontend:install",
+    "dev": "npx concurrently \"npm run dev:server\" \"npm run frontend:dev\""
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "diff": "^5.2.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "mysql2": "^3.10.0",
+    "ollama": "^0.5.1",
+    "pg": "^8.12.0",
+    "playwright": "^1.44.1",
+    "sqlite3": "^5.1.7",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

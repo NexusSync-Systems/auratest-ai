@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <title>Preview Verze</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background: #fafafa; }
+    .card { background: white; border: 1px solid #ccc; padding: 20px; border-radius: 8px; max-width: 400px; }
+    h1 { color: #333; }
+    .btn { background: #0066cc; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; }
+    .new-badge { background: #ff3366; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 id="main-title">Moje Preview Aplikace</h1>
+    <p id="welcome-text">Vítejte v naší testovací verzi systému. Tato stránka obsahuje aktualizované texty.</p>
+    
+    <p style="color: #ff3366; font-size: 0.9rem;"><strong>Novinka:</strong> Tento odstavec byl přidán v preview verzi pro testery!</p>
+
+    <div style="margin: 20px 0;">
+      <label for="name">Jméno:</label>
+      <input type="text" id="name" placeholder="Napište jméno sem">
+    </div>
+
+    <button id="submit-btn" class="btn">Odeslat data nyní <span class="new-badge">Nové</span></button>
+  </div>
+</body>
+</html>
