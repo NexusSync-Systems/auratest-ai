@@ -284,20 +284,24 @@ app.post('/api/audit-translations', async (req, res) => {
 
 // Handle WebSocket connections
 server.on('upgrade', (request, socket, head) => {
-  const { pathname, searchParams } = new URL(request.url, `http://${request.headers.host}`);
-  
-  if (pathname === '/ws') {
-    const sessionId = searchParams.get('sessionId');
-    if (!sessionId) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
+  try {
+    const { pathname, searchParams } = new URL(request.url, `http://${request.headers.host}`);
 
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request, sessionId);
-    });
-  } else {
+    if (pathname === '/ws') {
+      const sessionId = searchParams.get('sessionId');
+      if (!sessionId) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request, sessionId);
+      });
+    } else {
+      socket.destroy();
+    }
+  } catch (err) {
     socket.destroy();
   }
 });
