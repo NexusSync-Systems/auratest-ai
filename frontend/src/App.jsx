@@ -105,7 +105,8 @@ export default function App() {
           if (data.status !== 'running') {
             setIsRunning(false);
           }
-        });
+        })
+        .catch(console.error);
     }
   }, [selectedSessionId]);
 

@@ -60,6 +60,11 @@ async function fetchFromPostgres(config) {
   const { dbHost, dbPort, dbUser, dbPassword, dbName, dbQuery } = config;
   if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
 
+  // Očištění o komentáře a ověření
+  const cleanQuery = dbQuery.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, '').trim();
+  if (!/^(SELECT|WITH)\b/i.test(cleanQuery)) throw new Error('Dovoleno je pouze čtení přes SELECT nebo WITH dotazy.');
+  if (/;/.test(cleanQuery)) throw new Error('Vícečetné (stacked) dotazy nejsou povoleny.');
+
   // Dynamický import pg balíčku
   const pg = await import('pg');
   const { Client } = pg.default || pg;
@@ -85,6 +90,11 @@ async function fetchFromMysql(config) {
   const { dbHost, dbPort, dbUser, dbPassword, dbName, dbQuery } = config;
   if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
 
+  // Očištění o komentáře a ověření
+  const cleanQuery = dbQuery.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, '').trim();
+  if (!/^(SELECT|WITH)\b/i.test(cleanQuery)) throw new Error('Dovoleno je pouze čtení přes SELECT nebo WITH dotazy.');
+  if (/;/.test(cleanQuery)) throw new Error('Vícečetné (stacked) dotazy nejsou povoleny.');
+
   const mysql = await import('mysql2/promise');
   const connection = await mysql.createConnection({
     host: dbHost || 'localhost',
@@ -106,6 +116,11 @@ async function fetchFromSqlite(config) {
   const { sqlitePath, dbQuery } = config;
   if (!sqlitePath) throw new Error('Chybí cesta k SQLite databázi (sqlitePath).');
   if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
+
+  // Očištění o komentáře a ověření
+  const cleanQuery = dbQuery.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, '').trim();
+  if (!/^(SELECT|WITH)\b/i.test(cleanQuery)) throw new Error('Dovoleno je pouze čtení přes SELECT nebo WITH dotazy.');
+  if (/;/.test(cleanQuery)) throw new Error('Vícečetné (stacked) dotazy nejsou povoleny.');
 
   if (!fs.existsSync(sqlitePath)) {
     throw new Error(`Soubor databáze neexistuje na cestě: ${sqlitePath}`);
@@ -135,6 +150,7 @@ async function fetchFromSqlite(config) {
 async function fetchFromScript(config) {
   const { scriptCommand, cwd } = config;
   if (!scriptCommand) throw new Error('Chybí příkaz pro spuštění skriptu (scriptCommand).');
+  if (/([;&|`\n]|(?:\$\()|(?:\${)|>|<)/.test(scriptCommand)) throw new Error('Nebezpečné znaky v příkazu.');
 
   try {
     const { stdout, stderr } = await execAsync(scriptCommand, { cwd: cwd || process.cwd() });
