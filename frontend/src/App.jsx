@@ -62,7 +62,7 @@ export default function App() {
   const [dbName, setDbName] = useState('my_translations_db');
   const [dbQuery, setDbQuery] = useState('SELECT key_name as key, translation_value as value FROM locales WHERE lang = \'cs\'');
   const [sqlitePath, setSqlitePath] = useState('./locales.sqlite');
-  const [scriptCommand, setScriptCommand] = useState('node get-translations.js');
+  const [scriptName, setScriptName] = useState('get-translations');
   
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditResult, setAuditResult] = useState(null);
@@ -262,7 +262,7 @@ export default function App() {
       translationSource.sqlitePath = sqlitePath;
       translationSource.dbQuery = dbQuery;
     } else if (sourceType === 'script') {
-      translationSource.scriptCommand = scriptCommand;
+      translationSource.scriptName = scriptName;
     }
 
     try {
@@ -883,8 +883,8 @@ export default function App() {
 
                 {sourceType === 'script' && (
                   <div className="form-group">
-                    <label>Shell příkaz k provedení (musí vypsat JSON objekt na stdout)</label>
-                    <input type="text" value={scriptCommand} onChange={(e) => setScriptCommand(e.target.value)} required />
+                    <label>Povolený název skriptu (z whitelistu na backendu)</label>
+                    <input type="text" value={scriptName} onChange={(e) => setScriptName(e.target.value)} required />
                   </div>
                 )}
 

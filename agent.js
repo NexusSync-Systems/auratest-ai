@@ -317,25 +317,246 @@ export async function extractInternalLinks(startUrl) {
 }
 
 
-export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, sessionId = 'session_default') {
-  const browser = await chromium.launch({ headless: llmConfig.headless !== false });
-  const videosDir = path.join(process.cwd(), 'videos');
-  if (!fs.existsSync(videosDir)) {
-    fs.mkdirSync(videosDir, { recursive: true });
+async function determineNextAction(llmConfig, currentUrl, title, interactiveElements, consoleLogs, networkErrors, steps, goal) {
+  let actionResponse;
+  const recentLogs = consoleLogs.slice(-10).map(l => `[${l.type}] ${l.text}`).join('\n');
+  const recentNet = networkErrors.slice(-10).map(n => `FAIL: ${n.url} - ${n.error}`).join('\n');
+
+  let credentialsInfo = '';
+  if (llmConfig.testLogin || llmConfig.testPassword) {
+    credentialsInfo = `\nTEST CREDENTIALS (Use these if you need to log in or fill out auth forms):\n- Login/Email: ${llmConfig.testLogin || 'Not provided'}\n- Password: ${llmConfig.testPassword || 'Not provided'}\n`;
   }
 
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 720 },
-    recordVideo: { dir: videosDir }
-  });
-  const page = await context.newPage();
+  if (llmConfig.mode === 'monkey') {
+    if (interactiveElements.length === 0) {
+      actionResponse = {
+        reasoning: 'Žádné klikatelné prvky nenalezeny. Vracím se na startovní URL.',
+        action: 'navigate',
+        target: currentUrl,
+        value: null,
+        detected_bugs: []
+      };
+    } else {
+      const rand = Math.random();
+      if (rand < 0.15) {
+        actionResponse = {
+          reasoning: 'Průzkumné rolování stránky pro načtení dalšího obsahu.',
+          action: 'scroll',
+          target: null,
+          value: Math.random() > 0.5 ? 'down' : 'up',
+          detected_bugs: []
+        };
+      } else if (rand < 0.20) {
+        actionResponse = {
+          reasoning: 'Krátké čekání na stabilizaci rozhraní.',
+          action: 'wait',
+          target: null,
+          value: '1500',
+          detected_bugs: []
+        };
+      } else {
+        const randomIndex = Math.floor(Math.random() * interactiveElements.length);
+        const el = interactiveElements[randomIndex];
 
-  const steps = [];
-  const bugs = [];
-  let currentStep = 1;
-  const maxSteps = llmConfig.maxSteps || 10;
-  let isFinished = false;
-  let performanceMetrics = null;
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+          let val = 'test';
+          const nameLower = (el.name || '').toLowerCase();
+          const labelLower = (el.text || '').toLowerCase();
+
+          if (el.type === 'email' || nameLower.includes('email')) {
+            val = `monkey_tester_${Date.now()}@example.com`;
+          } else if (el.type === 'number' || nameLower.includes('tel') || nameLower.includes('phone')) {
+            val = String(Math.floor(100000000 + Math.random() * 900000000));
+          } else if (el.type === 'password' || nameLower.includes('pass')) {
+            val = 'MonkeyP@ss123!';
+          } else {
+            val = `Monkey_${el.placeholder || el.name || 'vstup'}`;
+          }
+          actionResponse = {
+            reasoning: `Průzkumné vyplnění vstupu <${el.tagName}> s popiskem "${el.text || el.placeholder || el.name}"`,
+            action: 'type',
+            target: el.id,
+            value: val,
+            detected_bugs: []
+          };
+        } else {
+          actionResponse = {
+            reasoning: `Průzkumné kliknutí na prvek <${el.tagName}> s textem "${el.text || 'odkaz'}"`,
+            action: 'click',
+            target: el.id,
+            value: null,
+            detected_bugs: []
+          };
+        }
+      }
+    }
+  } else {
+    // AI Mode
+    let systemPrompt;
+    let prompt;
+
+    if (llmConfig.mode === 'smart_monkey') {
+      systemPrompt = `You are AuraTest AI, an expert QA testing agent performing a Smart Monkey Test.
+Your goal is to autonomously explore the web application, click various elements, fill forms with random or edge-case data, and try to break the app (find visual, logical, or functional bugs).
+You don't have one specific goal - your goal is broad exploration. Do not click the same thing repeatedly.${credentialsInfo}
+You must reply ONLY with a JSON object in this format:
+{
+  "reasoning": "Detailní vysvětlení, proč tento prvek vybíráš (např. 'Chci otestovat, co se stane po kliknutí na Vytvořit'). NIKDY NEPOUŽÍVEJ OTÁZKY typu 'Proč bych klikl na...'",
+  "action": "click" | "type" | "scroll" | "navigate" | "wait" | "finish",
+  "target": 123 (the data-qa-id number, or URL for 'navigate', or null for 'wait'/'finish'),
+  "value": "text to type, or 'down'/'up' for 'scroll', otherwise null",
+  "detected_bugs": ["SHORT summary of bugs. Max 1 sentence! Do not copy logs exactly."]
+}
+
+Rules:
+- 'target' must match a valid data-qa-id from the interactive elements list.
+- Explore as many different pages/elements as possible. If nothing left, use "finish".
+- If you see any bugs, list them in 'detected_bugs'.
+- CRITICAL: All JSON output values ('reasoning', 'detected_bugs') MUST be written in the Czech language (Čeština). Důvod (reasoning) MUSÍ být smysluplná věta popisující tvůj záměr.`;
+
+      prompt = `Test Type: Smart AI Monkey Test
+Current URL: ${currentUrl}
+Page Title: ${title}
+
+Interactive elements on page:
+${JSON.stringify(interactiveElements, null, 2)}
+
+Recent console logs:
+${recentLogs || 'No console errors.'}
+
+Recent network errors:
+${recentNet || 'No network errors.'}
+
+History of previous steps:
+${steps.map(s => `Step ${s.step}: ${s.action} on ${s.target || 'page'} (Reason: ${s.reasoning})`).join('\n') || 'No previous steps.'}
+
+CRITICAL ANTI-LOOP RULE: Review the history of previous steps. You must NOT repeat the exact same action and target as the last step. If you just scrolled down, do NOT scroll down again right away. If you are stuck, choose a different action, click a different element, or output "finish".
+
+Decide your next step to maximize exploration and bug finding. Reply ONLY with valid JSON.`;
+    } else {
+      systemPrompt = `You are AuraTest AI, an expert local QA testing agent. Your goal is to help the user test a web application.
+You analyze the current page state, interactive elements, and perform actions to fulfill the given goal.${credentialsInfo}
+You must reply ONLY with a JSON object in this format:
+{
+  "reasoning": "Detailní vysvětlení, jak ti tento krok pomůže splnit cíl (např. 'Potřebuji se přihlásit, proto klikám na Login'). NIKDY NEPOUŽÍVEJ OTÁZKY typu 'Proč bych klikl na...'",
+  "action": "click" | "type" | "scroll" | "navigate" | "wait" | "finish",
+  "target": 123 (the data-qa-id number, or URL for 'navigate', or null for 'wait'/'finish'),
+  "value": "text to type, or 'down'/'up' for 'scroll', otherwise null",
+  "detected_bugs": ["SHORT summary of bugs. Max 1 sentence! Do not copy logs exactly."]
+}
+
+Rules:
+- 'target' must match a valid data-qa-id from the interactive elements list.
+- If the goal is fully completed or impossible to proceed, use "finish".
+- If you see any bugs, list them in 'detected_bugs'.
+- CRITICAL: All JSON output values ('reasoning', 'detected_bugs') MUST be written in the Czech language (Čeština). Důvod (reasoning) MUSÍ být smysluplná věta popisující tvůj záměr.`;
+
+      prompt = `Test Goal: ${goal}
+Current URL: ${currentUrl}
+Page Title: ${title}
+
+Interactive elements on page:
+${JSON.stringify(interactiveElements, null, 2)}
+
+Recent console logs:
+${recentLogs || 'No console errors.'}
+
+Recent network errors:
+${recentNet || 'No network errors.'}
+
+History of previous steps:
+${steps.map(s => `Step ${s.step}: ${s.action} on ${s.target || 'page'} (Reason: ${s.reasoning})`).join('\n') || 'No previous steps.'}
+
+CRITICAL ANTI-LOOP RULE: Review the history of previous steps. You must NOT repeat the exact same action and target as the last step. If you just scrolled down, do NOT scroll down again right away. If you are stuck, choose a different action, click a different element, or output "finish".
+
+Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
+    }
+
+    try {
+      const responseText = await queryLLM(prompt, systemPrompt, llmConfig.provider, llmConfig.model, llmConfig.host);
+      let cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+
+      try {
+        actionResponse = JSON.parse(cleaned);
+      } catch (parseErr) {
+        console.warn('JSON parse failed, attempting auto-recovery for truncated JSON...', parseErr.message);
+        const closings = ['"}', '"]}', ']}', '}'];
+        let parsed = false;
+        for (const ending of closings) {
+          try {
+            actionResponse = JSON.parse(cleaned + ending);
+            parsed = true;
+            break;
+          } catch (e) {}
+        }
+        if (!parsed) {
+           throw new Error(`Nelze opravit utržený JSON: ${parseErr.message}`);
+        }
+      }
+    } catch (err) {
+      console.error('LLM parsing failed:', err);
+      let extractedReasoning = `(Záchranný krok) AI vygenerovalo nečitelný nebo utržený JSON: ${err.message}. Agent zkouší posunout stránku a pokračovat.`;
+      try {
+        // Mock fallback if string includes reasoning
+        extractedReasoning = "(Záchranný krok) AI vygenerovalo nečitelný JSON, skript vynucuje rolování";
+      } catch(e) {}
+
+      actionResponse = {
+        reasoning: extractedReasoning,
+        action: 'scroll',
+        target: null,
+        value: 'down',
+        detected_bugs: []
+      };
+    }
+  }
+
+  // Hard Anti-Loop Protection
+  if (steps.length >= 2 && llmConfig.mode !== 'monkey') {
+    const isLooping = (actionResponse.action === steps[steps.length - 1].action && actionResponse.target === steps[steps.length - 1].target) ||
+                      (actionResponse.action === steps[steps.length - 2].action && actionResponse.target === steps[steps.length - 2].target);
+    if (isLooping) {
+       console.warn('AI se zaseklo ve smyčce, vynucuji náhodný krok...');
+       const available = interactiveElements.filter(el => el.id !== actionResponse.target && el.id !== steps[steps.length-1].target);
+       if (available.length > 0) {
+         const randomEl = available[Math.floor(Math.random() * available.length)];
+         actionResponse.reasoning = `(Ochrana proti smyčce) Model narazil na překážku a zacyklil se. Skript vynucuje náhodný průzkum prvku: <${randomEl.tagName}>.`;
+         actionResponse.action = 'click';
+         actionResponse.target = randomEl.id;
+         actionResponse.value = null;
+       } else {
+         actionResponse.reasoning = `(Ochrana proti smyčce) Žádné další dostupné prvky, posouvám stránku dolů.`;
+         actionResponse.action = 'scroll';
+         actionResponse.target = null;
+         actionResponse.value = 'down';
+       }
+    }
+  }
+
+  return actionResponse;
+}
+
+export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, sessionId = 'session_default') {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: llmConfig.headless !== false });
+    const videosDir = path.join(process.cwd(), 'videos');
+    if (!fs.existsSync(videosDir)) {
+      fs.mkdirSync(videosDir, { recursive: true });
+    }
+
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      recordVideo: { dir: videosDir }
+    });
+    const page = await context.newPage();
+
+    const steps = [];
+    const bugs = [];
+    let currentStep = 1;
+    const maxSteps = llmConfig.maxSteps || 10;
+    let isFinished = false;
+    let performanceMetrics = null;
 
   // Listen to console messages and errors
   const consoleLogs = [];
@@ -364,13 +585,13 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
   try {
     if (onStepProgress) onStepProgress({ step: 0, action: 'Navigace', detail: `Otevírání ${url}` });
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-    
+
     while (currentStep <= maxSteps && !isFinished) {
       // 1. Gather current state
       const currentUrl = page.url();
       const title = await page.title();
       const interactiveElements = await extractInteractiveElements(page);
-      
+
       const screenshotFileName = `${sessionId}_step_${currentStep}.png`;
       const screenshotPath = path.join(process.cwd(), 'screenshots', screenshotFileName);
       try {
@@ -380,230 +601,19 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       }
 
       // Clean up log snippet to avoid hitting token limits
-      const recentLogs = consoleLogs.slice(-10).map(l => `[${l.type}] ${l.text}`).join('\n');
-      const recentNet = networkErrors.slice(-10).map(n => `FAIL: ${n.url} - ${n.error}`).join('\n');
+      // 2. Decide Next Action
+      const actionResponse = await determineNextAction(
+        llmConfig,
+        currentUrl,
+        title,
+        interactiveElements,
+        consoleLogs,
+        networkErrors,
+        steps,
+        goal
+      );
 
-      // 2. Prepare Prompt for local LLM
-      let systemPrompt;
-      let prompt;
-
-      let credentialsInfo = '';
-      if (llmConfig.testLogin || llmConfig.testPassword) {
-        credentialsInfo = `\nTEST CREDENTIALS (Use these if you need to log in or fill out auth forms):\n- Login/Email: ${llmConfig.testLogin || 'Not provided'}\n- Password: ${llmConfig.testPassword || 'Not provided'}\n`;
-      }
-
-      if (llmConfig.mode === 'smart_monkey') {
-        systemPrompt = `You are AuraTest AI, an expert QA testing agent performing a Smart Monkey Test.
-Your goal is to autonomously explore the web application, click various elements, fill forms with random or edge-case data, and try to break the app (find visual, logical, or functional bugs).
-You don't have one specific goal - your goal is broad exploration. Do not click the same thing repeatedly.${credentialsInfo}
-You must reply ONLY with a JSON object in this format:
-{
-  "reasoning": "Detailní vysvětlení, proč tento prvek vybíráš (např. 'Chci otestovat, co se stane po kliknutí na Vytvořit'). NIKDY NEPOUŽÍVEJ OTÁZKY typu 'Proč bych klikl na...'",
-  "action": "click" | "type" | "scroll" | "navigate" | "wait" | "finish",
-  "target": 123 (the data-qa-id number, or URL for 'navigate', or null for 'wait'/'finish'),
-  "value": "text to type, or 'down'/'up' for 'scroll', otherwise null",
-  "detected_bugs": ["SHORT summary of bugs. Max 1 sentence! Do not copy logs exactly."]
-}
-
-Rules:
-- 'target' must match a valid data-qa-id from the interactive elements list.
-- Explore as many different pages/elements as possible. If nothing left, use "finish".
-- If you see any bugs, list them in 'detected_bugs'.
-- CRITICAL: All JSON output values ('reasoning', 'detected_bugs') MUST be written in the Czech language (Čeština). Důvod (reasoning) MUSÍ být smysluplná věta popisující tvůj záměr.`;
-
-        prompt = `Test Type: Smart AI Monkey Test
-Current URL: ${currentUrl}
-Page Title: ${title}
-
-Interactive elements on page:
-${JSON.stringify(interactiveElements, null, 2)}
-
-Recent console logs:
-${recentLogs || 'No console errors.'}
-
-Recent network errors:
-${recentNet || 'No network errors.'}
-
-History of previous steps:
-${steps.map(s => `Step ${s.step}: ${s.action} on ${s.target || 'page'} (Reason: ${s.reasoning})`).join('\n') || 'No previous steps.'}
-
-CRITICAL ANTI-LOOP RULE: Review the history of previous steps. You must NOT repeat the exact same action and target as the last step. If you just scrolled down, do NOT scroll down again right away. If you are stuck, choose a different action, click a different element, or output "finish".
-
-Decide your next step to maximize exploration and bug finding. Reply ONLY with valid JSON.`;
-      } else {
-        systemPrompt = `You are AuraTest AI, an expert local QA testing agent. Your goal is to help the user test a web application.
-You analyze the current page state, interactive elements, and perform actions to fulfill the given goal.${credentialsInfo}
-You must reply ONLY with a JSON object in this format:
-{
-  "reasoning": "Detailní vysvětlení, jak ti tento krok pomůže splnit cíl (např. 'Potřebuji se přihlásit, proto klikám na Login'). NIKDY NEPOUŽÍVEJ OTÁZKY typu 'Proč bych klikl na...'",
-  "action": "click" | "type" | "scroll" | "navigate" | "wait" | "finish",
-  "target": 123 (the data-qa-id number, or URL for 'navigate', or null for 'wait'/'finish'),
-  "value": "text to type, or 'down'/'up' for 'scroll', otherwise null",
-  "detected_bugs": ["SHORT summary of bugs. Max 1 sentence! Do not copy logs exactly."]
-}
-
-Rules:
-- 'target' must match a valid data-qa-id from the interactive elements list.
-- If the goal is fully completed or impossible to proceed, use "finish".
-- If you see any bugs, list them in 'detected_bugs'.
-- CRITICAL: All JSON output values ('reasoning', 'detected_bugs') MUST be written in the Czech language (Čeština). Důvod (reasoning) MUSÍ být smysluplná věta popisující tvůj záměr.`;
-
-        prompt = `Test Goal: ${goal}
-Current URL: ${currentUrl}
-Page Title: ${title}
-
-Interactive elements on page:
-${JSON.stringify(interactiveElements, null, 2)}
-
-Recent console logs:
-${recentLogs || 'No console errors.'}
-
-Recent network errors:
-${recentNet || 'No network errors.'}
-
-History of previous steps:
-${steps.map(s => `Step ${s.step}: ${s.action} on ${s.target || 'page'} (Reason: ${s.reasoning})`).join('\n') || 'No previous steps.'}
-
-CRITICAL ANTI-LOOP RULE: Review the history of previous steps. You must NOT repeat the exact same action and target as the last step. If you just scrolled down, do NOT scroll down again right away. If you are stuck, choose a different action, click a different element, or output "finish".
-
-Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
-      }
-
-      // 3. Decide Next Action (Monkey mode or LLM mode)
-      let actionResponse;
-      if (llmConfig.mode === 'monkey') {
-        if (interactiveElements.length === 0) {
-          actionResponse = {
-            reasoning: 'Žádné klikatelné prvky nenalezeny. Vracím se na startovní URL.',
-            action: 'navigate',
-            target: url,
-            value: null,
-            detected_bugs: []
-          };
-        } else {
-          // 15% chance to scroll, 5% chance to wait, otherwise interact
-          const rand = Math.random();
-          if (rand < 0.15) {
-            actionResponse = {
-              reasoning: 'Průzkumné rolování stránky pro načtení dalšího obsahu.',
-              action: 'scroll',
-              target: null,
-              value: Math.random() > 0.5 ? 'down' : 'up',
-              detected_bugs: []
-            };
-          } else if (rand < 0.20) {
-            actionResponse = {
-              reasoning: 'Krátké čekání na stabilizaci rozhraní.',
-              action: 'wait',
-              target: null,
-              value: '1500',
-              detected_bugs: []
-            };
-          } else {
-            // Select random element
-            const randomIndex = Math.floor(Math.random() * interactiveElements.length);
-            const el = interactiveElements[randomIndex];
-            
-            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-              let val = 'test';
-              const nameLower = (el.name || '').toLowerCase();
-              const labelLower = (el.text || '').toLowerCase();
-              
-              if (el.type === 'email' || nameLower.includes('email')) {
-                val = `monkey_tester_${Date.now()}@example.com`;
-              } else if (el.type === 'number' || nameLower.includes('tel') || nameLower.includes('phone')) {
-                val = String(Math.floor(100000000 + Math.random() * 900000000));
-              } else if (el.type === 'password' || nameLower.includes('pass')) {
-                val = 'MonkeyP@ss123!';
-              } else {
-                val = `Monkey_${el.placeholder || el.name || 'vstup'}`;
-              }
-              actionResponse = {
-                reasoning: `Průzkumné vyplnění vstupu <${el.tagName}> s popiskem "${el.text || el.placeholder || el.name}"`,
-                action: 'type',
-                target: el.id,
-                value: val,
-                detected_bugs: []
-              };
-            } else {
-              actionResponse = {
-                reasoning: `Průzkumné kliknutí na prvek <${el.tagName}> s textem "${el.text || 'odkaz'}"`,
-                action: 'click',
-                target: el.id,
-                value: null,
-                detected_bugs: []
-              };
-            }
-          }
-        }
-      } else {
-        // AI model mode - standard Ollama query
-        try {
-          const responseText = await queryLLM(prompt, systemPrompt, llmConfig.provider, llmConfig.model, llmConfig.host);
-          let cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-          
-          try {
-            actionResponse = JSON.parse(cleaned);
-          } catch (parseErr) {
-            console.warn('JSON parse failed, attempting auto-recovery for truncated JSON...', parseErr.message);
-            // Try appending common closing brackets to fix truncated JSON
-            const closings = ['"}', '"]}', ']}', '}'];
-            let parsed = false;
-            for (const ending of closings) {
-              try {
-                actionResponse = JSON.parse(cleaned + ending);
-                parsed = true;
-                break;
-              } catch (e) {}
-            }
-            if (!parsed) {
-               throw new Error(`Nelze opravit utržený JSON: ${parseErr.message}`);
-            }
-          }
-        } catch (err) {
-          console.error('LLM parsing failed:', err);
-          let extractedReasoning = `(Záchranný krok) AI vygenerovalo nečitelný nebo utržený JSON: ${err.message}. Agent zkouší posunout stránku a pokračovat.`;
-          try {
-            // Zkusíme aspoň vydolovat úvahu přes regex, pokud tam nějaká je
-            const reasonMatch = err.message.includes('utržený') ? responseText.match(/"reasoning"\s*:\s*"([^"]+)"/) : null;
-            if (reasonMatch && reasonMatch[1]) {
-              extractedReasoning = reasonMatch[1] + " (Zbytek dat byl ztracen, skript vynucuje rolování)";
-            }
-          } catch(e) {}
-          
-          actionResponse = {
-            reasoning: extractedReasoning,
-            action: 'scroll',
-            target: null,
-            value: 'down',
-            detected_bugs: []
-          };
-        }
-      }
-
-      // Hard Anti-Loop Protection
-      if (steps.length >= 2 && llmConfig.mode !== 'monkey') {
-        const isLooping = (actionResponse.action === steps[steps.length - 1].action && actionResponse.target === steps[steps.length - 1].target) ||
-                          (actionResponse.action === steps[steps.length - 2].action && actionResponse.target === steps[steps.length - 2].target);
-        if (isLooping) {
-           console.warn('AI se zaseklo ve smyčce, vynucuji náhodný krok...');
-           const available = interactiveElements.filter(el => el.id !== actionResponse.target && el.id !== steps[steps.length-1].target);
-           if (available.length > 0) {
-             const randomEl = available[Math.floor(Math.random() * available.length)];
-             actionResponse.reasoning = `(Ochrana proti smyčce) Model narazil na překážku a zacyklil se. Skript vynucuje náhodný průzkum prvku: <${randomEl.tagName}>.`;
-             actionResponse.action = 'click';
-             actionResponse.target = randomEl.id;
-             actionResponse.value = null;
-           } else {
-             actionResponse.reasoning = `(Ochrana proti smyčce) Žádné další dostupné prvky, posouvám stránku dolů.`;
-             actionResponse.action = 'scroll';
-             actionResponse.target = null;
-             actionResponse.value = 'down';
-           }
-        }
-      }
-
-      // Add any bugs identified by LLM
+      // 3. Add any bugs identified by LLM
       if (actionResponse.detected_bugs && Array.isArray(actionResponse.detected_bugs)) {
         actionResponse.detected_bugs.forEach(b => {
           if (!bugs.includes(b)) bugs.push(b);
@@ -662,57 +672,61 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
     }
 
     // --- FÁZE 3: Získání výkonnostních a SEO metrik ---
+      try {
+        performanceMetrics = await page.evaluate(() => {
+          const timing = performance.getEntriesByType('navigation')[0] || {};
+          return {
+            loadTimeMs: timing.loadEventEnd ? Math.round(timing.loadEventEnd - timing.startTime) : null,
+            domInteractiveMs: timing.domInteractive ? Math.round(timing.domInteractive - timing.startTime) : null,
+            title: document.title,
+            h1Count: document.querySelectorAll('h1').length
+          };
+        });
+      } catch (e) {
+        console.log("Could not fetch performance metrics", e.message);
+      }
+
+    } catch (err) {
+      console.error('Test execution failed:', err);
+      // Musí se použít push jen pokud bugs existuje z vrchního scope
+      // Tady musíme přidat proměnné, které nemusí být přístupné pokud to crashne v early setupu,
+      // ale scope 'bugs' je uvnitř bloku nahoře.
+      if (typeof bugs !== 'undefined') bugs.push(`Katastrofická chyba testu: ${err.message}`);
+    }
+
+    let videoUrl = null;
     try {
-      performanceMetrics = await page.evaluate(() => {
-        const timing = performance.getEntriesByType('navigation')[0] || {};
-        return {
-          loadTimeMs: timing.loadEventEnd ? Math.round(timing.loadEventEnd - timing.startTime) : null,
-          domInteractiveMs: timing.domInteractive ? Math.round(timing.domInteractive - timing.startTime) : null,
-          title: document.title,
-          h1Count: document.querySelectorAll('h1').length
-        };
-      });
+      if (page && page.video()) {
+        const videoPath = await page.video().path();
+        videoUrl = `/api/videos/${path.basename(videoPath)}`;
+      }
     } catch (e) {
-      console.log("Could not fetch performance metrics", e.message);
+      console.log("Mohlo selhat získání cesty k videu", e.message);
     }
 
-  } catch (err) {
-    console.error('Test execution failed:', err);
-    bugs.push(`Katastrofická chyba testu: ${err.message}`);
-  }
-
-  let videoUrl = null;
-  try {
-    if (page.video()) {
-      const videoPath = await page.video().path();
-      videoUrl = `/api/videos/${path.basename(videoPath)}`;
+    // --- FÁZE 2: Generování Playwright kódu ---
+    const generatedScript = generatePlaywrightScript(steps, url);
+    const scriptsDir = path.join(process.cwd(), 'generated-scripts');
+    if (!fs.existsSync(scriptsDir)) {
+      fs.mkdirSync(scriptsDir, { recursive: true });
     }
-  } catch (e) {
-    console.log("Mohlo selhat získání cesty k videu", e.message);
+    const scriptPath = path.join(scriptsDir, `test-${Date.now()}.spec.ts`);
+    fs.writeFileSync(scriptPath, generatedScript, 'utf8');
+
+    return {
+      success: bugs.length === 0,
+      steps,
+      bugs: [...new Set(bugs)], // unique values
+      summary: isFinished ? 'Test úspěšně dokončen.' : 'Test dosáhl limitu maximálního počtu kroků.',
+      performanceMetrics,
+      generatedScript,
+      videoUrl
+    };
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
-
-  // Musí se zavřít až po zjištění cesty k videu
-  await browser.close();
-
-
-  // --- FÁZE 2: Generování Playwright kódu ---
-  const generatedScript = generatePlaywrightScript(steps, url);
-  const scriptsDir = path.join(process.cwd(), 'generated-scripts');
-  if (!fs.existsSync(scriptsDir)) {
-    fs.mkdirSync(scriptsDir, { recursive: true });
-  }
-  const scriptPath = path.join(scriptsDir, `test-${Date.now()}.spec.ts`);
-  fs.writeFileSync(scriptPath, generatedScript, 'utf8');
-
-  return {
-    success: bugs.length === 0,
-    steps,
-    bugs: [...new Set(bugs)], // unique values
-    summary: isFinished ? 'Test úspěšně dokončen.' : 'Test dosáhl limitu maximálního počtu kroků.',
-    performanceMetrics,
-    generatedScript,
-    videoUrl
-  };
 }
 
 /**
@@ -720,8 +734,7 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
  * Performs side-by-side text diffing and captures screenshots.
  */
 export async function comparePages(url1, url2) {
-  const browser = await chromium.launch({ headless: true });
-  
+  let browser;
   let screenshot1 = '';
   let screenshot2 = '';
   let texts1 = [];
@@ -730,6 +743,7 @@ export async function comparePages(url1, url2) {
   let error2 = null;
 
   try {
+    browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     
     // Load first page
@@ -753,7 +767,9 @@ export async function comparePages(url1, url2) {
     }
 
   } finally {
-    await browser.close();
+    if (browser) {
+      await browser.close();
+    }
   }
 
   if (error1 || error2) {
@@ -831,25 +847,25 @@ export async function comparePages(url1, url2) {
  * Audits translations on a page using a loaded localization dictionary.
  */
 export async function auditTranslations(url, dictionary, llmConfig) {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-  const page = await context.newPage();
-
+  let browser;
   let texts = [];
   let screenshot = '';
 
   try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const page = await context.newPage();
+
     await page.goto(url, { waitUntil: 'networkidle', timeout: 25000 });
     screenshot = `data:image/png;base64,${await page.screenshot({ type: 'png', encoding: 'base64' })}`;
     texts = await extractPageTexts(page);
   } catch (e) {
-    await browser.close();
+    if (browser) await browser.close();
     return { success: false, error: `Nepodařilo se otevřít URL: ${e.message}` };
-  } finally {
-    await browser.close();
   }
 
-  // Auditing logic
+  try {
+    // Auditing logic
   const auditResults = [];
   const dictValues = Object.values(dictionary);
   const dictEntries = Object.entries(dictionary);
@@ -932,13 +948,18 @@ Determine the status of this text. Reply ONLY with JSON.`;
     }
   }
 
-  const issues = auditResults.filter(r => r.status !== 'matched' && r.status !== 'ignored');
+    const issues = auditResults.filter(r => r.status !== 'matched' && r.status !== 'ignored');
 
-  return {
-    success: true,
-    screenshot,
-    results: auditResults,
-    issuesCount: issues.length,
-    issues
-  };
+    return {
+      success: true,
+      screenshot,
+      results: auditResults,
+      issuesCount: issues.length,
+      issues
+    };
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
 }

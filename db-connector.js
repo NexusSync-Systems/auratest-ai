@@ -56,14 +56,18 @@ async function fetchFromApi(config) {
   return flattenObject(data);
 }
 
-async function fetchFromPostgres(config) {
-  const { dbHost, dbPort, dbUser, dbPassword, dbName, dbQuery } = config;
+function validateReadOnlyQuery(dbQuery) {
   if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
-
   // Očištění o komentáře a ověření
   const cleanQuery = dbQuery.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, '').trim();
   if (!/^(SELECT|WITH)\b/i.test(cleanQuery)) throw new Error('Dovoleno je pouze čtení přes SELECT nebo WITH dotazy.');
   if (/;/.test(cleanQuery)) throw new Error('Vícečetné (stacked) dotazy nejsou povoleny.');
+  return cleanQuery;
+}
+
+async function fetchFromPostgres(config) {
+  const { dbHost, dbPort, dbUser, dbPassword, dbName, dbQuery } = config;
+  const cleanQuery = validateReadOnlyQuery(dbQuery);
 
   // Dynamický import pg balíčku
   const pg = await import('pg');
@@ -79,7 +83,7 @@ async function fetchFromPostgres(config) {
 
   await client.connect();
   try {
-    const res = await client.query(dbQuery);
+    const res = await client.query(cleanQuery);
     return mapDbRowsToDict(res.rows);
   } finally {
     await client.end();
@@ -88,12 +92,7 @@ async function fetchFromPostgres(config) {
 
 async function fetchFromMysql(config) {
   const { dbHost, dbPort, dbUser, dbPassword, dbName, dbQuery } = config;
-  if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
-
-  // Očištění o komentáře a ověření
-  const cleanQuery = dbQuery.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, '').trim();
-  if (!/^(SELECT|WITH)\b/i.test(cleanQuery)) throw new Error('Dovoleno je pouze čtení přes SELECT nebo WITH dotazy.');
-  if (/;/.test(cleanQuery)) throw new Error('Vícečetné (stacked) dotazy nejsou povoleny.');
+  const cleanQuery = validateReadOnlyQuery(dbQuery);
 
   const mysql = await import('mysql2/promise');
   const connection = await mysql.createConnection({
@@ -105,7 +104,7 @@ async function fetchFromMysql(config) {
   });
 
   try {
-    const [rows] = await connection.execute(dbQuery);
+    const [rows] = await connection.execute(cleanQuery);
     return mapDbRowsToDict(rows);
   } finally {
     await connection.end();
@@ -115,12 +114,7 @@ async function fetchFromMysql(config) {
 async function fetchFromSqlite(config) {
   const { sqlitePath, dbQuery } = config;
   if (!sqlitePath) throw new Error('Chybí cesta k SQLite databázi (sqlitePath).');
-  if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
-
-  // Očištění o komentáře a ověření
-  const cleanQuery = dbQuery.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, '').trim();
-  if (!/^(SELECT|WITH)\b/i.test(cleanQuery)) throw new Error('Dovoleno je pouze čtení přes SELECT nebo WITH dotazy.');
-  if (/;/.test(cleanQuery)) throw new Error('Vícečetné (stacked) dotazy nejsou povoleny.');
+  const cleanQuery = validateReadOnlyQuery(dbQuery);
 
   if (!fs.existsSync(sqlitePath)) {
     throw new Error(`Soubor databáze neexistuje na cestě: ${sqlitePath}`);
@@ -134,7 +128,7 @@ async function fetchFromSqlite(config) {
       if (err) return reject(new Error(`Nepodařilo se otevřít SQLite: ${err.message}`));
     });
 
-    db.all(dbQuery, [], (err, rows) => {
+    db.all(cleanQuery, [], (err, rows) => {
       db.close();
       if (err) return reject(new Error(`Chyba SQL dotazu: ${err.message}`));
       try {
@@ -147,13 +141,22 @@ async function fetchFromSqlite(config) {
   });
 }
 
+// Whitelist povolených lokálních skriptů
+const ALLOWED_SCRIPTS = {
+  'get-translations': 'node get-translations.js'
+};
+
 async function fetchFromScript(config) {
-  const { scriptCommand, cwd } = config;
-  if (!scriptCommand) throw new Error('Chybí příkaz pro spuštění skriptu (scriptCommand).');
-  if (/([;&|`\n]|(?:\$\()|(?:\${)|>|<)/.test(scriptCommand)) throw new Error('Nebezpečné znaky v příkazu.');
+  const { scriptName, cwd } = config;
+  if (!scriptName) throw new Error('Chybí název povoleného skriptu (scriptName).');
+
+  const allowedCommand = ALLOWED_SCRIPTS[scriptName];
+  if (!allowedCommand) {
+    throw new Error(`Skript "${scriptName}" není na whitelistu povolených příkazů.`);
+  }
 
   try {
-    const { stdout, stderr } = await execAsync(scriptCommand, { cwd: cwd || process.cwd() });
+    const { stdout, stderr } = await execAsync(allowedCommand, { cwd: cwd || process.cwd() });
     if (stderr && stderr.trim().length > 0) {
       console.warn('Varování skriptu (stderr):', stderr);
     }
