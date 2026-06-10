@@ -356,6 +356,10 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Interní chyba serveru.', details: err.message });
 });
 
-server.listen(PORT, () => {
-  console.log(`AuraTest AI server běží na http://localhost:${PORT}`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, () => {
+    console.log(`AuraTest AI server běží na http://localhost:${PORT}`);
+  });
+}
+
+export { app };
