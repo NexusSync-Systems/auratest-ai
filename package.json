@@ -11,7 +11,9 @@
     "frontend:dev": "cd frontend && npm run dev",
     "install:all": "npm install && npm run frontend:install",
     "setup": "npm run install:all && npx playwright install",
-    "dev": "npx concurrently \"npm run dev:server\" \"npm run frontend:dev\""
+    "dev": "npx concurrently \"npm run dev:server\" \"npm run frontend:dev\"",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -26,6 +28,8 @@
     "ws": "^8.17.0"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "@playwright/test": "^1.60.0",
+    "concurrently": "^8.2.2",
+    "vitest": "^4.1.8"
   }
 }
