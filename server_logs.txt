@@ -1,0 +1,26 @@
+
+> auratest-ai@1.0.0 dev
+> npx concurrently "npm run dev:server" "npm run frontend:dev"
+
+[1]
+[1] > auratest-ai@1.0.0 frontend:dev
+[1] > cd frontend && npm run dev
+[1]
+[0]
+[0] > auratest-ai@1.0.0 dev:server
+[0] > node --watch server.js
+[0]
+[1]
+[1] > auratest-frontend@1.0.0 dev
+[1] > vite
+[1]
+[1]
+[1]   VITE v5.4.21  ready in 533 ms
+[1]
+[1]   ➜  Local:   http://localhost:3000/
+[1]   ➜  Network: use --host to expose
+[0] AuraTest AI server běží na http://localhost:3001
+[0] Failed running 'server.js'. Waiting for file changes before restarting...
+[1] npm run frontend:dev exited with code 0
+[0] Restarting 'server.js'
+[0] AuraTest AI server běží na http://localhost:3001

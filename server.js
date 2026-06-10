@@ -7,6 +7,15 @@ import fs from 'fs';
 import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks } from './agent.js';
 import { fetchTranslations } from './db-connector.js';
 
+// Global error handlers to prevent unhandled rejections from crashing the process
+process.on('uncaughtException', (err) => {
+  console.error('Kritická chyba: Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Kritická chyba: Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
@@ -125,7 +134,8 @@ app.post('/api/run-test', async (req, res) => {
 
   (async () => {
     try {
-      if (mode === 'crawler') {
+      try {
+        if (mode === 'crawler') {
         broadcastToSession(sessionId, { type: 'progress', message: '🕷️ CRAWLER: Hledám podstránky na webu...' });
         const links = await extractInternalLinks(url);
         const targetUrls = [url, ...links].slice(0, 4); // home + max 3 links
@@ -175,27 +185,35 @@ app.post('/api/run-test', async (req, res) => {
           broadcastToSession(sessionId, { type: 'step', step: stepInfo });
         }, sessionId);
 
-        sessionData.status = 'completed';
-        sessionData.bugs = result.bugs;
-        sessionData.summary = result.summary;
+          sessionData.status = 'completed';
+          sessionData.bugs = result.bugs;
+          sessionData.summary = result.summary;
+          broadcastToSession(sessionId, {
+            type: 'completed',
+            bugs: result.bugs,
+            summary: result.summary,
+            success: result.success,
+            performanceMetrics: result.performanceMetrics,
+            generatedScript: result.generatedScript,
+            videoUrl: result.videoUrl
+          });
+        }
+      } catch (err) {
+        sessionData.status = 'failed';
+        sessionData.summary = `Selhání testu: ${err.message}`;
+        sessionData.bugs.push(`Kritická chyba backendu: ${err.message}`);
         broadcastToSession(sessionId, {
-          type: 'completed',
-          bugs: result.bugs,
-          summary: result.summary,
-          success: result.success,
-          performanceMetrics: result.performanceMetrics,
-          generatedScript: result.generatedScript,
-          videoUrl: result.videoUrl
+          type: 'failed',
+          error: err.message,
+          summary: `Test selhal: ${err.message}`
         });
       }
-    } catch (err) {
-      sessionData.status = 'failed';
-      sessionData.summary = `Selhání testu: ${err.message}`;
-      sessionData.bugs.push(`Kritická chyba backendu: ${err.message}`);
+    } catch (criticalErr) {
+      console.error('Fatální chyba v asynchronním procesu na pozadí:', criticalErr);
       broadcastToSession(sessionId, {
         type: 'failed',
-        error: err.message,
-        summary: `Test selhal: ${err.message}`
+        error: criticalErr.message,
+        summary: `Interní chyba serveru: ${criticalErr.message}`
       });
     }
   })();
@@ -331,6 +349,12 @@ if (fs.existsSync(frontendDistPath)) {
     res.sendFile(path.join(frontendDistPath, 'index.html'));
   });
 }
+
+// Global Express error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Express zachytil neošetřenou chybu routy:', err);
+  res.status(500).json({ error: 'Interní chyba serveru.', details: err.message });
+});
 
 server.listen(PORT, () => {
   console.log(`AuraTest AI server běží na http://localhost:${PORT}`);
