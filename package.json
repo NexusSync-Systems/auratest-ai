@@ -11,7 +11,9 @@
     "frontend:dev": "cd frontend && npm run dev",
     "install:all": "npm install && npm run frontend:install",
     "setup": "npm run install:all && npx playwright install",
-    "dev": "npx concurrently \"npm run dev:server\" \"npm run frontend:dev\""
+    "dev": "npx concurrently \"npm run dev:server\" \"npm run frontend:dev\"",
+    "test": "jest",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -21,11 +23,18 @@
     "mysql2": "^3.10.0",
     "ollama": "^0.5.1",
     "pg": "^8.12.0",
-    "playwright": "^1.44.1",
     "sqlite3": "^5.1.7",
     "ws": "^8.17.0"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "@babel/core": "^7.29.7",
+    "@babel/preset-env": "^7.29.7",
+    "@playwright/test": "^1.60.0",
+    "babel-jest": "^30.4.1",
+    "concurrently": "^8.2.2",
+    "eslint": "^10.4.1",
+    "jest": "^30.4.2",
+    "playwright": "^1.60.0",
+    "supertest": "^7.2.2"
   }
 }

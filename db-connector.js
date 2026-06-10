@@ -172,7 +172,7 @@ async function fetchFromScript(config) {
  * Expects rows to contain columns like (key, value) or (translation_key, translation_value).
  * If there are only 2 columns, it uses the first as key and the second as value.
  */
-function mapDbRowsToDict(rows) {
+export function mapDbRowsToDict(rows) {
   if (!Array.isArray(rows) || rows.length === 0) {
     return {};
   }
