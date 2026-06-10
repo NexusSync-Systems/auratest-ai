@@ -258,7 +258,7 @@ async function extractPageTexts(page) {
 /**
  * Runs an autonomous AI QA Test Session on a given URL.
  */
-function generatePlaywrightScript(steps, startUrl) {
+export function generatePlaywrightScript(steps, startUrl) {
   let script = `import { test, expect } from '@playwright/test';\n\n`;
   script += `test('Autonomously generated AI test', async ({ page }) => {\n`;
   script += `  await page.goto('${startUrl}');\n\n`;
