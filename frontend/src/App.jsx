@@ -81,7 +81,13 @@ export default function App() {
       const res = await fetch('/api/sessions');
       if (res.ok) {
         const data = await res.json();
-        setSessions(data);
+        // ⚡ Bolt: Prevent unnecessary re-renders when data is identical
+        setSessions(prev => {
+          if (JSON.stringify(prev) === JSON.stringify(data)) {
+            return prev; // Return exact same reference to skip render
+          }
+          return data;
+        });
       }
     } catch (e) {
       console.error('Nepodařilo se stáhnout relace:', e);
