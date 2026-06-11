@@ -1,0 +1,3 @@
+## 2024-06-11 - React Polling Re-renders s Fetch API
+**Learning:** `fetch().then(res => res.json())` vrací vždy novou referenci pole (i když jsou data identická z pohledu obsahu). Pokud tuto novou referenci bezmyšlenkovitě vložíme do React state pomocí polling intervalu (např. každých 5s), způsobíme masivní re-renderování celého stromu komponent každých 5s. Zvláště u velkých komponent jako `App.jsx` (1000+ řádků s hlubokým dom) to má razantní dopad na paměť a využití CPU i v naprostém idle režimu.
+**Action:** Pro polling datových polí z API, které se nemusí změnit, je kritické před nastavením stavu provést porovnání obsahu (`JSON.stringify` nebo deep check) a v případě shody vrátit původní referenci (`return prev`).
