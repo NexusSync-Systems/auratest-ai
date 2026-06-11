@@ -278,6 +278,15 @@ code, pre {
   100% { opacity: 0.5; }
 }
 
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* Tab Panels */
 .tab-content {
   flex-grow: 1;
