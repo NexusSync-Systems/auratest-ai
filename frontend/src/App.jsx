@@ -16,7 +16,8 @@ import {
   Link as LinkIcon, 
   Image as ImageIcon,
   Check,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 
 export default function App() {
@@ -706,7 +707,14 @@ export default function App() {
                 </div>
 
                 <button className="btn" type="submit" disabled={compareLoading}>
-                  {compareLoading ? 'Porovnávám...' : 'Spustit porovnání (Diff)'}
+                  {compareLoading ? (
+                    <>
+                      <Loader2 className="spin" size={16} />
+                      Porovnávám...
+                    </>
+                  ) : (
+                    'Spustit porovnání (Diff)'
+                  )}
                 </button>
               </form>
 
@@ -889,7 +897,14 @@ export default function App() {
                 )}
 
                 <button className="btn" type="submit" disabled={auditLoading}>
-                  {auditLoading ? 'Provádím audit...' : 'Spustit lokalizační audit'}
+                  {auditLoading ? (
+                    <>
+                      <Loader2 className="spin" size={16} />
+                      Provádím audit...
+                    </>
+                  ) : (
+                    'Spustit lokalizační audit'
+                  )}
                 </button>
               </form>
 
