@@ -867,25 +867,34 @@ export async function auditTranslations(url, dictionary, llmConfig) {
   try {
     // Auditing logic
   const auditResults = [];
-  const dictValues = Object.values(dictionary);
   const dictEntries = Object.entries(dictionary);
+
+  // ⚡ Bolt: Optimize translation lookup (O(N*M) -> O(N))
+  // Pre-calculate lowercased values to a Map for O(1) lookups instead of repeated array iterations
+  const valueToKeyMap = new Map();
+  for (const [k, val] of dictEntries) {
+    const normalizedVal = val.trim().toLowerCase();
+    if (normalizedVal && !valueToKeyMap.has(normalizedVal)) {
+      valueToKeyMap.set(normalizedVal, k);
+    }
+  }
 
   for (const item of texts) {
     const pageText = item.text.trim();
     if (!pageText || pageText.length < 2) continue; // skip single characters or empty
 
-    // 1. Strict match check
-    const isMatched = dictValues.some(val => val.trim().toLowerCase() === pageText.toLowerCase());
+    const normalizedPageText = pageText.toLowerCase();
 
-    if (isMatched) {
-      // Find key matching this text
-      const keyEntry = dictEntries.find(([k, val]) => val.trim().toLowerCase() === pageText.toLowerCase());
+    // 1. Strict match check
+    const matchedKey = valueToKeyMap.get(normalizedPageText);
+
+    if (matchedKey !== undefined) {
       auditResults.push({
         text: pageText,
         selector: item.selector,
         tagName: item.tagName,
         status: 'matched',
-        key: keyEntry ? keyEntry[0] : 'Neznámý'
+        key: matchedKey
       });
     } else {
       // Let AI review the untranslated / mismatched text
