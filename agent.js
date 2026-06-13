@@ -157,20 +157,25 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
 async function extractInteractiveElements(page) {
   return await page.evaluate(() => {
     const interactiveTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL'];
-    const elements = Array.from(document.querySelectorAll('*'));
     const interactiveList = [];
     let qaIdCounter = 1;
 
-    elements.forEach((el) => {
+    // ⚡ Bolt: Optimize DOM traversal using TreeWalker and fast size checks (O(N) with fast path skips)
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null, false);
+
+    let el;
+    while (el = walker.nextNode()) {
+      // Fast size check before getComputedStyle. If the element itself has 0 size, we don't consider it visible.
+      // Note: We don't reject its subtree, because it could be a zero-sized wrapper containing absolutely positioned visible elements.
+      if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
+
       // Basic visibility check
       const style = window.getComputedStyle(el);
-      const isVisible = el.offsetWidth > 0 && 
-                        el.offsetHeight > 0 && 
-                        style.display !== 'none' && 
+      const isVisible = style.display !== 'none' &&
                         style.visibility !== 'hidden' && 
                         style.opacity !== '0';
       
-      if (!isVisible) return;
+      if (!isVisible) continue;
 
       const tagName = el.tagName;
       const isInteractiveTag = interactiveTags.includes(tagName);
@@ -196,7 +201,7 @@ async function extractInteractiveElements(page) {
         });
         qaIdCounter++;
       }
-    });
+    }
 
     return interactiveList;
   });
@@ -209,48 +214,46 @@ async function extractInteractiveElements(page) {
 async function extractPageTexts(page) {
   return await page.evaluate(() => {
     const results = [];
-    const walk = (node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const text = node.nodeValue.trim();
-        if (text && node.parentElement) {
-          const parent = node.parentElement;
-          const style = window.getComputedStyle(parent);
-          const isVisible = parent.offsetWidth > 0 && 
-                            parent.offsetHeight > 0 && 
-                            style.display !== 'none' && 
-                            style.visibility !== 'hidden';
-          
-          if (isVisible && !['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) {
-            // Generate a simple CSS selector path
-            let path = '';
-            let current = parent;
-            while (current && current.nodeType === Node.ELEMENT_NODE && current.tagName !== 'BODY') {
-              let part = current.tagName.toLowerCase();
-              if (current.id) {
-                part += `#${current.id}`;
-                path = part + (path ? ' > ' + path : '');
-                break; // Stop at ID for shorter selector
-              } else if (current.className) {
-                part += `.${Array.from(current.classList).join('.')}`;
-              }
-              path = part + (path ? ' > ' + path : '');
-              current = current.parentNode;
-            }
+    // ⚡ Bolt: Optimize text node extraction using TreeWalker and fast size checks
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+    let node;
+    while (node = walker.nextNode()) {
+      const text = node.nodeValue.trim();
+      if (text && node.parentElement) {
+        const parent = node.parentElement;
 
-            results.push({
-              text,
-              selector: path || 'body',
-              tagName: parent.tagName
-            });
+        // Fast size check before getComputedStyle
+        if (parent.offsetWidth === 0 || parent.offsetHeight === 0) continue;
+        if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) continue;
+
+        const style = window.getComputedStyle(parent);
+        const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
+
+        if (isVisible) {
+          // Generate a simple CSS selector path
+          let path = '';
+          let current = parent;
+          while (current && current.nodeType === Node.ELEMENT_NODE && current.tagName !== 'BODY') {
+            let part = current.tagName.toLowerCase();
+            if (current.id) {
+              part += `#${current.id}`;
+              path = part + (path ? ' > ' + path : '');
+              break; // Stop at ID for shorter selector
+            } else if (current.className) {
+              part += `.${Array.from(current.classList).join('.')}`;
+            }
+            path = part + (path ? ' > ' + path : '');
+            current = current.parentNode;
           }
-        }
-      } else {
-        for (let i = 0; i < node.childNodes.length; i++) {
-          walk(node.childNodes[i]);
+
+          results.push({
+            text,
+            selector: path || 'body',
+            tagName: parent.tagName
+          });
         }
       }
-    };
-    walk(document.body);
+    }
     return results;
   });
 }
