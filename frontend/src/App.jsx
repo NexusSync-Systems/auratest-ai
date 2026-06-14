@@ -206,13 +206,21 @@ export default function App() {
 
   const handleExportJson = () => {
     if (!activeSession) return;
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(activeSession, null, 2));
+    // ⚡ Bolt: Nahrazeno pomalé encodeURIComponent za Blob ObjectURL pro velká data (base64 screenshoty)
+    // Toto je mnohem rychlejší a nestane se, že bychom narazili na limit velikosti data URI v prohlížeči.
+    const jsonStr = JSON.stringify(activeSession, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
     const downloadAnchorNode = document.createElement('a');
-    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("href", url);
     downloadAnchorNode.setAttribute("download", `auratest-export-${activeSession.id}.json`);
     document.body.appendChild(downloadAnchorNode);
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
+
+    // Uklidíme object URL
+    setTimeout(() => URL.revokeObjectURL(url), 100);
   };
 
   // 2. Run Compare (Prod vs Preview Diff)
