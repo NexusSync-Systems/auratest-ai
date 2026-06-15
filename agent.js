@@ -746,25 +746,30 @@ export async function comparePages(url1, url2) {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     
-    // Load first page
+    // ⚡ Bolt: Načítat obě stránky paralelně pomocí Promise.all pro zrychlení ~50%
     const page1 = await context.newPage();
-    try {
-      await page1.goto(url1, { waitUntil: 'networkidle', timeout: 20000 });
-      screenshot1 = `data:image/png;base64,${await page1.screenshot({ type: 'png', encoding: 'base64' })}`;
-      texts1 = await extractPageTexts(page1);
-    } catch (e) {
-      error1 = e.message;
-    }
-
-    // Load second page
     const page2 = await context.newPage();
-    try {
-      await page2.goto(url2, { waitUntil: 'networkidle', timeout: 20000 });
-      screenshot2 = `data:image/png;base64,${await page2.screenshot({ type: 'png', encoding: 'base64' })}`;
-      texts2 = await extractPageTexts(page2);
-    } catch (e) {
-      error2 = e.message;
-    }
+
+    await Promise.all([
+      (async () => {
+        try {
+          await page1.goto(url1, { waitUntil: 'networkidle', timeout: 20000 });
+          screenshot1 = `data:image/png;base64,${await page1.screenshot({ type: 'png', encoding: 'base64' })}`;
+          texts1 = await extractPageTexts(page1);
+        } catch (e) {
+          error1 = e.message;
+        }
+      })(),
+      (async () => {
+        try {
+          await page2.goto(url2, { waitUntil: 'networkidle', timeout: 20000 });
+          screenshot2 = `data:image/png;base64,${await page2.screenshot({ type: 'png', encoding: 'base64' })}`;
+          texts2 = await extractPageTexts(page2);
+        } catch (e) {
+          error2 = e.message;
+        }
+      })()
+    ]);
 
   } finally {
     if (browser) {
