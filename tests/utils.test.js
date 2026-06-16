@@ -1,4 +1,4 @@
-import { flattenObject, mapDbRowsToDict } from '../db-connector.js';
+import { flattenObject, mapDbRowsToDict, validateReadOnlyQuery } from '../db-connector.js';
 import { generatePlaywrightScript } from '../agent.js';
 
 describe('Utility Functions Unit Tests', () => {
@@ -48,6 +48,31 @@ describe('Utility Functions Unit Tests', () => {
     it('by měla vyhodit chybu, pokud řádek nemá alespoň dva sloupce', () => {
       const rows = [{ singleCol: 'value' }];
       expect(() => mapDbRowsToDict(rows)).toThrow(/musí vracet alespoň dva sloupce/i);
+    });
+  });
+
+  describe('validateReadOnlyQuery', () => {
+    it('by měla propustit validní jednoduchý SELECT dotaz', () => {
+      const query = "SELECT * FROM users";
+      expect(validateReadOnlyQuery(query)).toBe(query);
+    });
+
+    it('by měla propustit validní WITH dotaz', () => {
+      const query = "WITH cte AS (SELECT 1) SELECT * FROM cte";
+      expect(validateReadOnlyQuery(query)).toBe(query);
+    });
+
+    it('by měla vyhodit chybu pro dotaz s DROP', () => {
+      const query = "SELECT * FROM users; DROP TABLE users;";
+      expect(() => validateReadOnlyQuery(query)).toThrow(/Vícečetné \(stacked\) dotazy nejsou povoleny/i);
+
+      const query2 = "SELECT 1 DROP TABLE users"; // Sice nesmysl, ale kontrolujeme regex
+      expect(() => validateReadOnlyQuery(query2)).toThrow(/nepovolená klíčová slova/i);
+    });
+
+    it('by měla vyhodit chybu pro UPDATE dotaz', () => {
+      const query = "UPDATE users SET name='test'";
+      expect(() => validateReadOnlyQuery(query)).toThrow(/Dovoleno je pouze čtení přes SELECT nebo WITH dotazy/i);
     });
   });
 
