@@ -4,3 +4,7 @@
 ## 2024-06-15 - Paralelizace asynchronních operací Playwrightu
 **Learning:** V Playwrightu operace jako `page.goto` na různé stránky mohou blokovat jedna druhou, pokud jsou volány sekvenčně. Zvláště u operací s `networkidle` to může přidat spoustu zbytečného času navíc.
 **Action:** Když nezávisle extrahujeme data z více nezávislých stránek nebo děláme screenshoty, měli bychom vždy tyto úkoly obalit do `Promise.all()`, což efektivně spustí IO asynchronní práci paralelně a zrychlí provádění celkové operace.
+
+## 2024-05-24 - LLM Relevant Dict Filtering O(N*M) Loop
+**Learning:** During text-by-text analysis for localizations in `agent.js`, constructing the `relevantDict` via `Object.keys().length` inside an `.forEach` and `.some` with repeated `toLowerCase()` on the dictionary values created unnecessary O(N*M) processing overhead. Creating array closures on every iteration of elements is very slow.
+**Action:** When finding fuzzy dictionary matches for large HTML structures (DOMs), always pre-calculate the lowered string values and move processing into fast, simple nested `for` loops. Maintaining a manual counter instead of measuring object size inside inner loops avoids heavy JS engine object allocations.
