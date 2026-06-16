@@ -1,3 +1,6 @@
 ## 2024-06-11 - React Polling Re-renders s Fetch API
 **Learning:** `fetch().then(res => res.json())` vrací vždy novou referenci pole (i když jsou data identická z pohledu obsahu). Pokud tuto novou referenci bezmyšlenkovitě vložíme do React state pomocí polling intervalu (např. každých 5s), způsobíme masivní re-renderování celého stromu komponent každých 5s. Zvláště u velkých komponent jako `App.jsx` (1000+ řádků s hlubokým dom) to má razantní dopad na paměť a využití CPU i v naprostém idle režimu.
 **Action:** Pro polling datových polí z API, které se nemusí změnit, je kritické před nastavením stavu provést porovnání obsahu (`JSON.stringify` nebo deep check) a v případě shody vrátit původní referenci (`return prev`).
+## 2024-06-15 - Paralelizace asynchronních operací Playwrightu
+**Learning:** V Playwrightu operace jako `page.goto` na různé stránky mohou blokovat jedna druhou, pokud jsou volány sekvenčně. Zvláště u operací s `networkidle` to může přidat spoustu zbytečného času navíc.
+**Action:** Když nezávisle extrahujeme data z více nezávislých stránek nebo děláme screenshoty, měli bychom vždy tyto úkoly obalit do `Promise.all()`, což efektivně spustí IO asynchronní práci paralelně a zrychlí provádění celkové operace.
