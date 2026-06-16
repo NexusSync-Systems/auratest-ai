@@ -56,12 +56,15 @@ async function fetchFromApi(config) {
   return flattenObject(data);
 }
 
-function validateReadOnlyQuery(dbQuery) {
+export function validateReadOnlyQuery(dbQuery) {
   if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
   // Očištění o komentáře a ověření
   const cleanQuery = dbQuery.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, '').trim();
   if (!/^(SELECT|WITH)\b/i.test(cleanQuery)) throw new Error('Dovoleno je pouze čtení přes SELECT nebo WITH dotazy.');
   if (/;/.test(cleanQuery)) throw new Error('Vícečetné (stacked) dotazy nejsou povoleny.');
+  if (/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i.test(cleanQuery)) {
+    throw new Error('Dotaz obsahuje nepovolená klíčová slova měnící stav databáze.');
+  }
   return cleanQuery;
 }
 

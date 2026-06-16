@@ -155,11 +155,12 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
  * assigns them temporary 'data-qa-id' attributes, and returns their representation.
  */
 async function extractInteractiveElements(page) {
-  return await page.evaluate(() => {
-    const interactiveTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL'];
-    const elements = Array.from(document.querySelectorAll('*'));
-    const interactiveList = [];
-    let qaIdCounter = 1;
+  try {
+    return await page.evaluate(() => {
+      const interactiveTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL'];
+      const elements = Array.from(document.querySelectorAll('*'));
+      const interactiveList = [];
+      let qaIdCounter = 1;
 
     elements.forEach((el) => {
       // Basic visibility check
@@ -196,10 +197,14 @@ async function extractInteractiveElements(page) {
         });
         qaIdCounter++;
       }
-    });
+      });
 
-    return interactiveList;
-  });
+      return interactiveList;
+    });
+  } catch (error) {
+    console.error('Failed to extract interactive elements:', error);
+    return [];
+  }
 }
 
 /**
