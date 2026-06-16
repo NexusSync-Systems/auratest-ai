@@ -746,24 +746,33 @@ export async function comparePages(url1, url2) {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     
-    // Load first page
-    const page1 = await context.newPage();
-    try {
-      await page1.goto(url1, { waitUntil: 'networkidle', timeout: 20000 });
-      screenshot1 = `data:image/png;base64,${await page1.screenshot({ type: 'png', encoding: 'base64' })}`;
-      texts1 = await extractPageTexts(page1);
-    } catch (e) {
-      error1 = e.message;
+    // ⚡ Bolt: Optimize performance by loading and processing both pages concurrently
+    // This removes the sequential bottleneck and nearly halves the execution time
+    const processPage = async (url) => {
+      const page = await context.newPage();
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 });
+      const screenshot = `data:image/png;base64,${await page.screenshot({ type: 'png', encoding: 'base64' })}`;
+      const texts = await extractPageTexts(page);
+      return { screenshot, texts };
+    };
+
+    const results = await Promise.allSettled([
+      processPage(url1),
+      processPage(url2)
+    ]);
+
+    if (results[0].status === 'fulfilled') {
+      screenshot1 = results[0].value.screenshot;
+      texts1 = results[0].value.texts;
+    } else {
+      error1 = results[0].reason.message;
     }
 
-    // Load second page
-    const page2 = await context.newPage();
-    try {
-      await page2.goto(url2, { waitUntil: 'networkidle', timeout: 20000 });
-      screenshot2 = `data:image/png;base64,${await page2.screenshot({ type: 'png', encoding: 'base64' })}`;
-      texts2 = await extractPageTexts(page2);
-    } catch (e) {
-      error2 = e.message;
+    if (results[1].status === 'fulfilled') {
+      screenshot2 = results[1].value.screenshot;
+      texts2 = results[1].value.texts;
+    } else {
+      error2 = results[1].reason.message;
     }
 
   } finally {
