@@ -877,11 +877,20 @@ export async function auditTranslations(url, dictionary, llmConfig) {
   // ⚡ Bolt: Optimize translation lookup (O(N*M) -> O(N))
   // Pre-calculate lowercased values to a Map for O(1) lookups instead of repeated array iterations
   const valueToKeyMap = new Map();
-  for (const [k, val] of dictEntries) {
+  const dictSize = dictEntries.length;
+  const processedDict = new Array(dictSize);
+  for (let i = 0; i < dictSize; i++) {
+    const [k, val] = dictEntries[i];
     const normalizedVal = val.trim().toLowerCase();
     if (normalizedVal && !valueToKeyMap.has(normalizedVal)) {
       valueToKeyMap.set(normalizedVal, k);
     }
+    processedDict[i] = {
+      k,
+      val,
+      kLower: k.toLowerCase(),
+      valLower: val.toLowerCase()
+    };
   }
 
   for (const item of texts) {
@@ -919,15 +928,31 @@ CRITICAL: All JSON output values ('suggestion') MUST be written in the Czech lan
 
       // Show a subset of the dictionary to the LLM to avoid overwhelming context
       // Filter dictionary entries that might be related to the text to keep it small
+      // ⚡ Bolt: Optimize O(N*M) dictionary iteration for LLM context filtering
       const keywords = pageText.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      const keywordsLen = keywords.length;
+
       const relevantDict = {};
-      dictEntries.forEach(([k, val]) => {
-        const valLower = val.toLowerCase();
-        const hasKeyword = keywords.some(word => valLower.includes(word) || k.toLowerCase().includes(word));
-        if (hasKeyword || Object.keys(relevantDict).length < 20) {
-          relevantDict[k] = val;
+      let currentDictSize = 0;
+
+      for (let i = 0; i < dictSize; i++) {
+        const entry = processedDict[i];
+        let hasKeyword = false;
+        for (let j = 0; j < keywordsLen; j++) {
+          const word = keywords[j];
+          if (entry.valLower.includes(word) || entry.kLower.includes(word)) {
+            hasKeyword = true;
+            break;
+          }
         }
-      });
+
+        if (hasKeyword || currentDictSize < 20) {
+          if (relevantDict[entry.k] === undefined) {
+             relevantDict[entry.k] = entry.val;
+             currentDictSize++;
+          }
+        }
+      }
 
       const prompt = `Page Text: "${pageText}"
 HTML Tag: <${item.tagName}>
