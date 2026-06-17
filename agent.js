@@ -594,16 +594,17 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     while (currentStep <= maxSteps && !isFinished) {
       // 1. Gather current state
       const currentUrl = page.url();
-      const title = await page.title();
-      const interactiveElements = await extractInteractiveElements(page);
-
       const screenshotFileName = `${sessionId}_step_${currentStep}.png`;
       const screenshotPath = path.join(process.cwd(), 'screenshots', screenshotFileName);
-      try {
-        await page.screenshot({ path: screenshotPath });
-      } catch (err) {
-        console.warn('Nepodařilo se uložit screenshot na disk:', err.message);
-      }
+
+      // ⚡ Bolt: Paralelizace CDP Playwright příkazů pro rychlé získání title, stavu a screenshotu
+      const [title, interactiveElements] = await Promise.all([
+        page.title(),
+        extractInteractiveElements(page),
+        page.screenshot({ path: screenshotPath }).catch(err => {
+           console.warn('Nepodařilo se uložit screenshot na disk:', err.message);
+        })
+      ]);
 
       // Clean up log snippet to avoid hitting token limits
       // 2. Decide Next Action
@@ -867,8 +868,15 @@ export async function auditTranslations(url, dictionary, llmConfig) {
     const page = await context.newPage();
 
     await page.goto(url, { waitUntil: 'networkidle', timeout: 25000 });
-    screenshot = `data:image/png;base64,${await page.screenshot({ type: 'png', encoding: 'base64' })}`;
-    texts = await extractPageTexts(page);
+
+    // ⚡ Bolt: Paralelizace extrakce textu a tvorby screenshotu
+    const [screenshotBuffer, extractedTexts] = await Promise.all([
+      page.screenshot({ type: 'png', encoding: 'base64' }),
+      extractPageTexts(page)
+    ]);
+
+    screenshot = `data:image/png;base64,${screenshotBuffer}`;
+    texts = extractedTexts;
   } catch (e) {
     if (browser) await browser.close();
     return { success: false, error: `Nepodařilo se otevřít URL: ${e.message}` };
