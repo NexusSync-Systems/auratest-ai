@@ -9,6 +9,15 @@ import { fetchTranslations, TranslationConfig } from './db-connector.js';
 import { spawn } from 'child_process';
 import { chromium } from 'playwright';
 
+// Global error handlers to prevent unhandled rejections from crashing the process
+process.on('uncaughtException', (err) => {
+  console.error('Kritická chyba: Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Kritická chyba: Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
@@ -745,20 +754,24 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 });
 
 server.on('upgrade', (request, socket, head) => {
-  const { pathname, searchParams } = new URL(request.url || '', `http://${request.headers.host}`);
-  
-  if (pathname === '/ws') {
-    const sessionId = searchParams.get('sessionId');
-    if (!sessionId) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
+  try {
+    const { pathname, searchParams } = new URL(request.url || '', `http://${request.headers.host}`);
+    
+    if (pathname === '/ws') {
+      const sessionId = searchParams.get('sessionId');
+      if (!sessionId) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
 
-    wss.handleUpgrade(request, socket, head, (ws: any) => {
-      wss.emit('connection', ws, request, sessionId);
-    });
-  } else {
+      wss.handleUpgrade(request, socket, head, (ws: any) => {
+        wss.emit('connection', ws, request, sessionId);
+      });
+    } else {
+      socket.destroy();
+    }
+  } catch (err) {
     socket.destroy();
   }
 });

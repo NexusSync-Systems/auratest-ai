@@ -226,56 +226,74 @@ async function queryLLM(prompt: string, systemPrompt: string, provider = 'ollama
 }
 
 export async function extractInteractiveElements(page: Page): Promise<InteractiveElement[]> {
-  return await page.evaluate(() => {
-    const interactiveTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL'];
-    const elements = Array.from(document.querySelectorAll('*')) as HTMLElement[];
-    const interactiveList: any[] = [];
-    let qaIdCounter = 1;
+  try {
+    return await page.evaluate(() => {
+      const interactiveTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL'];
+      const elements = Array.from(document.querySelectorAll('*')) as HTMLElement[];
+      const interactiveList: any[] = [];
+      let qaIdCounter = 1;
 
-    elements.forEach((el) => {
-      const style = window.getComputedStyle(el);
-      const isVisible = el.offsetWidth > 0 && 
-                        el.offsetHeight > 0 && 
-                        style.display !== 'none' && 
-                        style.visibility !== 'hidden' && 
-                        style.opacity !== '0';
-      
-      if (!isVisible) return;
+      const nonVisualTags = new Set(['SCRIPT', 'STYLE', 'META', 'HEAD', 'LINK', 'NOSCRIPT', 'TITLE', 'BASE']);
 
-      const tagName = el.tagName;
-      const isInteractiveTag = interactiveTags.includes(tagName);
-      const hasClickAttribute = el.hasAttribute('onclick') || el.getAttribute('role') === 'button';
-      const hasPointerCursor = style.cursor === 'pointer';
+      elements.forEach((el) => {
+        const tagName = el.tagName;
+        if (nonVisualTags.has(tagName)) return;
 
-      if (isInteractiveTag || hasClickAttribute || hasPointerCursor) {
-        el.setAttribute('data-qa-id', String(qaIdCounter));
+        // ⚡ Bolt: Fast visibility check using layout properties BEFORE slow getComputedStyle
+        if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+
+        const isInteractiveTag = interactiveTags.includes(tagName);
+        const hasClickAttribute = el.hasAttribute('onclick') || el.getAttribute('role') === 'button';
+
+        let style = null;
+
+        if (!isInteractiveTag && !hasClickAttribute) {
+          style = window.getComputedStyle(el);
+          if (style.cursor !== 'pointer') return;
+        }
+
+        // Basic visibility check for display and opacity using computed style
+        if (!style) style = window.getComputedStyle(el);
+        const isVisible = style.display !== 'none' &&
+                          style.visibility !== 'hidden' && 
+                          style.opacity !== '0';
         
-        let text = (el.innerText || (el as HTMLInputElement).value || '').trim().replace(/\s+/g, ' ');
-        if (text.length > 100) text = text.substring(0, 100) + '...';
+        if (!isVisible) return;
 
-        const rect = el.getBoundingClientRect();
-        interactiveList.push({
-          id: qaIdCounter,
-          tagName,
-          text,
-          type: el.getAttribute('type') || '',
-          placeholder: el.getAttribute('placeholder') || '',
-          name: el.getAttribute('name') || '',
-          role: el.getAttribute('role') || '',
-          href: el.getAttribute('href') || '',
-          rect: {
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height)
-          }
-        });
-        qaIdCounter++;
-      }
+        if (isInteractiveTag || hasClickAttribute || style.cursor === 'pointer') {
+          // Tag interactive elements with data-qa-id
+          el.setAttribute('data-qa-id', String(qaIdCounter));
+          
+          let text = (el.innerText || (el as HTMLInputElement).value || '').trim().replace(/\s+/g, ' ');
+          if (text.length > 100) text = text.substring(0, 100) + '...';
+
+          const rect = el.getBoundingClientRect();
+          interactiveList.push({
+            id: qaIdCounter,
+            tagName,
+            text,
+            type: el.getAttribute('type') || '',
+            placeholder: el.getAttribute('placeholder') || '',
+            name: el.getAttribute('name') || '',
+            role: el.getAttribute('role') || '',
+            href: el.getAttribute('href') || '',
+            rect: {
+              x: Math.round(rect.x),
+              y: Math.round(rect.y),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height)
+            }
+          });
+          qaIdCounter++;
+        }
+      });
+
+      return interactiveList;
     });
-
-    return interactiveList;
-  });
+  } catch (error) {
+    console.error('Failed to extract interactive elements:', error);
+    return [];
+  }
 }
 
 async function extractPageTexts(page: Page) {
@@ -326,7 +344,7 @@ async function extractPageTexts(page: Page) {
   });
 }
 
-function generatePlaywrightScript(steps: StepResult[], startUrl: string): string {
+export function generatePlaywrightScript(steps: any[], startUrl: string): string {
   let script = `import { test, expect } from '@playwright/test';\n\n`;
   script += `test('Autonomously generated AI test', async ({ page }) => {\n`;
   script += `  await page.goto('${startUrl}');\n\n`;
@@ -1032,102 +1050,107 @@ export async function comparePages(url1: string, url2: string, steps?: any[], ba
       });
     });
 
-    
     let buf1: Buffer | null = null;
-    const page1 = await context.newPage();
-    try {
-      await page1.goto(url1, { waitUntil: 'networkidle', timeout: calculatedTimeout });
-      
-      if (steps && steps.length > 0) {
-        for (const step of steps) {
-          if (step.action === 'click' && step.selector) {
-            await page1.click(step.selector);
-          } else if (step.action === 'type' && step.selector) {
-            await page1.fill(step.selector, step.value || '');
-          }
-          await page1.waitForTimeout(500);
-        }
-      }
-
-      errors1 = await page1.evaluate(() => {
-        const selectors = [
-          '[role="alert"]',
-          '.error',
-          '.warning',
-          '.invalid-feedback',
-          '.validation-error',
-          '[class*="error"]',
-          '[class*="warning"]',
-          '[id*="error"]',
-          '[id*="warning"]'
-        ];
-        const found: string[] = [];
-        selectors.forEach(sel => {
-          document.querySelectorAll(sel).forEach(el => {
-            const text = (el as HTMLElement).innerText || '';
-            const isVisible = el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
-            if (text.trim() && isVisible && !found.includes(text.trim())) {
-              found.push(text.trim());
-            }
-          });
-        });
-        return found;
-      });
-
-      buf1 = await page1.screenshot({ type: 'png' });
-      screenshot1 = `data:image/png;base64,${buf1.toString('base64')}`;
-      texts1 = await extractPageTexts(page1);
-    } catch (e: any) {
-      error1 = e.message;
-    }
-
     let buf2: Buffer | null = null;
+    const page1 = await context.newPage();
     const page2 = await context.newPage();
-    try {
-      await page2.goto(url2, { waitUntil: 'networkidle', timeout: calculatedTimeout });
-      
-      if (steps && steps.length > 0) {
-        for (const step of steps) {
-          if (step.action === 'click' && step.selector) {
-            await page2.click(step.selector);
-          } else if (step.action === 'type' && step.selector) {
-            await page2.fill(step.selector, step.value || '');
-          }
-          await page2.waitForTimeout(500);
-        }
-      }
 
-      errors2 = await page2.evaluate(() => {
-        const selectors = [
-          '[role="alert"]',
-          '.error',
-          '.warning',
-          '.invalid-feedback',
-          '.validation-error',
-          '[class*="error"]',
-          '[class*="warning"]',
-          '[id*="error"]',
-          '[id*="warning"]'
-        ];
-        const found: string[] = [];
-        selectors.forEach(sel => {
-          document.querySelectorAll(sel).forEach(el => {
-            const text = (el as HTMLElement).innerText || '';
-            const isVisible = el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
-            if (text.trim() && isVisible && !found.includes(text.trim())) {
-              found.push(text.trim());
+    await Promise.all([
+      (async () => {
+        try {
+          await page1.goto(url1, { waitUntil: 'networkidle', timeout: calculatedTimeout });
+          
+          if (steps && steps.length > 0) {
+            for (const step of steps) {
+              if (step.action === 'click' && step.selector) {
+                await page1.click(step.selector);
+              } else if (step.action === 'type' && step.selector) {
+                await page1.fill(step.selector, step.value || '');
+              }
+              await page1.waitForTimeout(500);
             }
-          });
-        });
-        return found;
-      });
+          }
 
-      buf2 = await page2.screenshot({ type: 'png' });
-      screenshot2 = `data:image/png;base64,${buf2.toString('base64')}`;
-      texts2 = await extractPageTexts(page2);
-    } catch (e: any) {
-      error2 = e.message;
-    }
+          errors1 = await page1.evaluate(() => {
+            const selectors = [
+              '[role="alert"]',
+              '.error',
+              '.warning',
+              '.invalid-feedback',
+              '.validation-error',
+              '[class*="error"]',
+              '[class*="warning"]',
+              '[id*="error"]',
+              '[id*="warning"]'
+            ];
+            const found: string[] = [];
+            selectors.forEach(sel => {
+              document.querySelectorAll(sel).forEach(el => {
+                const text = (el as HTMLElement).innerText || '';
+                const isVisible = el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+                if (text.trim() && isVisible && !found.includes(text.trim())) {
+                  found.push(text.trim());
+                }
+              });
+            });
+            return found;
+          });
+
+          buf1 = await page1.screenshot({ type: 'png' });
+          screenshot1 = `data:image/png;base64,${buf1.toString('base64')}`;
+          texts1 = await extractPageTexts(page1);
+        } catch (e: any) {
+          error1 = e.message;
+        }
+      })(),
+      (async () => {
+        try {
+          await page2.goto(url2, { waitUntil: 'networkidle', timeout: calculatedTimeout });
+          
+          if (steps && steps.length > 0) {
+            for (const step of steps) {
+              if (step.action === 'click' && step.selector) {
+                await page2.click(step.selector);
+              } else if (step.action === 'type' && step.selector) {
+                await page2.fill(step.selector, step.value || '');
+              }
+              await page2.waitForTimeout(500);
+            }
+          }
+
+          errors2 = await page2.evaluate(() => {
+            const selectors = [
+              '[role="alert"]',
+              '.error',
+              '.warning',
+              '.invalid-feedback',
+              '.validation-error',
+              '[class*="error"]',
+              '[class*="warning"]',
+              '[id*="error"]',
+              '[id*="warning"]'
+            ];
+            const found: string[] = [];
+            selectors.forEach(sel => {
+              document.querySelectorAll(sel).forEach(el => {
+                const text = (el as HTMLElement).innerText || '';
+                const isVisible = el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+                if (text.trim() && isVisible && !found.includes(text.trim())) {
+                  found.push(text.trim());
+                }
+              });
+            });
+            return found;
+          });
+
+          buf2 = await page2.screenshot({ type: 'png' });
+          screenshot2 = `data:image/png;base64,${buf2.toString('base64')}`;
+          texts2 = await extractPageTexts(page2);
+        } catch (e: any) {
+          error2 = e.message;
+        }
+      })()
+    ]);
 
     if (buf1 && buf2 && !error1 && !error2) {
       try {
@@ -1206,48 +1229,72 @@ export async function comparePages(url1: string, url2: string, steps?: any[], ba
 }
 
 export async function auditTranslations(url: string, dictionary: Record<string, string>, llmConfig: LLMConfig): Promise<any> {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-  const page = await context.newPage();
-
+  let browser;
   let texts: any[] = [];
   let screenshot = '';
 
   try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const page = await context.newPage();
+
     await page.goto(url, { waitUntil: 'networkidle', timeout: 25000 });
-    const screenshotBuf = await page.screenshot({ type: 'png' });
+
+    // ⚡ Bolt: Parallelize text extraction and screenshot capturing
+    const [screenshotBuf, extractedTexts] = await Promise.all([
+      page.screenshot({ type: 'png' }),
+      extractPageTexts(page)
+    ]);
+
     screenshot = `data:image/png;base64,${screenshotBuf.toString('base64')}`;
-    texts = await extractPageTexts(page);
+    texts = extractedTexts;
   } catch (e: any) {
-    await browser.close();
+    if (browser) await browser.close();
     return { success: false, error: `Nepodařilo se otevřít URL: ${e.message}` };
-  } finally {
-    await browser.close();
   }
 
-  const auditResults: any[] = [];
-  const dictValues = Object.values(dictionary);
-  const dictEntries = Object.entries(dictionary);
+  try {
+    const auditResults: any[] = [];
+    const dictEntries = Object.entries(dictionary);
+    const dictSize = dictEntries.length;
 
-  for (const item of texts) {
-    const pageText = item.text.trim();
-    if (!pageText || pageText.length < 2) continue;
+    // ⚡ Bolt: Optimize translation lookup (O(N*M) -> O(N))
+    // Pre-calculate lowercased values to a Map for O(1) lookups instead of repeated array iterations
+    const valueToKeyMap = new Map<string, string>();
+    const processedDict = new Array(dictSize);
+    for (let i = 0; i < dictSize; i++) {
+      const [k, val] = dictEntries[i];
+      const normalizedVal = val.trim().toLowerCase();
+      if (normalizedVal && !valueToKeyMap.has(normalizedVal)) {
+        valueToKeyMap.set(normalizedVal, k);
+      }
+      processedDict[i] = {
+        k,
+        val,
+        kLower: k.toLowerCase(),
+        valLower: val.toLowerCase()
+      };
+    }
 
-    const isMatched = dictValues.some(val => val.trim().toLowerCase() === pageText.toLowerCase());
+    for (const item of texts) {
+      const pageText = item.text.trim();
+      if (!pageText || pageText.length < 2) continue;
 
-    if (isMatched) {
-      const keyEntry = dictEntries.find(([k, val]) => val.trim().toLowerCase() === pageText.toLowerCase());
-      auditResults.push({
-        text: pageText,
-        selector: item.selector,
-        tagName: item.tagName,
-        status: 'matched',
-        key: keyEntry ? keyEntry[0] : 'Neznámý'
-      });
-    } else {
-      let aiDecision = { status: 'untranslated', suggestion: '', key: '' };
-      
-      const systemPrompt = `You are AuraTest AI, a software localization specialist.
+      const normalizedPageText = pageText.toLowerCase();
+      const matchedKey = valueToKeyMap.get(normalizedPageText);
+
+      if (matchedKey !== undefined) {
+        auditResults.push({
+          text: pageText,
+          selector: item.selector,
+          tagName: item.tagName,
+          status: 'matched',
+          key: matchedKey
+        });
+      } else {
+        let aiDecision = { status: 'untranslated', suggestion: '', key: '' };
+        
+        const systemPrompt = `You are AuraTest AI, a software localization specialist.
 You will be given text found on a web page and a reference translation dictionary in JSON format.
 You must evaluate whether the page text is a correct translation from the dictionary (which may be formatted differently), or if it's hardcoded text, or if a translation is missing.
 Reply ONLY with a JSON object:
@@ -1259,17 +1306,31 @@ Reply ONLY with a JSON object:
 
 CRITICAL: All JSON output values ('suggestion') MUST be written in the Czech language (Čeština).`;
 
-      const keywords = pageText.toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
-      const relevantDict: Record<string, string> = {};
-      dictEntries.forEach(([k, val]) => {
-        const valLower = val.toLowerCase();
-        const hasKeyword = keywords.some((word: string) => valLower.includes(word) || k.toLowerCase().includes(word));
-        if (hasKeyword || Object.keys(relevantDict).length < 20) {
-          relevantDict[k] = val;
-        }
-      });
+        const keywords = pageText.toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
+        const keywordsLen = keywords.length;
+        const relevantDict: Record<string, string> = {};
+        let currentDictSize = 0;
 
-      const prompt = `Page Text: "${pageText}"
+        for (let i = 0; i < dictSize; i++) {
+          const entry = processedDict[i];
+          let hasKeyword = false;
+          for (let j = 0; j < keywordsLen; j++) {
+            const word = keywords[j];
+            if (entry.valLower.includes(word) || entry.kLower.includes(word)) {
+              hasKeyword = true;
+              break;
+            }
+          }
+
+          if (hasKeyword || currentDictSize < 20) {
+            if (relevantDict[entry.k] === undefined) {
+              relevantDict[entry.k] = entry.val;
+              currentDictSize++;
+            }
+          }
+        }
+
+        const prompt = `Page Text: "${pageText}"
 HTML Tag: <${item.tagName}>
 Element Selector: ${item.selector}
 
@@ -1278,37 +1339,42 @@ ${JSON.stringify(relevantDict, null, 2)}
 
 Determine the status of this text. Reply ONLY with JSON.`;
 
-      try {
-        const responseText = await queryLLM(prompt, systemPrompt, llmConfig.provider, llmConfig.model, llmConfig.host);
-        const cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(cleaned);
-        aiDecision = {
-          status: parsed.status || 'untranslated',
-          key: parsed.key || '',
-          suggestion: parsed.suggestion || ''
-        };
-      } catch (err: any) {
-        console.warn('AI evaluation failed for text:', pageText, err.message);
-      }
+        try {
+          const responseText = await queryLLM(prompt, systemPrompt, llmConfig.provider, llmConfig.model, llmConfig.host);
+          const cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+          const parsed = JSON.parse(cleaned);
+          aiDecision = {
+            status: parsed.status || 'untranslated',
+            key: parsed.key || '',
+            suggestion: parsed.suggestion || ''
+          };
+        } catch (err: any) {
+          console.warn('AI evaluation failed for text:', pageText, err.message);
+        }
 
-      auditResults.push({
-        text: pageText,
-        selector: item.selector,
-        tagName: item.tagName,
-        status: aiDecision.status,
-        key: aiDecision.key || 'Nenalezen',
-        suggestion: aiDecision.suggestion
-      });
+        auditResults.push({
+          text: pageText,
+          selector: item.selector,
+          tagName: item.tagName,
+          status: aiDecision.status,
+          key: aiDecision.key || 'Nenalezen',
+          suggestion: aiDecision.suggestion
+        });
+      }
+    }
+
+    const issues = auditResults.filter(r => r.status !== 'matched' && r.status !== 'ignored');
+
+    return {
+      success: true,
+      screenshot,
+      results: auditResults,
+      issuesCount: issues.length,
+      issues
+    };
+  } finally {
+    if (browser) {
+      await browser.close();
     }
   }
-
-  const issues = auditResults.filter(r => r.status !== 'matched' && r.status !== 'ignored');
-
-  return {
-    success: true,
-    screenshot,
-    results: auditResults,
-    issuesCount: issues.length,
-    issues
-  };
 }

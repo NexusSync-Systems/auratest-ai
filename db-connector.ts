@@ -16,6 +16,7 @@ export interface TranslationConfig {
   dbQuery?: string;
   sqlitePath?: string;
   scriptCommand?: string;
+  scriptName?: string;
   cwd?: string;
 }
 
@@ -71,9 +72,21 @@ async function fetchFromApi(config: TranslationConfig): Promise<Record<string, s
   return flattenObject(data);
 }
 
+export function validateReadOnlyQuery(dbQuery: string | undefined): string {
+  if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
+  // Očištění o komentáře a ověření
+  const cleanQuery = dbQuery.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, '').trim();
+  if (!/^(SELECT|WITH)\b/i.test(cleanQuery)) throw new Error('Dovoleno je pouze čtení přes SELECT nebo WITH dotazy.');
+  if (/;/.test(cleanQuery)) throw new Error('Vícečetné (stacked) dotazy nejsou povoleny.');
+  if (/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i.test(cleanQuery)) {
+    throw new Error('Dotaz obsahuje nepovolená klíčová slova měnící stav databáze.');
+  }
+  return cleanQuery;
+}
+
 async function fetchFromPostgres(config: TranslationConfig): Promise<Record<string, string>> {
   const { dbHost, dbPort, dbUser, dbPassword, dbName, dbQuery } = config;
-  if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
+  const cleanQuery = validateReadOnlyQuery(dbQuery);
 
   // Dynamický import pg balíčku
   const pg = await import('pg');
@@ -89,7 +102,7 @@ async function fetchFromPostgres(config: TranslationConfig): Promise<Record<stri
 
   await client.connect();
   try {
-    const res = await client.query(dbQuery);
+    const res = await client.query(cleanQuery);
     return mapDbRowsToDict(res.rows);
   } finally {
     await client.end();
@@ -98,7 +111,7 @@ async function fetchFromPostgres(config: TranslationConfig): Promise<Record<stri
 
 async function fetchFromMysql(config: TranslationConfig): Promise<Record<string, string>> {
   const { dbHost, dbPort, dbUser, dbPassword, dbName, dbQuery } = config;
-  if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
+  const cleanQuery = validateReadOnlyQuery(dbQuery);
 
   const mysql = await import('mysql2/promise');
   const connection = await mysql.createConnection({
@@ -110,7 +123,7 @@ async function fetchFromMysql(config: TranslationConfig): Promise<Record<string,
   });
 
   try {
-    const [rows] = await connection.execute(dbQuery);
+    const [rows] = await connection.execute(cleanQuery);
     return mapDbRowsToDict(rows as Array<Record<string, any>>);
   } finally {
     await connection.end();
@@ -120,7 +133,7 @@ async function fetchFromMysql(config: TranslationConfig): Promise<Record<string,
 async function fetchFromSqlite(config: TranslationConfig): Promise<Record<string, string>> {
   const { sqlitePath, dbQuery } = config;
   if (!sqlitePath) throw new Error('Chybí cesta k SQLite databázi (sqlitePath).');
-  if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
+  const cleanQuery = validateReadOnlyQuery(dbQuery);
 
   if (!fs.existsSync(sqlitePath)) {
     throw new Error(`Soubor databáze neexistuje na cestě: ${sqlitePath}`);
@@ -134,7 +147,7 @@ async function fetchFromSqlite(config: TranslationConfig): Promise<Record<string
       if (err) return reject(new Error(`Nepodařilo se otevřít SQLite: ${err.message}`));
     });
 
-    db.all(dbQuery, [], (err: Error | null, rows: any[]) => {
+    db.all(cleanQuery, [], (err: Error | null, rows: any[]) => {
       db.close();
       if (err) return reject(new Error(`Chyba SQL dotazu: ${err.message}`));
       try {
@@ -147,12 +160,22 @@ async function fetchFromSqlite(config: TranslationConfig): Promise<Record<string
   });
 }
 
+// Whitelist povolených lokálních skriptů
+const ALLOWED_SCRIPTS: Record<string, string> = {
+  'get-translations': 'node get-translations.js'
+};
+
 async function fetchFromScript(config: TranslationConfig): Promise<Record<string, string>> {
-  const { scriptCommand, cwd } = config;
-  if (!scriptCommand) throw new Error('Chybí příkaz pro spuštění skriptu (scriptCommand).');
+  const { scriptName, cwd } = config;
+  if (!scriptName) throw new Error('Chybí název povoleného skriptu (scriptName).');
+
+  const allowedCommand = ALLOWED_SCRIPTS[scriptName];
+  if (!allowedCommand) {
+    throw new Error(`Skript "${scriptName}" není na whitelistu povolených příkazů.`);
+  }
 
   try {
-    const { stdout, stderr } = await execAsync(scriptCommand, { cwd: cwd || process.cwd() });
+    const { stdout, stderr } = await execAsync(allowedCommand, { cwd: cwd || process.cwd() });
     if (stderr && stderr.trim().length > 0) {
       console.warn('Varování skriptu (stderr):', stderr);
     }
@@ -168,7 +191,7 @@ async function fetchFromScript(config: TranslationConfig): Promise<Record<string
  * Expects rows to contain columns like (key, value) or (translation_key, translation_value).
  * If there are only 2 columns, it uses the first as key and the second as value.
  */
-function mapDbRowsToDict(rows: Array<Record<string, any>>): Record<string, string> {
+export function mapDbRowsToDict(rows: Array<Record<string, any>>): Record<string, string> {
   if (!Array.isArray(rows) || rows.length === 0) {
     return {};
   }
