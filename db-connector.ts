@@ -4,11 +4,26 @@ import fs from 'fs';
 
 const execAsync = promisify(exec);
 
+export interface TranslationConfig {
+  type: 'api' | 'postgres' | 'mysql' | 'sqlite' | 'script';
+  apiUrl?: string;
+  apiHeaders?: string | Record<string, string>;
+  dbHost?: string;
+  dbPort?: number | string;
+  dbUser?: string;
+  dbPassword?: string;
+  dbName?: string;
+  dbQuery?: string;
+  sqlitePath?: string;
+  scriptCommand?: string;
+  cwd?: string;
+}
+
 /**
  * Fetches translations from various sources (API, Postgres, MySQL, SQLite, or Custom Script)
  * Returns a key-value flat object: { "key1": "value1", "key2": "value2" }
  */
-export async function fetchTranslations(config) {
+export async function fetchTranslations(config: TranslationConfig): Promise<Record<string, string>> {
   const { type } = config;
 
   if (!type) {
@@ -31,13 +46,13 @@ export async function fetchTranslations(config) {
   }
 }
 
-async function fetchFromApi(config) {
+async function fetchFromApi(config: TranslationConfig): Promise<Record<string, string>> {
   const { apiUrl, apiHeaders } = config;
   if (!apiUrl) {
     throw new Error('Chybí URL adresa API (apiUrl).');
   }
 
-  const headers = {};
+  const headers: Record<string, string> = {};
   if (apiHeaders) {
     try {
       const parsedHeaders = typeof apiHeaders === 'string' ? JSON.parse(apiHeaders) : apiHeaders;
@@ -56,7 +71,7 @@ async function fetchFromApi(config) {
   return flattenObject(data);
 }
 
-async function fetchFromPostgres(config) {
+async function fetchFromPostgres(config: TranslationConfig): Promise<Record<string, string>> {
   const { dbHost, dbPort, dbUser, dbPassword, dbName, dbQuery } = config;
   if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
 
@@ -66,7 +81,7 @@ async function fetchFromPostgres(config) {
 
   const client = new Client({
     host: dbHost || 'localhost',
-    port: parseInt(dbPort) || 5432,
+    port: typeof dbPort === 'string' ? parseInt(dbPort, 10) : (dbPort || 5432),
     user: dbUser,
     password: dbPassword,
     database: dbName,
@@ -81,14 +96,14 @@ async function fetchFromPostgres(config) {
   }
 }
 
-async function fetchFromMysql(config) {
+async function fetchFromMysql(config: TranslationConfig): Promise<Record<string, string>> {
   const { dbHost, dbPort, dbUser, dbPassword, dbName, dbQuery } = config;
   if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
 
   const mysql = await import('mysql2/promise');
   const connection = await mysql.createConnection({
     host: dbHost || 'localhost',
-    port: parseInt(dbPort) || 3306,
+    port: typeof dbPort === 'string' ? parseInt(dbPort, 10) : (dbPort || 3306),
     user: dbUser,
     password: dbPassword,
     database: dbName,
@@ -96,13 +111,13 @@ async function fetchFromMysql(config) {
 
   try {
     const [rows] = await connection.execute(dbQuery);
-    return mapDbRowsToDict(rows);
+    return mapDbRowsToDict(rows as Array<Record<string, any>>);
   } finally {
     await connection.end();
   }
 }
 
-async function fetchFromSqlite(config) {
+async function fetchFromSqlite(config: TranslationConfig): Promise<Record<string, string>> {
   const { sqlitePath, dbQuery } = config;
   if (!sqlitePath) throw new Error('Chybí cesta k SQLite databázi (sqlitePath).');
   if (!dbQuery) throw new Error('Chybí SQL dotaz (dbQuery).');
@@ -115,11 +130,11 @@ async function fetchFromSqlite(config) {
   const { Database } = sqlite3.default || sqlite3;
 
   return new Promise((resolve, reject) => {
-    const db = new Database(sqlitePath, sqlite3.OPEN_READONLY, (err) => {
+    const db = new Database(sqlitePath, sqlite3.OPEN_READONLY, (err: Error | null) => {
       if (err) return reject(new Error(`Nepodařilo se otevřít SQLite: ${err.message}`));
     });
 
-    db.all(dbQuery, [], (err, rows) => {
+    db.all(dbQuery, [], (err: Error | null, rows: any[]) => {
       db.close();
       if (err) return reject(new Error(`Chyba SQL dotazu: ${err.message}`));
       try {
@@ -132,7 +147,7 @@ async function fetchFromSqlite(config) {
   });
 }
 
-async function fetchFromScript(config) {
+async function fetchFromScript(config: TranslationConfig): Promise<Record<string, string>> {
   const { scriptCommand, cwd } = config;
   if (!scriptCommand) throw new Error('Chybí příkaz pro spuštění skriptu (scriptCommand).');
 
@@ -143,7 +158,7 @@ async function fetchFromScript(config) {
     }
     const data = JSON.parse(stdout);
     return flattenObject(data);
-  } catch (e) {
+  } catch (e: any) {
     throw new Error(`Skript selhal nebo vrátil neplatný JSON: ${e.message}`);
   }
 }
@@ -153,12 +168,12 @@ async function fetchFromScript(config) {
  * Expects rows to contain columns like (key, value) or (translation_key, translation_value).
  * If there are only 2 columns, it uses the first as key and the second as value.
  */
-function mapDbRowsToDict(rows) {
+function mapDbRowsToDict(rows: Array<Record<string, any>>): Record<string, string> {
   if (!Array.isArray(rows) || rows.length === 0) {
     return {};
   }
 
-  const dict = {};
+  const dict: Record<string, string> = {};
   const sample = rows[0];
   const keys = Object.keys(sample);
 
@@ -166,7 +181,6 @@ function mapDbRowsToDict(rows) {
     throw new Error('SQL dotaz musí vracet alespoň dva sloupce (klíč a hodnotu překladu).');
   }
 
-  // Find standard column names, or default to first and second columns
   let keyCol = keys[0];
   let valCol = keys[1];
 
@@ -188,12 +202,12 @@ function mapDbRowsToDict(rows) {
  * Flattens a nested JSON object into dot-notation keys.
  * Example: { "home": { "title": "Ahoj" } } -> { "home.title": "Ahoj" }
  */
-export function flattenObject(obj, prefix = '') {
+export function flattenObject(obj: any, prefix = ''): Record<string, string> {
   if (obj === null || typeof obj !== 'object') {
     return {};
   }
 
-  const result = {};
+  const result: Record<string, string> = {};
   for (const key of Object.keys(obj)) {
     const val = obj[key];
     const newKey = prefix ? `${prefix}.${key}` : key;

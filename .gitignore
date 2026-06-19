@@ -6,3 +6,8 @@ screenshots/
 test-results.json
 playwright-report/
 test-results/
+generated-scripts/
+sessions/
+videos/
+screenshot.mjs
+auratest-gemma2.Modelfile
