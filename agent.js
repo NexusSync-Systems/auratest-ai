@@ -162,23 +162,34 @@ async function extractInteractiveElements(page) {
       const interactiveList = [];
       let qaIdCounter = 1;
 
+    const nonVisualTags = new Set(['SCRIPT', 'STYLE', 'META', 'HEAD', 'LINK', 'NOSCRIPT', 'TITLE', 'BASE']);
+
     elements.forEach((el) => {
-      // Basic visibility check
-      const style = window.getComputedStyle(el);
-      const isVisible = el.offsetWidth > 0 && 
-                        el.offsetHeight > 0 && 
-                        style.display !== 'none' && 
+      const tagName = el.tagName;
+      if (nonVisualTags.has(tagName)) return;
+
+      // ⚡ Bolt: Fast visibility check using layout properties BEFORE slow getComputedStyle
+      if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+
+      const isInteractiveTag = interactiveTags.includes(tagName);
+      const hasClickAttribute = el.hasAttribute('onclick') || el.getAttribute('role') === 'button';
+
+      let style = null;
+
+      if (!isInteractiveTag && !hasClickAttribute) {
+        style = window.getComputedStyle(el);
+        if (style.cursor !== 'pointer') return;
+      }
+
+      // Basic visibility check for display and opacity using computed style
+      if (!style) style = window.getComputedStyle(el);
+      const isVisible = style.display !== 'none' &&
                         style.visibility !== 'hidden' && 
                         style.opacity !== '0';
       
       if (!isVisible) return;
 
-      const tagName = el.tagName;
-      const isInteractiveTag = interactiveTags.includes(tagName);
-      const hasClickAttribute = el.hasAttribute('onclick') || el.getAttribute('role') === 'button';
-      const hasPointerCursor = style.cursor === 'pointer';
-
-      if (isInteractiveTag || hasClickAttribute || hasPointerCursor) {
+      if (isInteractiveTag || hasClickAttribute || style.cursor === 'pointer') {
         // Tag interactive elements with data-qa-id
         el.setAttribute('data-qa-id', String(qaIdCounter));
         
