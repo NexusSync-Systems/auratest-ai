@@ -230,34 +230,36 @@ async function extractPageTexts(page) {
         const text = node.nodeValue.trim();
         if (text && node.parentElement) {
           const parent = node.parentElement;
-          const style = window.getComputedStyle(parent);
-          const isVisible = parent.offsetWidth > 0 && 
-                            parent.offsetHeight > 0 && 
-                            style.display !== 'none' && 
-                            style.visibility !== 'hidden';
           
-          if (isVisible && !['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) {
-            // Generate a simple CSS selector path
-            let path = '';
-            let current = parent;
-            while (current && current.nodeType === Node.ELEMENT_NODE && current.tagName !== 'BODY') {
-              let part = current.tagName.toLowerCase();
-              if (current.id) {
-                part += `#${current.id}`;
-                path = part + (path ? ' > ' + path : '');
-                break; // Stop at ID for shorter selector
-              } else if (current.className) {
-                part += `.${Array.from(current.classList).join('.')}`;
-              }
-              path = part + (path ? ' > ' + path : '');
-              current = current.parentNode;
-            }
+          if (!['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) {
+            if (parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+              const style = window.getComputedStyle(parent);
+              const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
 
-            results.push({
-              text,
-              selector: path || 'body',
-              tagName: parent.tagName
-            });
+              if (isVisible) {
+                // Generate a simple CSS selector path
+                let path = '';
+                let current = parent;
+                while (current && current.nodeType === Node.ELEMENT_NODE && current.tagName !== 'BODY') {
+                  let part = current.tagName.toLowerCase();
+                  if (current.id) {
+                    part += `#${current.id}`;
+                    path = part + (path ? ' > ' + path : '');
+                    break; // Stop at ID for shorter selector
+                  } else if (current.className) {
+                    part += `.${Array.from(current.classList).join('.')}`;
+                  }
+                  path = part + (path ? ' > ' + path : '');
+                  current = current.parentNode;
+                }
+
+                results.push({
+                  text,
+                  selector: path || 'body',
+                  tagName: parent.tagName
+                });
+              }
+            }
           }
         }
       } else {
