@@ -17,3 +17,6 @@
 ## 2024-11-20 - Deferred getComputedStyle optimization
 **Learning:** Odložením volání funkce `window.getComputedStyle(el)` a jejím vynecháním pro prvky, které nejsou interaktivní (na základě předchozí kontroly tagů a atributů), se může procházení rozsáhlého DOMu v Playwright výrazně urychlit. Funkce `getComputedStyle` je znatelně pomalá na velkém počtu prvků a měla by být volána co nejpozději a co nejméně.
 **Action:** Při zkoumání vlastností DOM elementů vždy nejdříve zkontrolujte levné atributy jako `tagName`, `getAttribute('role')` apod. a až jako poslední spoléhejte na `getComputedStyle`, pokud je to nezbytně nutné.
+## 2026-06-21 - Rychlá extrakce textů z DOM (TreeWalker & Deferred getComputedStyle)
+**Learning:** Procházení DOM pomocí rekurzivního volání s ohodnocováním `getComputedStyle` pro každý prvek na stránce je extrémně pomalé u složitých dokumentů, a způsobuje zbytečnou zátěž přes Playwright CDP.
+**Action:** Kdykoliv potřebujeme texty, využijeme vestavěné rychlé C++ iterování přes `document.createTreeWalker` a vždy nejdříve vylučujeme vizuálně skryté uzly pomocí fast-checků geometrie (`offsetWidth === 0 || offsetHeight === 0`), a teprve pro pre-kvalifikované uzly voláme pomalé `window.getComputedStyle`.

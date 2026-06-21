@@ -225,48 +225,53 @@ async function extractInteractiveElements(page) {
 async function extractPageTexts(page) {
   return await page.evaluate(() => {
     const results = [];
-    const walk = (node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const text = node.nodeValue.trim();
-        if (text && node.parentElement) {
-          const parent = node.parentElement;
-          const style = window.getComputedStyle(parent);
-          const isVisible = parent.offsetWidth > 0 && 
-                            parent.offsetHeight > 0 && 
-                            style.display !== 'none' && 
-                            style.visibility !== 'hidden';
-          
-          if (isVisible && !['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) {
-            // Generate a simple CSS selector path
-            let path = '';
-            let current = parent;
-            while (current && current.nodeType === Node.ELEMENT_NODE && current.tagName !== 'BODY') {
-              let part = current.tagName.toLowerCase();
-              if (current.id) {
-                part += `#${current.id}`;
-                path = part + (path ? ' > ' + path : '');
-                break; // Stop at ID for shorter selector
-              } else if (current.className) {
-                part += `.${Array.from(current.classList).join('.')}`;
-              }
-              path = part + (path ? ' > ' + path : '');
-              current = current.parentNode;
-            }
-
-            results.push({
-              text,
-              selector: path || 'body',
-              tagName: parent.tagName
-            });
-          }
-        }
-      } else {
-        for (let i = 0; i < node.childNodes.length; i++) {
-          walk(node.childNodes[i]);
+    const nonVisualTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT']);
+    const treeWalker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode: function(node) {
+          if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
         }
       }
-    };
-    walk(document.body);
+    );
+
+    let node;
+    while ((node = treeWalker.nextNode())) {
+      const text = node.nodeValue.trim();
+      const parent = node.parentElement;
+
+      if (!parent || nonVisualTags.has(parent.tagName)) continue;
+
+      // ⚡ Bolt: Fast geometry check before slow getComputedStyle
+      if (parent.offsetWidth === 0 || parent.offsetHeight === 0) continue;
+
+      const style = window.getComputedStyle(parent);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+
+      // Generate a simple CSS selector path
+      let path = '';
+      let current = parent;
+      while (current && current.nodeType === Node.ELEMENT_NODE && current.tagName !== 'BODY') {
+        let part = current.tagName.toLowerCase();
+        if (current.id) {
+          part += `#${current.id}`;
+          path = part + (path ? ' > ' + path : '');
+          break; // Stop at ID for shorter selector
+        } else if (current.className) {
+          part += `.${Array.from(current.classList).join('.')}`;
+        }
+        path = part + (path ? ' > ' + path : '');
+        current = current.parentNode;
+      }
+
+      results.push({
+        text,
+        selector: path || 'body',
+        tagName: parent.tagName
+      });
+    }
     return results;
   });
 }
