@@ -20,3 +20,6 @@
 ## 2026-06-21 - Rychlá extrakce textů z DOM (TreeWalker & Deferred getComputedStyle)
 **Learning:** Procházení DOM pomocí rekurzivního volání s ohodnocováním `getComputedStyle` pro každý prvek na stránce je extrémně pomalé u složitých dokumentů, a způsobuje zbytečnou zátěž přes Playwright CDP.
 **Action:** Kdykoliv potřebujeme texty, využijeme vestavěné rychlé C++ iterování přes `document.createTreeWalker` a vždy nejdříve vylučujeme vizuálně skryté uzly pomocí fast-checků geometrie (`offsetWidth === 0 || offsetHeight === 0`), a teprve pro pre-kvalifikované uzly voláme pomalé `window.getComputedStyle`.
+## 2024-11-20 - Rychlé zplošťování JSON struktury (flattenObject) bez Object.assign
+**Learning:** Při rekurzivním procházení složitých lokalizačních slovníků ve formátu JSON a transformaci klíčů do tečkové notace (`flattenObject`) vede původní použití `Object.assign()` k obrovské zátěži GC (Garbage Collectoru). Pokaždé, když se vytvoří nový prázdný objekt, spojí se do něj staré a nové klíče, což v případě např. 50 000 uzlů trvá o stovky milisekund déle než mutace jednoho globálního sdíleného objektu.
+**Action:** Pro iterování objektových struktur s velkou hloubkou a šířkou při tvorbě plochého "key/value" slovníku vždy preferovat předání jediného společného objektu `result = {}` jako volitelného parametru rekurzivního volání.
