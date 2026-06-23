@@ -17,3 +17,12 @@
 ## 2024-11-20 - Deferred getComputedStyle optimization
 **Learning:** Odložením volání funkce `window.getComputedStyle(el)` a jejím vynecháním pro prvky, které nejsou interaktivní (na základě předchozí kontroly tagů a atributů), se může procházení rozsáhlého DOMu v Playwright výrazně urychlit. Funkce `getComputedStyle` je znatelně pomalá na velkém počtu prvků a měla by být volána co nejpozději a co nejméně.
 **Action:** Při zkoumání vlastností DOM elementů vždy nejdříve zkontrolujte levné atributy jako `tagName`, `getAttribute('role')` apod. a až jako poslední spoléhejte na `getComputedStyle`, pokud je to nezbytně nutné.
+## 2026-06-21 - Rychlá extrakce textů z DOM (TreeWalker & Deferred getComputedStyle)
+**Learning:** Procházení DOM pomocí rekurzivního volání s ohodnocováním `getComputedStyle` pro každý prvek na stránce je extrémně pomalé u složitých dokumentů, a způsobuje zbytečnou zátěž přes Playwright CDP.
+**Action:** Kdykoliv potřebujeme texty, využijeme vestavěné rychlé C++ iterování přes `document.createTreeWalker` a vždy nejdříve vylučujeme vizuálně skryté uzly pomocí fast-checků geometrie (`offsetWidth === 0 || offsetHeight === 0`), a teprve pro pre-kvalifikované uzly voláme pomalé `window.getComputedStyle`.
+## 2026-06-23 - Zamezení Layout Thrashingu při extrakci elementů
+**Learning:** Pokud v Playwright (uvnitř `page.evaluate`) iterujeme přes mnoho DOM elementů a v rámci stejného cyklu střídáme čtení (např. `window.getComputedStyle`, `innerText`, nebo layout vlastnosti) se zápisem (např. `el.setAttribute`), způsobíme tzv. Layout Thrashing (Forced Synchronous Layout). Prohlížeč musí po každém zápisu znovu synchronně přepočítat celý layout strom před dalším čtením, což drasticky zpomaluje iteraci.
+**Action:** Rozdělit procesy nad velkým množstvím elementů do dvou fází: nejprve čisté čtení (sběr všech informací a uložení cílů do pole) a následně čistý zápis v odděleném cyklu.
+## 2026-06-25 - Objektová alokace při rekurzivním flattenování JSONu
+**Learning:** Při rekurzivním flattenování velkých JSON struktur dochází k alokaci mnoha malých dočasných objektů, které se spojují přes `Object.assign`. Tvorba velkého množství meziobjektů vytváří tlak na Garbage Collector a celkově operaci zpomaluje (O(N) vs kopírování keys klidně až O(N^2) při hlubokém zanoření).
+**Action:** Když tvoříme výstupní objekt, který postupně plníme z hlubokých struktur, předáváme do rekurze referenci na jeden finální objekt (`result = {}`), do kterého se přímo zapisuje. Vyhneme se tím jakémukoliv zbytečnému `Object.assign` i GC pressuru.
