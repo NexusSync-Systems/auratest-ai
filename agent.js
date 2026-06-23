@@ -163,7 +163,9 @@ async function extractInteractiveElements(page) {
       let qaIdCounter = 1;
 
     const nonVisualTags = new Set(['SCRIPT', 'STYLE', 'META', 'HEAD', 'LINK', 'NOSCRIPT', 'TITLE', 'BASE']);
+    const elementsToMutate = [];
 
+    // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
     elements.forEach((el) => {
       const tagName = el.tagName;
       if (nonVisualTags.has(tagName)) return;
@@ -190,9 +192,6 @@ async function extractInteractiveElements(page) {
       if (!isVisible) return;
 
       if (isInteractiveTag || hasClickAttribute || style.cursor === 'pointer') {
-        // Tag interactive elements with data-qa-id
-        el.setAttribute('data-qa-id', String(qaIdCounter));
-        
         let text = (el.innerText || el.value || '').trim().replace(/\s+/g, ' ');
         if (text.length > 100) text = text.substring(0, 100) + '...';
 
@@ -206,11 +205,18 @@ async function extractInteractiveElements(page) {
           role: el.getAttribute('role') || '',
           href: el.getAttribute('href') || ''
         });
+
+        elementsToMutate.push({ el, id: String(qaIdCounter) });
         qaIdCounter++;
       }
-      });
+    });
 
-      return interactiveList;
+    // ⚡ Bolt: Phase 2: Write-only (Batch DOM mutations to prevent Layout Thrashing)
+    elementsToMutate.forEach(({ el, id }) => {
+      el.setAttribute('data-qa-id', id);
+    });
+
+    return interactiveList;
     });
   } catch (error) {
     console.error('Failed to extract interactive elements:', error);
