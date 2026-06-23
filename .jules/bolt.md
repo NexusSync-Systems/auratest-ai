@@ -20,3 +20,6 @@
 ## 2026-06-21 - Rychlá extrakce textů z DOM (TreeWalker & Deferred getComputedStyle)
 **Learning:** Procházení DOM pomocí rekurzivního volání s ohodnocováním `getComputedStyle` pro každý prvek na stránce je extrémně pomalé u složitých dokumentů, a způsobuje zbytečnou zátěž přes Playwright CDP.
 **Action:** Kdykoliv potřebujeme texty, využijeme vestavěné rychlé C++ iterování přes `document.createTreeWalker` a vždy nejdříve vylučujeme vizuálně skryté uzly pomocí fast-checků geometrie (`offsetWidth === 0 || offsetHeight === 0`), a teprve pro pre-kvalifikované uzly voláme pomalé `window.getComputedStyle`.
+## 2026-06-23 - Zamezení Layout Thrashingu při extrakci elementů
+**Learning:** Pokud v Playwright (uvnitř `page.evaluate`) iterujeme přes mnoho DOM elementů a v rámci stejného cyklu střídáme čtení (např. `window.getComputedStyle`, `innerText`, nebo layout vlastnosti) se zápisem (např. `el.setAttribute`), způsobíme tzv. Layout Thrashing (Forced Synchronous Layout). Prohlížeč musí po každém zápisu znovu synchronně přepočítat celý layout strom před dalším čtením, což drasticky zpomaluje iteraci.
+**Action:** Rozdělit procesy nad velkým množstvím elementů do dvou fází: nejprve čisté čtení (sběr všech informací a uložení cílů do pole) a následně čistý zápis v odděleném cyklu.
