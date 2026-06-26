@@ -210,19 +210,23 @@ export function mapDbRowsToDict(rows) {
  * Flattens a nested JSON object into dot-notation keys.
  * Example: { "home": { "title": "Ahoj" } } -> { "home.title": "Ahoj" }
  */
-export function flattenObject(obj, prefix = '') {
+export function flattenObject(obj, prefix = '', result = {}) {
+  // ⚡ Bolt: Optimize flattening (O(N) object allocations -> O(1) mutations)
+  // Instead of creating new arrays with Object.keys() and shallow copying objects with Object.assign()
+  // at every level, we mutate a single shared `result` reference using a fast for...in loop.
   if (obj === null || typeof obj !== 'object') {
-    return {};
+    return result;
   }
 
-  const result = {};
-  for (const key of Object.keys(obj)) {
-    const val = obj[key];
-    const newKey = prefix ? `${prefix}.${key}` : key;
-    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
-      Object.assign(result, flattenObject(val, newKey));
-    } else {
-      result[newKey] = String(val);
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      const val = obj[key];
+      const newKey = prefix ? `${prefix}.${key}` : key;
+      if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+        flattenObject(val, newKey, result);
+      } else {
+        result[newKey] = String(val);
+      }
     }
   }
   return result;
