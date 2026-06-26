@@ -157,66 +157,70 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
 async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
-      const interactiveTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL'];
+      const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
       const elements = Array.from(document.querySelectorAll('*'));
       const interactiveList = [];
       let qaIdCounter = 1;
 
-    const nonVisualTags = new Set(['SCRIPT', 'STYLE', 'META', 'HEAD', 'LINK', 'NOSCRIPT', 'TITLE', 'BASE']);
-    const elementsToMutate = [];
+      const nonVisualTags = new Set(['SCRIPT', 'STYLE', 'META', 'HEAD', 'LINK', 'NOSCRIPT', 'TITLE', 'BASE']);
+      const elementsToMutate = [];
 
-    // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
-    elements.forEach((el) => {
-      const tagName = el.tagName;
-      if (nonVisualTags.has(tagName)) return;
+      // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
+      const elementsLen = elements.length;
+      for (let i = 0; i < elementsLen; i++) {
+        const el = elements[i];
+        const tagName = el.tagName;
+        if (nonVisualTags.has(tagName)) continue;
 
-      // ⚡ Bolt: Fast visibility check using layout properties BEFORE slow getComputedStyle
-      if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+        // ⚡ Bolt: Fast visibility check using layout properties BEFORE slow getComputedStyle
+        if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
 
-      const isInteractiveTag = interactiveTags.includes(tagName);
-      const hasClickAttribute = el.hasAttribute('onclick') || el.getAttribute('role') === 'button';
+        const isInteractiveTag = interactiveTags.has(tagName);
+        const hasClickAttribute = el.hasAttribute('onclick') || el.getAttribute('role') === 'button';
 
-      let style = null;
+        let style = null;
 
-      if (!isInteractiveTag && !hasClickAttribute) {
-        style = window.getComputedStyle(el);
-        if (style.cursor !== 'pointer') return;
+        if (!isInteractiveTag && !hasClickAttribute) {
+          style = window.getComputedStyle(el);
+          if (style.cursor !== 'pointer') continue;
+        }
+
+        // Basic visibility check for display and opacity using computed style
+        if (!style) style = window.getComputedStyle(el);
+        const isVisible = style.display !== 'none' &&
+                          style.visibility !== 'hidden' &&
+                          style.opacity !== '0';
+
+        if (!isVisible) continue;
+
+        if (isInteractiveTag || hasClickAttribute || style.cursor === 'pointer') {
+          let text = (el.innerText || el.value || '').trim().replace(/\s+/g, ' ');
+          if (text.length > 100) text = text.substring(0, 100) + '...';
+
+          interactiveList.push({
+            id: qaIdCounter,
+            tagName,
+            text,
+            type: el.getAttribute('type') || '',
+            placeholder: el.getAttribute('placeholder') || '',
+            name: el.getAttribute('name') || '',
+            role: el.getAttribute('role') || '',
+            href: el.getAttribute('href') || ''
+          });
+
+          elementsToMutate.push({ el, id: String(qaIdCounter) });
+          qaIdCounter++;
+        }
       }
 
-      // Basic visibility check for display and opacity using computed style
-      if (!style) style = window.getComputedStyle(el);
-      const isVisible = style.display !== 'none' &&
-                        style.visibility !== 'hidden' && 
-                        style.opacity !== '0';
-      
-      if (!isVisible) return;
-
-      if (isInteractiveTag || hasClickAttribute || style.cursor === 'pointer') {
-        let text = (el.innerText || el.value || '').trim().replace(/\s+/g, ' ');
-        if (text.length > 100) text = text.substring(0, 100) + '...';
-
-        interactiveList.push({
-          id: qaIdCounter,
-          tagName,
-          text,
-          type: el.getAttribute('type') || '',
-          placeholder: el.getAttribute('placeholder') || '',
-          name: el.getAttribute('name') || '',
-          role: el.getAttribute('role') || '',
-          href: el.getAttribute('href') || ''
-        });
-
-        elementsToMutate.push({ el, id: String(qaIdCounter) });
-        qaIdCounter++;
+      // ⚡ Bolt: Phase 2: Write-only (Batch DOM mutations to prevent Layout Thrashing)
+      const mutationsLen = elementsToMutate.length;
+      for (let i = 0; i < mutationsLen; i++) {
+        const mutation = elementsToMutate[i];
+        mutation.el.setAttribute('data-qa-id', mutation.id);
       }
-    });
 
-    // ⚡ Bolt: Phase 2: Write-only (Batch DOM mutations to prevent Layout Thrashing)
-    elementsToMutate.forEach(({ el, id }) => {
-      el.setAttribute('data-qa-id', id);
-    });
-
-    return interactiveList;
+      return interactiveList;
     });
   } catch (error) {
     console.error('Failed to extract interactive elements:', error);
