@@ -247,18 +247,34 @@ async function extractPageTexts(page) {
       }
     );
 
+    // ⚡ Bolt: Cachování CSS selektoru a getComputedStyle per parent (zrychlení iterace u hlubokých stromů textů)
+    const parentCache = new Map();
     let node;
+
     while ((node = treeWalker.nextNode())) {
       const text = node.nodeValue.trim();
       const parent = node.parentElement;
 
       if (!parent || nonVisualTags.has(parent.tagName)) continue;
 
+      let cached = parentCache.get(parent);
+      if (cached !== undefined) {
+          if (cached === null) continue;
+          results.push({ text, selector: cached, tagName: parent.tagName });
+          continue;
+      }
+
       // ⚡ Bolt: Fast geometry check before slow getComputedStyle
-      if (parent.offsetWidth === 0 || parent.offsetHeight === 0) continue;
+      if (parent.offsetWidth === 0 || parent.offsetHeight === 0) {
+          parentCache.set(parent, null);
+          continue;
+      }
 
       const style = window.getComputedStyle(parent);
-      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      if (style.display === 'none' || style.visibility === 'hidden') {
+          parentCache.set(parent, null);
+          continue;
+      }
 
       // Generate a simple CSS selector path
       let path = '';
@@ -270,15 +286,25 @@ async function extractPageTexts(page) {
           path = part + (path ? ' > ' + path : '');
           break; // Stop at ID for shorter selector
         } else if (current.className) {
-          part += `.${Array.from(current.classList).join('.')}`;
+          // Avoid Array.from for classList for better performance
+          let cls = '';
+          const classList = current.classList;
+          const len = classList.length;
+          for (let i = 0; i < len; i++) {
+              cls += `.${classList[i]}`;
+          }
+          part += cls;
         }
         path = part + (path ? ' > ' + path : '');
         current = current.parentNode;
       }
 
+      const selector = path || 'body';
+      parentCache.set(parent, selector);
+
       results.push({
         text,
-        selector: path || 'body',
+        selector,
         tagName: parent.tagName
       });
     }
@@ -392,7 +418,6 @@ async function determineNextAction(llmConfig, currentUrl, title, interactiveElem
         if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
           let val = 'test';
           const nameLower = (el.name || '').toLowerCase();
-          const labelLower = (el.text || '').toLowerCase();
 
           if (el.type === 'email' || nameLower.includes('email')) {
             val = `monkey_tester_${Date.now()}@example.com`;
@@ -518,7 +543,9 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
             actionResponse = JSON.parse(cleaned + ending);
             parsed = true;
             break;
-          } catch (e) {}
+          } catch (e) {
+            // ignore
+          }
         }
         if (!parsed) {
            throw new Error(`Nelze opravit utržený JSON: ${parseErr.message}`);
@@ -530,7 +557,9 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
       try {
         // Mock fallback if string includes reasoning
         extractedReasoning = "(Záchranný krok) AI vygenerovalo nečitelný JSON, skript vynucuje rolování";
-      } catch(e) {}
+      } catch(e) {
+        // ignore
+      }
 
       actionResponse = {
         reasoning: extractedReasoning,
