@@ -815,8 +815,13 @@ export async function comparePages(url1, url2) {
       (async () => {
         try {
           await page1.goto(url1, { waitUntil: 'networkidle', timeout: 20000 });
-          screenshot1 = `data:image/png;base64,${await page1.screenshot({ type: 'png', encoding: 'base64' })}`;
-          texts1 = await extractPageTexts(page1);
+          // ⚡ Bolt: Paralelizace I/O operací Playwrightu na stejné stránce (screenshot a evaluate CDP)
+          const [screenshotBuffer1, textsResult1] = await Promise.all([
+            page1.screenshot({ type: 'png', encoding: 'base64' }),
+            extractPageTexts(page1)
+          ]);
+          screenshot1 = `data:image/png;base64,${screenshotBuffer1}`;
+          texts1 = textsResult1;
         } catch (e) {
           error1 = e.message;
         }
@@ -824,8 +829,13 @@ export async function comparePages(url1, url2) {
       (async () => {
         try {
           await page2.goto(url2, { waitUntil: 'networkidle', timeout: 20000 });
-          screenshot2 = `data:image/png;base64,${await page2.screenshot({ type: 'png', encoding: 'base64' })}`;
-          texts2 = await extractPageTexts(page2);
+          // ⚡ Bolt: Paralelizace I/O operací Playwrightu na stejné stránce (screenshot a evaluate CDP)
+          const [screenshotBuffer2, textsResult2] = await Promise.all([
+            page2.screenshot({ type: 'png', encoding: 'base64' }),
+            extractPageTexts(page2)
+          ]);
+          screenshot2 = `data:image/png;base64,${screenshotBuffer2}`;
+          texts2 = textsResult2;
         } catch (e) {
           error2 = e.message;
         }
