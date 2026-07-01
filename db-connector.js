@@ -209,18 +209,19 @@ export function mapDbRowsToDict(rows) {
 /**
  * Flattens a nested JSON object into dot-notation keys.
  * Example: { "home": { "title": "Ahoj" } } -> { "home.title": "Ahoj" }
+ * ⚡ Bolt: Zrychleno předáváním result reference namísto drahého Object.assign() v každém kroku rekurze
+ * pro eliminaci alokace stovek malých objektů.
  */
-export function flattenObject(obj, prefix = '') {
+export function flattenObject(obj, prefix = '', result = {}) {
   if (obj === null || typeof obj !== 'object') {
-    return {};
+    return result;
   }
 
-  const result = {};
   for (const key of Object.keys(obj)) {
     const val = obj[key];
     const newKey = prefix ? `${prefix}.${key}` : key;
     if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
-      Object.assign(result, flattenObject(val, newKey));
+      flattenObject(val, newKey, result);
     } else {
       result[newKey] = String(val);
     }
