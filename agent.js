@@ -158,7 +158,15 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+
+      // ⚡ Bolt: Nahrazení querySelectorAll za getElementsByTagName a pre-alokované pole pro lepší výkon
+      const htmlCollection = document.getElementsByTagName('*');
+      const htmlLen = htmlCollection.length;
+      const elements = new Array(htmlLen);
+      for (let j = 0; j < htmlLen; j++) {
+        elements[j] = htmlCollection[j];
+      }
+
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -348,7 +356,14 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      // ⚡ Bolt: Zrychlení extrakce odkazů pomocí getElementsByTagName a fast for loop
+      const aCollection = document.getElementsByTagName('a');
+      const len = aCollection.length;
+      const links = new Array(len);
+      for (let i = 0; i < len; i++) {
+        links[i] = aCollection[i].href;
+      }
+      return links;
     });
     
     // Filter internal links and deduplicate
