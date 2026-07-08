@@ -4,8 +4,11 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
-import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks } from './agent.js';
+import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM } from './agent.js';
 import { fetchTranslations } from './db-connector.js';
+import { authenticateToken } from './auth.js';
+import * as db from './db.js';
+import { redactEventData } from './pii-redactor.js';
 
 // Global error handlers to prevent unhandled rejections from crashing the process
 process.on('uncaughtException', (err) => {
@@ -57,26 +60,28 @@ function broadcastToSession(sessionId, data) {
 }
 
 // REST Endpoints
-app.get('/api/sessions', (req, res) => {
-  const list = Array.from(sessions.values()).map(s => ({
-    id: s.id,
-    url: s.url,
-    goal: s.goal,
-    status: s.status,
-    stepCount: s.steps.length,
-    bugsCount: s.bugs.length,
-    summary: s.summary,
-    timestamp: s.timestamp
-  }));
-  res.json(list.reverse());
+app.get('/api/sessions', authenticateToken, async (req, res) => {
+  try {
+    const list = await db.getSessions(req.user.userId);
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.get('/api/sessions/:id', (req, res) => {
-  const session = sessions.get(req.params.id);
-  if (!session) {
-    return res.status(404).json({ error: 'Relace nenalezena.' });
+app.get('/api/sessions/:id', authenticateToken, async (req, res) => {
+  try {
+    const session = await db.getSession(req.params.id);
+    if (!session) {
+      return res.status(404).json({ error: 'Relace nenalezena.' });
+    }
+    if (session.userId !== req.user.userId) {
+      return res.status(403).json({ error: 'Přístup odepřen. Relace nepatří vám.' });
+    }
+    res.json(session);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  res.json(session);
 });
 
 // Mock translations API for dynamic loading test
@@ -94,7 +99,7 @@ app.get('/api/mock-translations', (req, res) => {
 });
 
 // 1. Run Autonomous Test
-app.post('/api/run-test', async (req, res) => {
+app.post('/api/run-test', authenticateToken, async (req, res) => {
   const { url, goal, model, host, headless, maxSteps, mode, provider, testLogin, testPassword } = req.body;
 
   if (!url || (mode !== 'monkey' && mode !== 'smart_monkey' && !goal)) {
@@ -104,6 +109,7 @@ app.post('/api/run-test', async (req, res) => {
   const sessionId = `session_${Date.now()}`;
   const sessionData = {
     id: sessionId,
+    userId: req.user.userId,
     url,
     goal: mode === 'monkey' 
       ? 'Průzkumný test (Monkey Mode - bez AI)' 
@@ -116,6 +122,7 @@ app.post('/api/run-test', async (req, res) => {
   };
 
   sessions.set(sessionId, sessionData);
+  await db.saveSession(sessionId, sessionData);
 
   // Return sessionId immediately, run Playwright test in background
   res.json({ sessionId, status: 'running' });
@@ -136,58 +143,70 @@ app.post('/api/run-test', async (req, res) => {
     try {
       try {
         if (mode === 'crawler') {
-        broadcastToSession(sessionId, { type: 'progress', message: '🕷️ CRAWLER: Hledám podstránky na webu...' });
-        const links = await extractInternalLinks(url);
-        const targetUrls = [url, ...links].slice(0, 4); // home + max 3 links
+          broadcastToSession(sessionId, { type: 'progress', message: '🕷️ CRAWLER: Hledám podstránky na webu...' });
+          const links = await extractInternalLinks(url);
+          const targetUrls = [url, ...links].slice(0, 4); // home + max 3 links
 
-        let totalBugs = [];
-        let combinedScripts = '';
-        let lastPerformance = null;
-        let lastVideoUrl = null;
+          let totalBugs = [];
+          let combinedScripts = '';
+          let lastPerformance = null;
+          let lastVideoUrl = null;
 
-        for (const targetUrl of targetUrls) {
-          broadcastToSession(sessionId, { type: 'progress', message: `🕷️ CRAWLER: Otevírám ${targetUrl}` });
-          const result = await runAutonomousTest(targetUrl, 'Prozkoumat funkčnost', { ...llmConfig, maxSteps: 5 }, (stepInfo) => {
-            if (stepInfo.step === 0) return;
-            stepInfo.action = `[${new URL(targetUrl).pathname}] ${stepInfo.action || ''}`;
+          for (const targetUrl of targetUrls) {
+            broadcastToSession(sessionId, { type: 'progress', message: `🕷️ CRAWLER: Otevírám ${targetUrl}` });
+            const result = await runAutonomousTest(targetUrl, 'Prozkoumat funkčnost', { ...llmConfig, maxSteps: 5 }, (stepInfo) => {
+              if (stepInfo.step === 0) return;
+              stepInfo.action = `[${new URL(targetUrl).pathname}] ${stepInfo.action || ''}`;
+              sessionData.steps.push(stepInfo);
+              db.saveSession(sessionId, sessionData);
+              broadcastToSession(sessionId, { type: 'step', step: stepInfo });
+            }, sessionId);
+
+            totalBugs.push(...result.bugs);
+            lastPerformance = result.performanceMetrics || lastPerformance;
+            lastVideoUrl = result.videoUrl || lastVideoUrl;
+            if (result.generatedScript) {
+              combinedScripts += `\n// --- Test pro ${targetUrl} ---\n` + result.generatedScript;
+            }
+          }
+
+          sessionData.status = 'completed';
+          sessionData.bugs = [...new Set(totalBugs)];
+          sessionData.summary = `Crawler prozkoumal ${targetUrls.length} stránek. Nalezeno ${sessionData.bugs.length} chyb.`;
+          sessionData.generatedScript = combinedScripts;
+          sessionData.performanceMetrics = lastPerformance;
+          sessionData.videoUrl = lastVideoUrl;
+          await db.saveSession(sessionId, sessionData);
+
+          broadcastToSession(sessionId, {
+            type: 'completed',
+            bugs: sessionData.bugs,
+            summary: sessionData.summary,
+            success: sessionData.bugs.length === 0,
+            generatedScript: combinedScripts,
+            performanceMetrics: lastPerformance,
+            videoUrl: lastVideoUrl
+          });
+
+        } else {
+          const result = await runAutonomousTest(url, sessionData.goal, llmConfig, (stepInfo) => {
+            if (stepInfo.step === 0) {
+              broadcastToSession(sessionId, { type: 'progress', message: stepInfo.detail });
+              return;
+            }
             sessionData.steps.push(stepInfo);
+            db.saveSession(sessionId, sessionData);
             broadcastToSession(sessionId, { type: 'step', step: stepInfo });
           }, sessionId);
-
-          totalBugs.push(...result.bugs);
-          lastPerformance = result.performanceMetrics || lastPerformance;
-          lastVideoUrl = result.videoUrl || lastVideoUrl;
-          if (result.generatedScript) {
-            combinedScripts += `\n// --- Test pro ${targetUrl} ---\n` + result.generatedScript;
-          }
-        }
-
-        sessionData.status = 'completed';
-        sessionData.bugs = [...new Set(totalBugs)];
-        sessionData.summary = `Crawler prozkoumal ${targetUrls.length} stránek. Nalezeno ${sessionData.bugs.length} chyb.`;
-        broadcastToSession(sessionId, {
-          type: 'completed',
-          bugs: sessionData.bugs,
-          summary: sessionData.summary,
-          success: sessionData.bugs.length === 0,
-          generatedScript: combinedScripts,
-          performanceMetrics: lastPerformance,
-          videoUrl: lastVideoUrl
-        });
-
-      } else {
-        const result = await runAutonomousTest(url, sessionData.goal, llmConfig, (stepInfo) => {
-          if (stepInfo.step === 0) {
-            broadcastToSession(sessionId, { type: 'progress', message: stepInfo.detail });
-            return;
-          }
-          sessionData.steps.push(stepInfo);
-          broadcastToSession(sessionId, { type: 'step', step: stepInfo });
-        }, sessionId);
 
           sessionData.status = 'completed';
           sessionData.bugs = result.bugs;
           sessionData.summary = result.summary;
+          sessionData.performanceMetrics = result.performanceMetrics;
+          sessionData.generatedScript = result.generatedScript;
+          sessionData.videoUrl = result.videoUrl;
+          await db.saveSession(sessionId, sessionData);
+
           broadcastToSession(sessionId, {
             type: 'completed',
             bugs: result.bugs,
@@ -202,6 +221,8 @@ app.post('/api/run-test', async (req, res) => {
         sessionData.status = 'failed';
         sessionData.summary = `Selhání testu: ${err.message}`;
         sessionData.bugs.push(`Kritická chyba backendu: ${err.message}`);
+        await db.saveSession(sessionId, sessionData);
+
         broadcastToSession(sessionId, {
           type: 'failed',
           error: err.message,
@@ -241,6 +262,482 @@ app.post('/api/trigger-test', async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// --- AURAAURAGUARD SYNTHETIC MONITORS & TELEMETRY ---
+
+// Helper to broadcast to all WebSocket clients regardless of sessionId
+function broadcastToAll(data) {
+  const payload = JSON.stringify(data);
+  wsClients.forEach((clientsSet) => {
+    clientsSet.forEach((ws) => {
+      if (ws.readyState === 1) { // OPEN
+        ws.send(payload);
+      }
+    });
+  });
+}
+
+// Background scheduler running every minute
+const schedulerInterval = setInterval(async () => {
+  try {
+    const activeMonitors = await db.getAllActiveMonitors();
+    const now = Date.now();
+
+    for (const monitor of activeMonitors) {
+      const intervalMap = {
+        '1m': 60000,
+        '5m': 300000,
+        '15m': 900000,
+        '1h': 3600000,
+        '12h': 43200000,
+        '24h': 86400000
+      };
+      const intervalMs = intervalMap[monitor.interval] || 3600000;
+      const lastRun = monitor.lastRunTime || 0;
+
+      if (now - lastRun >= intervalMs) {
+        // Update lastRunTime in db immediately to prevent duplicate runs
+        await db.updateMonitor(monitor.id, { lastRunTime: now });
+
+        const sessionId = `session_monitor_${monitor.id}_${Date.now()}`;
+        console.log(`[AuraAuraGuard] Spouštím monitor: ${monitor.name} (${monitor.url}) -> ${sessionId}`);
+
+        const sessionData = {
+          id: sessionId,
+          userId: monitor.userId,
+          url: monitor.url,
+          goal: monitor.goal,
+          status: 'running',
+          steps: [],
+          bugs: [],
+          summary: 'Syntetický monitoring na pozadí...',
+          timestamp: new Date().toISOString(),
+          isSynthetic: true,
+          monitorId: monitor.id
+        };
+        await db.saveSession(sessionId, sessionData);
+
+        const llmConfig = {
+          provider: monitor.provider || 'ollama',
+          model: monitor.model || 'llama3',
+          host: monitor.host || 'http://localhost:11434',
+          headless: true,
+          maxSteps: monitor.maxSteps || 10,
+          mode: 'ai',
+          trackExceptions: monitor.trackExceptions !== false,
+          trackPromiseRejections: monitor.trackPromiseRejections !== false,
+          trackLongTasks: monitor.trackLongTasks !== false,
+          trackNetworkErrors: monitor.trackNetworkErrors !== false,
+          slowApiThresholdMs: monitor.slowApiThresholdMs || 1500
+        };
+
+        (async () => {
+          try {
+            const result = await runAutonomousTest(
+              monitor.url,
+              monitor.goal,
+              llmConfig,
+              (progress) => {
+                if (progress.step === 0) return;
+                sessionData.steps.push(progress);
+                db.saveSession(sessionId, sessionData);
+                broadcastToSession(sessionId, { type: 'step', step: progress });
+              },
+              sessionId
+            );
+
+            sessionData.status = 'completed';
+            sessionData.bugs = result.bugs;
+            sessionData.summary = result.summary;
+            sessionData.performanceMetrics = result.performanceMetrics;
+            sessionData.generatedScript = result.generatedScript;
+            sessionData.videoUrl = result.videoUrl;
+            await db.saveSession(sessionId, sessionData);
+
+            await db.updateMonitor(monitor.id, {
+              lastRunStatus: result.bugs.length === 0 ? 'success' : 'failure',
+              lastRunBugsCount: result.bugs.length
+            });
+
+            const userMonitors = await db.getMonitors(monitor.userId);
+            broadcastToAll({ type: 'monitors_updated', monitors: userMonitors });
+          } catch (err) {
+            console.error(`[AuraAuraGuard] Monitor ${monitor.name} selhal:`, err.message);
+            sessionData.status = 'failed';
+            sessionData.bugs.push(`Kritická chyba plánovače: ${err.message}`);
+            await db.saveSession(sessionId, sessionData);
+
+            await db.updateMonitor(monitor.id, { lastRunStatus: 'error' });
+
+            const userMonitors = await db.getMonitors(monitor.userId);
+            broadcastToAll({ type: 'monitors_updated', monitors: userMonitors });
+          }
+        })();
+      }
+    }
+  } catch (err) {
+    console.error('Chyba plánovače na pozadí:', err.message);
+  }
+}, 60000);
+
+if (schedulerInterval && typeof schedulerInterval.unref === 'function') {
+  schedulerInterval.unref();
+}
+
+// REST Endpoints for Projects
+app.get('/api/projects', authenticateToken, async (req, res) => {
+  try {
+    const list = await db.getProjects(req.user.userId);
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/projects', authenticateToken, async (req, res) => {
+  const { name, allowedOrigins } = req.body;
+  if (!name) return res.status(400).json({ error: 'Chybí název projektu.' });
+
+  try {
+    const newProject = await db.createProject(req.user.userId, name, allowedOrigins || []);
+    res.status(201).json(newProject);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/projects/:id', authenticateToken, async (req, res) => {
+  try {
+    const project = await db.getProjectByKey(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Projekt nenalezen.' });
+    if (project.userId !== req.user.userId) return res.status(403).json({ error: 'Přístup odepřen.' });
+
+    await db.deleteProject(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REST Endpoints for Monitors
+app.get('/api/monitors', authenticateToken, async (req, res) => {
+  try {
+    const list = await db.getMonitors(req.user.userId);
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/monitors', authenticateToken, async (req, res) => {
+  const { name, url, goal, interval, provider, model, host, maxSteps, trackExceptions, trackPromiseRejections, trackLongTasks, trackNetworkErrors, slowApiThresholdMs } = req.body;
+  if (!name || !url) {
+    return res.status(400).json({ error: 'Chybí název nebo URL monitoru.' });
+  }
+
+  try {
+    const newMonitor = await db.createMonitor(req.user.userId, {
+      name,
+      url,
+      goal: goal || 'Prohledej stránku a najdi jakékoliv chyby',
+      interval: interval || '1h',
+      provider: provider || 'ollama',
+      model: model || 'llama3',
+      host: host || 'http://localhost:11434',
+      maxSteps: parseInt(maxSteps) || 10,
+      trackExceptions: trackExceptions !== false,
+      trackPromiseRejections: trackPromiseRejections !== false,
+      trackLongTasks: trackLongTasks !== false,
+      trackNetworkErrors: trackNetworkErrors !== false,
+      slowApiThresholdMs: parseInt(slowApiThresholdMs) || 1500
+    });
+    res.status(201).json(newMonitor);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/monitors/:id', authenticateToken, async (req, res) => {
+  try {
+    const monitor = await db.getMonitorById(req.params.id);
+    if (!monitor) return res.status(404).json({ error: 'Monitor nenalezen.' });
+    if (monitor.userId !== req.user.userId) return res.status(403).json({ error: 'Přístup odepřen.' });
+
+    const updated = await db.updateMonitor(req.params.id, req.body);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/monitors/:id', authenticateToken, async (req, res) => {
+  try {
+    const monitor = await db.getMonitorById(req.params.id);
+    if (!monitor) return res.status(404).json({ error: 'Monitor nenalezen.' });
+    if (monitor.userId !== req.user.userId) return res.status(403).json({ error: 'Přístup odepřen.' });
+
+    await db.deleteMonitor(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REST Endpoints for AuraGuard Live Telemetry
+app.get('/api/auraguard/events', authenticateToken, async (req, res) => {
+  try {
+    const list = await db.getAuraGuardEvents(req.user.userId);
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint pro manuální spuštění AI bezpečnostní analýzy
+app.post('/api/auraguard/analyze-security', authenticateToken, async (req, res) => {
+  try {
+    const { events } = req.body; // Můžeme poslat vybrané události
+    if (!events || !Array.isArray(events)) {
+      return res.status(400).json({ error: 'Missing or invalid events array' });
+    }
+    
+    // Validace, že události patří projektům uživatele (zjednodušeně, ověřujeme na frontendu)
+    // Ideálně by server ještě zkontroloval, jestli event.project patří req.user.userId
+    
+    const analysis = await analyzeSecurityVulnerabilities(events, { provider: 'ollama', model: 'llama3' });
+    res.json({ analysis });
+  } catch (err) {
+    console.error('Error during security analysis:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auraguard/analyze-accessibility', authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'Chybí URL pro audit' });
+    
+    const report = await auditAccessibility(url);
+    res.json(report);
+  } catch (err) {
+    console.error('Error during accessibility audit:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auraguard/analyze-nis2', authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'Chybí URL pro audit' });
+    
+    const report = await auditNIS2AndPQC(url);
+    res.json(report);
+  } catch (err) {
+    console.error('Error during NIS2 audit:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auraguard/analyze-green-gdpr', authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'Chybí URL pro audit' });
+    
+    const report = await auditGreenAndResidency(url);
+    res.json(report);
+  } catch (err) {
+    console.error('Error during Green/GDPR audit:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auraguard/analyze-cra', authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'Chybí URL pro CRA SBOM audit' });
+    
+    const report = await auditCRA_SBOM(url);
+    res.json(report);
+  } catch (err) {
+    console.error('Error during CRA SBOM audit:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auraguard/auto-heal', authenticateToken, async (req, res) => {
+  try {
+    const { eventData, llmConfig } = req.body;
+    if (!eventData) return res.status(400).json({ error: 'Chybí data události' });
+    
+    const result = await generateAutoHealPatch(eventData, llmConfig || {});
+    res.json({ patch: result.text || result.response || result });
+  } catch (err) {
+    console.error('Error during Auto-Heal:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Uchování v paměti nedávných eventů pro deduplikaci (v produkci použít např. Redis)
+const recentEventsCache = new Map();
+const CACHE_TTL_MS = 60 * 60 * 1000; // 60 minut
+
+app.post('/api/auraguard/report', async (req, res) => {
+  const { project, type, data, timestamp } = req.body;
+  if (!project) return res.status(400).json({ error: 'Chybí ID projektu.' });
+
+  try {
+    const proj = await db.getProjectByKey(project);
+    if (!proj) return res.status(404).json({ error: 'Projekt nebyl nalezen nebo je neaktivní.' });
+    if (!proj.active) return res.status(403).json({ error: 'Projekt je deaktivován.' });
+
+    // Ověření povolených domén (Origin check)
+    const origin = req.headers.origin || req.headers.referer;
+    if (proj.allowedOrigins && proj.allowedOrigins.length > 0 && origin) {
+      const match = proj.allowedOrigins.some(o => origin.startsWith(o));
+      if (!match) {
+        return res.status(403).json({ error: 'Přístup zamítnut. Nepovolená doména odesílatele.' });
+      }
+    }
+
+    // GDPR AI Sentinel (RegEx Layer) - Cenzura PII před uložením do DB
+    const redactedData = redactEventData(data || {});
+
+    // Eco-Mode Deduplikace: Kontrola, zda už stejná chyba neexistuje v cache
+    const eventSignature = `${project}:${type}:${redactedData.message || ''}:${redactedData.filename || ''}:${redactedData.lineno || ''}`;
+    
+    if (recentEventsCache.has(eventSignature)) {
+      const cachedEvent = recentEventsCache.get(eventSignature);
+      if (Date.now() - cachedEvent.lastSeen < CACHE_TTL_MS) {
+        // Pouze zvedneme počítadlo, neukládáme nový event
+        cachedEvent.count += 1;
+        cachedEvent.lastSeen = Date.now();
+        
+        // Aktualizace existujícího záznamu v DB (pokud by to bylo žádoucí) - pro jednoduchost zde jen notifikujeme WSS
+        // Notifikujeme frontend (WSS), že počet se zvýšil
+        if (req.app.locals.wss) {
+          req.app.locals.wss.clients.forEach(client => {
+            if (client.readyState === 1 && client.projectId === project) {
+              client.send(JSON.stringify({ 
+                type: 'event_deduplicated', 
+                data: { id: cachedEvent.id, count: cachedEvent.count, timestamp: new Date().toISOString() } 
+              }));
+            }
+          });
+        }
+        
+        return res.status(200).json({ success: true, deduplicated: true, count: cachedEvent.count });
+      }
+    }
+
+    const newEvent = await db.createAuraGuardEvent({
+      project,
+      type: type || 'error',
+      data: redactedData,
+      timestamp: timestamp || new Date().toISOString()
+    });
+    
+    // Uložení do deduplikační cache
+    recentEventsCache.set(eventSignature, {
+      id: newEvent.id,
+      count: 1,
+      lastSeen: Date.now()
+    });
+
+    broadcastToAll({ type: 'auraguard_live_event', event: newEvent });
+    res.json({ success: true, eventId: newEvent.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/auraguard/sdk.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.send(`
+(function() {
+  const scriptTag = document.currentScript;
+  const project = scriptTag ? scriptTag.getAttribute('data-project') : '';
+  const trackErrors = scriptTag ? scriptTag.getAttribute('data-track-errors') !== 'false' : true;
+  const trackPerf = scriptTag ? scriptTag.getAttribute('data-track-perf') !== 'false' : true;
+  const slowThreshold = parseInt(scriptTag ? scriptTag.getAttribute('data-slow-api-threshold') : '1500') || 1500;
+  const reportUrl = '${req.protocol}://${req.get('host')}/api/auraguard/report';
+
+  if (!project) {
+    console.error('[AuraAuraGuard] Chybí data-project atribut pro odesílání logů.');
+    return;
+  }
+
+  function sendReport(type, data) {
+    fetch(reportUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: project, type: type, data: data, timestamp: new Date().toISOString() })
+    }).catch(function() {});
+  }
+
+  if (trackErrors) {
+    window.addEventListener('error', function(event) {
+      if (!event.message) return;
+      sendReport('error', {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno
+      });
+    });
+
+    window.addEventListener('unhandledrejection', function(event) {
+      const reason = event.reason ? (event.reason.message || String(event.reason)) : 'Neznámý důvod';
+      sendReport('promise', { message: reason });
+    });
+  }
+
+  if (trackPerf) {
+    try {
+      const observer = new PerformanceObserver(function(list) {
+        const entries = list.getEntries();
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          if (entry.duration > 100) {
+            sendReport('performance', {
+              message: 'UI Thread blocked (Long Task)',
+              duration: Math.round(entry.duration)
+            });
+          }
+        }
+      });
+      observer.observe({ entryTypes: ['longtask'] });
+    } catch (e) {}
+
+    // Track slow fetch/xhr
+    const originalFetch = window.fetch;
+    if (originalFetch) {
+      window.fetch = function(...args) {
+        const start = Date.now();
+        return originalFetch.apply(this, args).then(function(response) {
+          const duration = Date.now() - start;
+          if (duration > slowThreshold) {
+            sendReport('network_slow', {
+              url: response.url,
+              duration: duration,
+              status: response.status,
+              method: 'FETCH'
+            });
+          }
+          if (response.status >= 400) {
+            sendReport('network_error', {
+              url: response.url,
+              status: response.status,
+              method: 'FETCH'
+            });
+          }
+          return response;
+        });
+      };
+    }
+  }
+})();
+  `);
 });
 
 // 2. Compare Pages (Prod vs Preview Diff)

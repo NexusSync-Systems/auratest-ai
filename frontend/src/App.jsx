@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { 
   Play, 
   Settings as SettingsIcon, 
@@ -17,10 +18,57 @@ import {
   Image as ImageIcon,
   Check,
   AlertCircle,
-  Loader2
+  Loader2,
+  Activity,
+  Trash2,
+  Copy,
+  Plus,
+  ExternalLink,
+  Shield
 } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
+
+const firebaseConfig = {
+  projectId: "auratest-ai-86058",
+  appId: "1:402356334321:web:9f051942fd09f9c1e44350",
+  storageBucket: "auratest-ai-86058.firebasestorage.app",
+  apiKey: "AIzaSyB1bi6iSVzYq4-9ky9nZZ_UbjhOU8iGu54",
+  authDomain: "auratest-ai-86058.firebaseapp.com",
+  messagingSenderId: "402356334321"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const firebaseAuth = getAuth(firebaseApp);
+
+function formatRedactedText(text) {
+  if (!text || typeof text !== 'string') return text;
+  const parts = text.split(/(\[REDACTED_[A-Z_]+\])/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('[REDACTED_')) {
+      return (
+        <span key={index} style={{ backgroundColor: 'var(--accent)', color: 'white', padding: '0 4px', borderRadius: '3px', fontSize: '0.85em', fontWeight: 'bold' }}>
+          {part}
+        </span>
+      );
+    }
+    return part;
+  });
+}
 
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+  const [authError, setAuthError] = useState('');
+
+  // AuraGuard Projects State
+  const [projects, setProjects] = useState([]);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [projectName, setProjectName] = useState('');
+  const [projectOrigins, setProjectOrigins] = useState('');
+
   const [activeTab, setActiveTab] = useState('agent'); // 'agent', 'compare', 'audit', 'settings'
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
@@ -71,6 +119,63 @@ export default function App() {
   
   // Active screenshot view tab
   const [inspectTab, setInspectTab] = useState('console'); // 'console', 'bugs'
+  const [monitorTab, setMonitorTab] = useState('summary'); // 'summary' (bugs), 'monitoring' (AuraAuraGuard)
+
+  // AuraAuraGuard Hub State
+  const [monitors, setMonitors] = useState([]);
+  const [auraguardEvents, setAuraGuardEvents] = useState([]);
+  const [activeAuraGuardProjectFilter, setActiveAuraGuardProjectFilter] = useState('all');
+  const [activeAuraGuardTypeFilter, setActiveAuraGuardTypeFilter] = useState('all');
+  
+  // Security Analysis State
+  const [securityAnalysisLoading, setSecurityAnalysisLoading] = useState(false);
+  const [securityAnalysisResult, setSecurityAnalysisResult] = useState(null);
+  const [securityAnalysisModalOpen, setSecurityAnalysisModalOpen] = useState(false);
+
+  // A11y Audit State
+  const [a11yLoading, setA11yLoading] = useState(false);
+  const [a11yResult, setA11yResult] = useState(null);
+  const [a11yModalOpen, setA11yModalOpen] = useState(false);
+
+  // NIS2 & PQC Audit State
+  const [nis2Loading, setNis2Loading] = useState(false);
+  const [nis2Result, setNis2Result] = useState(null);
+  const [nis2ModalOpen, setNis2ModalOpen] = useState(false);
+
+  // Green Deal & GDPR State
+  const [greenLoading, setGreenLoading] = useState(false);
+  const [greenResult, setGreenResult] = useState(null);
+  const [greenModalOpen, setGreenModalOpen] = useState(false);
+
+  // CRA SBOM State
+  const [craLoading, setCraLoading] = useState(false);
+  const [craResult, setCraResult] = useState(null);
+  const [craModalOpen, setCraModalOpen] = useState(false);
+
+  // Auto-Heal State
+  const [autoHealLoading, setAutoHealLoading] = useState({});
+  const [autoHealPatch, setAutoHealPatch] = useState(null);
+  const [autoHealModalOpen, setAutoHealModalOpen] = useState(false);
+
+  // Monitor Form State
+  const [monitorName, setMonitorName] = useState('');
+  const [monitorUrl, setMonitorUrl] = useState('https://news.ycombinator.com');
+  const [monitorGoal, setMonitorGoal] = useState('Najdi jakékoliv chyby na úvodní stránce');
+  const [monitorInterval, setMonitorInterval] = useState('1h');
+  const [monitorMaxSteps, setMonitorMaxSteps] = useState(5);
+  const [monitorExceptions, setMonitorExceptions] = useState(true);
+  const [monitorPromiseRejections, setMonitorPromiseRejections] = useState(true);
+  const [monitorLongTasks, setMonitorLongTasks] = useState(true);
+  const [monitorNetworkErrors, setMonitorNetworkErrors] = useState(true);
+  const [monitorSlowApiThresholdMs, setMonitorSlowApiThresholdMs] = useState(1500);
+  const [isAddingMonitor, setIsAddingMonitor] = useState(false);
+
+  // SDK Code Generator Config
+  const [sdkProject, setSdkProject] = useState('muj-projekt');
+  const [sdkErrors, setSdkErrors] = useState(true);
+  const [gdprSentinel, setGdprSentinel] = useState(true);
+  const [sdkPerf, setSdkPerf] = useState(true);
+  const [sdkSlowThreshold, setSdkSlowThreshold] = useState(1500);
 
   const wsRef = useRef(null);
   const logsEndRef = useRef(null);
@@ -94,10 +199,262 @@ export default function App() {
     }
   };
 
+  const fetchMonitors = async () => {
+    try {
+      const res = await fetch('/api/monitors');
+      if (res.ok) setMonitors(await res.json());
+    } catch (e) {
+      console.error('Chyba stahování monitorů:', e);
+    }
+  };
+
+  const handleRunA11yAudit = async () => {
+    if (!agentUrl) {
+      alert('Zadejte URL pro audit přístupnosti.');
+      return;
+    }
+    setA11yLoading(true);
+    setA11yModalOpen(true);
+    try {
+      const response = await fetch('/api/auraguard/analyze-accessibility', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ url: agentUrl })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setA11yResult(data);
+    } catch (err) {
+      alert('Chyba auditu: ' + err.message);
+      setA11yModalOpen(false);
+    } finally {
+      setA11yLoading(false);
+    }
+  };
+
+  const handleRunNis2Audit = async () => {
+    if (!agentUrl) {
+      alert('Zadejte URL pro kybernetický audit (NIS2/PQC).');
+      return;
+    }
+    setNis2Loading(true);
+    setNis2ModalOpen(true);
+    try {
+      const response = await fetch('/api/auraguard/analyze-nis2', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ url: agentUrl })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setNis2Result(data);
+    } catch (err) {
+      alert('Chyba auditu: ' + err.message);
+      setNis2ModalOpen(false);
+    } finally {
+      setNis2Loading(false);
+    }
+  };
+
+  const handleRunGreenAudit = async () => {
+    if (!agentUrl) {
+      alert('Zadejte URL pro Green/GDPR audit.');
+      return;
+    }
+    setGreenLoading(true);
+    setGreenModalOpen(true);
+    try {
+      const response = await fetch('/api/auraguard/analyze-green-gdpr', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ url: agentUrl })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setGreenResult(data);
+    } catch (err) {
+      alert('Chyba auditu: ' + err.message);
+      setGreenModalOpen(false);
+    } finally {
+      setGreenLoading(false);
+    }
+  };
+
+  const handleRunCraAudit = async () => {
+    if (!agentUrl) {
+      alert('Zadejte URL pro CRA SBOM audit.');
+      return;
+    }
+    setCraLoading(true);
+    setCraModalOpen(true);
+    try {
+      const response = await fetch('/api/auraguard/analyze-cra', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ url: agentUrl })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setCraResult(data);
+    } catch (err) {
+      alert('Chyba auditu: ' + err.message);
+      setCraModalOpen(false);
+    } finally {
+      setCraLoading(false);
+    }
+  };
+
+  const handleAutoHeal = async (event) => {
+    setAutoHealLoading(prev => ({ ...prev, [event.id]: true }));
+    try {
+      const response = await fetch('/api/auraguard/auto-heal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ eventData: event, llmConfig: { provider: llmProvider, model: selectedModel, host: getHost() } })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setAutoHealPatch(data.patch);
+      setAutoHealModalOpen(true);
+    } catch (err) {
+      alert('Chyba Auto-Heal: ' + err.message);
+    } finally {
+      setAutoHealLoading(prev => ({ ...prev, [event.id]: false }));
+    }
+  };
+
+  const runSecurityAnalysis = async (eventsToAnalyze) => {
+    setSecurityAnalysisLoading(true);
+    setSecurityAnalysisResult(null);
+    setSecurityAnalysisModalOpen(true);
+    try {
+      const res = await fetch('/api/auraguard/analyze-security', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ events: eventsToAnalyze })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSecurityAnalysisResult(data.analysis);
+      } else {
+        setSecurityAnalysisResult(`**Chyba při analýze:** ${data.error}`);
+      }
+    } catch (e) {
+      console.error('Chyba při spouštění bezpečnostní analýzy:', e);
+      setSecurityAnalysisResult(`**Kritická chyba:** ${e.message}`);
+    } finally {
+      setSecurityAnalysisLoading(false);
+    }
+  };
+
+  const fetchAuraGuardEvents = async () => {
+    try {
+      const res = await fetch('/api/auraguard/events');
+      if (res.ok) setAuraGuardEvents(await res.json());
+    } catch (e) {
+      console.error('Chyba stahování auraguard logů:', e);
+    }
+  };
+
+  // Override global fetch to automatically attach JWT token
   useEffect(() => {
-    fetchSessions();
-    const interval = setInterval(fetchSessions, 5000);
-    return () => clearInterval(interval);
+    const originalFetch = window.fetch;
+    window.fetch = async (url, options = {}) => {
+      if (url.startsWith('/api/')) {
+        const token = firebaseAuth.currentUser ? await firebaseAuth.currentUser.getIdToken() : '';
+        if (token) {
+          options.headers = {
+            ...options.headers,
+            'Authorization': `Bearer ${token}`
+          };
+        }
+      }
+      return originalFetch(url, options);
+    };
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
+
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      if (authMode === 'login') {
+        await signInWithEmailAndPassword(firebaseAuth, authEmail, authPassword);
+      } else {
+        await createUserWithEmailAndPassword(firebaseAuth, authEmail, authPassword);
+      }
+    } catch (err) {
+      console.error(err);
+      let friendlyMessage = err.message;
+      if (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
+        friendlyMessage = 'Nesprávný e-mail nebo heslo.';
+      } else if (err.code === 'auth/email-already-in-use') {
+        friendlyMessage = 'Tento e-mail již používá jiný účet.';
+      } else if (err.code === 'auth/weak-password') {
+        friendlyMessage = 'Heslo musí mít alespoň 6 znaků.';
+      }
+      setAuthError(friendlyMessage);
+    }
+  };
+
+  useEffect(() => {
+    return onAuthStateChanged(firebaseAuth, async (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        fetchSessions();
+        fetchMonitors();
+        fetchAuraGuardEvents();
+        fetchProjects();
+
+        // Connect to global WS for real-time updates
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const wsUrl = `${protocol}://${window.location.host}/ws?sessionId=global_auraguard`;
+        const ws = new WebSocket(wsUrl);
+
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'monitors_updated') {
+            setMonitors(msg.monitors);
+          } else if (msg.type === 'auraguard_live_event') {
+            // Při novém eventu přidáme count: 1, pokud tam není
+            const newEvent = { ...msg.event, count: msg.event.count || 1 };
+            setAuraGuardEvents((prev) => [newEvent, ...prev].slice(0, 500));
+          } else if (msg.type === 'event_deduplicated') {
+            setAuraGuardEvents((prev) => 
+              prev.map(evt => 
+                evt.id === msg.data.id ? { ...evt, count: msg.data.count } : evt
+              )
+            );
+          }
+        };
+
+        wsRef.current = ws;
+      } else {
+        setUser(null);
+        setSessions([]);
+        setMonitors([]);
+        setAuraGuardEvents([]);
+        setProjects([]);
+        if (wsRef.current) wsRef.current.close();
+      }
+    });
   }, []);
 
   // Fetch full details when selecting a session
@@ -313,10 +670,67 @@ export default function App() {
   const activeLogs = activeStep && activeStep.logs ? activeStep.logs : [];
   const activeBugs = activeStep && activeStep.bugs ? activeStep.bugs : (activeSession?.bugs || []);
 
+  if (!user) {
+    return (
+      <div className="login-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg-dark)' }}>
+        <form onSubmit={handleAuthSubmit} className="card" style={{ width: '380px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid rgba(255,255,255,0.1)', padding: '24px', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-md)' }}>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: 0, fontSize: '1.5rem', color: 'white', fontWeight: 'bold' }}>
+            <Layers color="var(--accent)" size={24} /> AuraTest AI
+          </h2>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
+            {authMode === 'login' ? 'Přihlaste se ke svému QA účtu' : 'Zaregistrujte si nový QA účet'}
+          </p>
+
+          {authError && (
+            <div style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', padding: '10px', borderRadius: 'var(--radius-sm)', fontSize: '0.8rem', border: '1px solid rgba(239,68,68,0.2)' }}>
+              {authError}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>E-mailová adresa</label>
+            <input 
+              type="email" 
+              value={authEmail} 
+              onChange={(e) => setAuthEmail(e.target.value)} 
+              placeholder="name@example.com" 
+              required 
+              style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 'var(--radius-sm)', color: 'white', fontSize: '0.9rem' }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Heslo</label>
+            <input 
+              type="password" 
+              value={authPassword} 
+              onChange={(e) => setAuthPassword(e.target.value)} 
+              placeholder="••••••••" 
+              required 
+              style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 'var(--radius-sm)', color: 'white', fontSize: '0.9rem' }}
+            />
+          </div>
+
+          <button type="submit" className="btn btn-primary" style={{ padding: '10px', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+            {authMode === 'login' ? 'Přihlásit se' : 'Zaregistrovat se'}
+          </button>
+
+          <div style={{ textAlign: 'center', fontSize: '0.8rem', marginTop: '8px' }}>
+            {authMode === 'login' ? (
+              <span>Nemáte účet? <a href="#" onClick={(e) => { e.preventDefault(); setAuthMode('register'); setAuthError(''); }} style={{ color: 'var(--accent)', fontWeight: 'bold', textDecoration: 'none' }}>Zaregistrujte se</a></span>
+            ) : (
+              <span>Již máte účet? <a href="#" onClick={(e) => { e.preventDefault(); setAuthMode('login'); setAuthError(''); }} style={{ color: 'var(--accent)', fontWeight: 'bold', textDecoration: 'none' }}>Přihlaste se</a></span>
+            )}
+          </div>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="app-container">
       {/* Sidebar navigation */}
-      <aside className="sidebar">
+      <aside className="sidebar" style={{ display: 'flex', flexDirection: 'column' }}>
         <div className="logo-section">
           <div className="logo-icon">
             <Layers size={18} color="white" />
@@ -336,8 +750,8 @@ export default function App() {
             className={`nav-item ${activeTab === 'compare' ? 'active' : ''}`}
             onClick={() => { setActiveTab('compare'); }}
           >
-            <RefreshCw size={16} />
-            <span>Srovnávač Diff</span>
+            <Layers size={16} />
+            <span>Porovnání verzí</span>
           </button>
           <button 
             className={`nav-item ${activeTab === 'audit' ? 'active' : ''}`}
@@ -345,6 +759,13 @@ export default function App() {
           >
             <Globe size={16} />
             <span>Audit Překladů</span>
+          </button>
+          <button 
+            className={`nav-item ${activeTab === 'auraguard' ? 'active' : ''}`}
+            onClick={() => { setActiveTab('auraguard'); }}
+          >
+            <Activity size={16} />
+            <span>AuraAuraGuard Hub</span>
           </button>
           <button 
             className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}
@@ -358,7 +779,7 @@ export default function App() {
         <div className="sidebar-divider" />
         <span className="sidebar-section-title">Historie testů</span>
         
-        <div className="history-list">
+        <div className="history-list" style={{ flexGrow: 1, overflowY: 'auto' }}>
           {sessions.length === 0 ? (
             <div style={{ color: 'var(--text-dark)', fontSize: '0.75rem', padding: '8px' }}>
               Žádné předchozí testy.
@@ -380,6 +801,19 @@ export default function App() {
             ))
           )}
         </div>
+
+        <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', marginTop: 'auto' }}>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }} title={user.email}>
+            Účet: <strong>{user.email}</strong>
+          </div>
+          <button 
+            className="btn btn-secondary" 
+            onClick={() => signOut(firebaseAuth)}
+            style={{ width: '100%', padding: '6px', fontSize: '0.75rem', color: '#ef4444', background: 'rgba(239,68,68,0.1)', border: 'none', cursor: 'pointer', borderRadius: 'var(--radius-sm)' }}
+          >
+            Odhlásit se
+          </button>
+        </div>
       </aside>
 
       {/* Main Workspace Workspace */}
@@ -390,12 +824,14 @@ export default function App() {
               {activeTab === 'agent' && 'Autonomní AI QA Agent'}
               {activeTab === 'compare' && 'Porovnávání stránek (Prod vs Preview)'}
               {activeTab === 'audit' && 'Audit překladů a lokalizace'}
+              {activeTab === 'auraguard' && 'AuraAuraGuard Hub'}
               {activeTab === 'settings' && 'Globální nastavení'}
             </h2>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
               {activeTab === 'agent' && 'Agent provádí akce jako člověk a hledá chyby za běhu'}
               {activeTab === 'compare' && 'Porovnává textový a vizuální obsah mezi dvěma verzemi webu'}
               {activeTab === 'audit' && 'Kontrola překladů na webu proti databázi nebo nadefinovanému slovníku'}
+              {activeTab === 'auraguard' && 'Plánovaný syntetický monitoring a sběr klientských chyb v reálném čase'}
               {activeTab === 'settings' && 'Konfigurace lokální Ollama instance a výchozí nastavení prohlížeče'}
             </p>
           </div>
@@ -485,9 +921,23 @@ export default function App() {
                       />
                     </div>
 
-                    <button className="btn" type="submit">
-                      Spustit Agentní Test <ArrowRight size={16} />
-                    </button>
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                      <button className="btn" type="submit" style={{ flex: 1, minWidth: '200px' }}>
+                        Spustit Agentní Test <ArrowRight size={16} />
+                      </button>
+                      <button className="btn" type="button" onClick={handleRunA11yAudit} style={{ backgroundColor: 'var(--accent)', color: 'white' }}>
+                        EAA <Shield size={16} />
+                      </button>
+                      <button className="btn" type="button" onClick={handleRunNis2Audit} style={{ backgroundColor: '#10b981', color: 'white', borderColor: '#10b981' }}>
+                        NIS2 & PQC <Shield size={16} />
+                      </button>
+                      <button className="btn" type="button" onClick={handleRunGreenAudit} style={{ backgroundColor: '#059669', color: 'white', borderColor: '#059669' }}>
+                        Green Deal & GDPR <Shield size={16} />
+                      </button>
+                      <button className="btn" type="button" onClick={handleRunCraAudit} style={{ backgroundColor: '#4f46e5', color: 'white', borderColor: '#4f46e5' }}>
+                        CRA SBOM <Shield size={16} />
+                      </button>
+                    </div>
                   </form>
                 )}
 
@@ -1039,8 +1489,899 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* Tab 5: AuraAuraGuard Hub */}
+          {activeTab === 'auraguard' && (
+            <div className="auraguard-hub-layout" style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: '20px', alignItems: 'start' }}>
+              
+              {/* Leve sloupce: Syntetický monitoring */}
+              <div className="auraguard-left-panel" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                
+                {/* Správa monitorů */}
+                <div className="card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 className="card-title" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Activity size={16} color="var(--accent)" /> Syntetický monitoring
+                    </h3>
+                    <button 
+                      className="btn btn-secondary" 
+                      onClick={() => setIsAddingMonitor(!isAddingMonitor)}
+                      style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.8rem' }}
+                    >
+                      <Plus size={14} /> Přidat monitor
+                    </button>
+                  </div>
+
+                  {isAddingMonitor && (
+                    <form 
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        const monitorData = {
+                          name: monitorName,
+                          url: monitorUrl,
+                          goal: monitorGoal,
+                          interval: monitorInterval,
+                          maxSteps: monitorMaxSteps,
+                          trackExceptions: monitorExceptions,
+                          trackPromiseRejections: monitorPromiseRejections,
+                          trackLongTasks: monitorLongTasks,
+                          trackNetworkErrors: monitorNetworkErrors,
+                          slowApiThresholdMs: monitorSlowApiThresholdMs,
+                          active: true
+                        };
+                        try {
+                          const res = await fetch('/api/monitors', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(monitorData)
+                          });
+                          if (res.ok) {
+                            fetchMonitors();
+                            setMonitorName('');
+                            setIsAddingMonitor(false);
+                          }
+                        } catch (e) {
+                          console.error(e);
+                        }
+                      }}
+                      style={{ background: 'rgba(255,255,255,0.05)', padding: '12px', borderRadius: 'var(--radius)', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}
+                    >
+                      <div className="form-group">
+                        <label>Název monitoru</label>
+                        <input type="text" value={monitorName} onChange={(e) => setMonitorName(e.target.value)} placeholder="Např. Homepage Checker" required />
+                      </div>
+                      <div className="form-group">
+                        <label>Cílová URL</label>
+                        <input type="url" value={monitorUrl} onChange={(e) => setMonitorUrl(e.target.value)} required />
+                      </div>
+                      <div className="form-group">
+                        <label>Zadání pro AI Agent</label>
+                        <input type="text" value={monitorGoal} onChange={(e) => setMonitorGoal(e.target.value)} required />
+                      </div>
+                      
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        <div className="form-group">
+                          <label>Interval kontroly</label>
+                          <select value={monitorInterval} onChange={(e) => setMonitorInterval(e.target.value)}>
+                            <option value="1m">Každou 1 minutu (test)</option>
+                            <option value="5m">Každých 5 minut</option>
+                            <option value="15m">Každých 15 minut</option>
+                            <option value="1h">Každou hodinu</option>
+                            <option value="12h">Každých 12 hodin</option>
+                            <option value="24h">Jednou denně</option>
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label>Max kroků agenta</label>
+                          <input type="number" value={monitorMaxSteps} onChange={(e) => setMonitorMaxSteps(parseInt(e.target.value) || 5)} />
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem' }}>
+                        <strong style={{ display: 'block', margin: '4px 0 2px 0' }}>Co vše hlídat:</strong>
+                        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={monitorExceptions} onChange={(e) => setMonitorExceptions(e.target.checked)} /> JS Výjimky
+                          </label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={monitorPromiseRejections} onChange={(e) => setMonitorPromiseRejections(e.target.checked)} /> Promises
+                          </label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={monitorLongTasks} onChange={(e) => setMonitorLongTasks(e.target.checked)} /> Zasekávání UI
+                          </label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={monitorNetworkErrors} onChange={(e) => setMonitorNetworkErrors(e.target.checked)} /> Síťové chyby
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="form-group">
+                        <label>Limit pro pomalou odezvu API (ms)</label>
+                        <input type="number" value={monitorSlowApiThresholdMs} onChange={(e) => setMonitorSlowApiThresholdMs(parseInt(e.target.value) || 1500)} />
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                        <button type="submit" className="btn btn-primary" style={{ flex: 1, padding: '6px' }}>Uložit monitor</button>
+                        <button type="button" className="btn btn-secondary" onClick={() => setIsAddingMonitor(false)} style={{ padding: '6px' }}>Zrušit</button>
+                      </div>
+                    </form>
+                  )}
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {monitors.length === 0 ? (
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '16px' }}>
+                        Žány aktivní monitory. Přidejte monitor pro periodickou kontrolu webů na pozadí.
+                      </div>
+                    ) : (
+                      monitors.map((mon) => {
+                        const statusColor = mon.lastRunStatus === 'success' ? '#22c55e' : (mon.lastRunStatus === 'failure' ? '#ef4444' : (mon.lastRunStatus === 'error' ? '#f59e0b' : 'var(--text-muted)'));
+                        return (
+                          <div 
+                            key={mon.id} 
+                            style={{ border: '1px solid rgba(255,255,255,0.1)', padding: '12px', borderRadius: 'var(--radius)', background: 'rgba(255,255,255,0.02)', display: 'flex', flexDirection: 'column', gap: '8px' }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                              <div>
+                                <h4 style={{ margin: 0, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  {mon.name}
+                                  <span style={{ fontSize: '0.7rem', background: mon.active ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.1)', color: mon.active ? '#4ade80' : 'var(--text-muted)', padding: '2px 6px', borderRadius: '10px' }}>
+                                    {mon.active ? 'Aktivní' : 'Neaktivní'}
+                                  </span>
+                                </h4>
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{mon.url}</span>
+                              </div>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button 
+                                  className="btn btn-secondary"
+                                  onClick={async () => {
+                                    try {
+                                      await fetch(`/api/monitors/${mon.id}`, {
+                                        method: 'PATCH',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ active: !mon.active })
+                                      });
+                                      fetchMonitors();
+                                    } catch (e) { console.error(e); }
+                                  }}
+                                  style={{ padding: '3px 6px', fontSize: '0.75rem' }}
+                                >
+                                  {mon.active ? 'Vypnout' : 'Zapnout'}
+                                </button>
+                                <button 
+                                  className="btn btn-secondary"
+                                  onClick={async () => {
+                                    if (confirm('Opravdu chcete smazat tento monitor?')) {
+                                      try {
+                                        await fetch(`/api/monitors/${mon.id}`, { method: 'DELETE' });
+                                        fetchMonitors();
+                                      } catch (e) { console.error(e); }
+                                    }
+                                  }}
+                                  style={{ padding: '3px 6px', fontSize: '0.75rem', color: '#ef4444' }}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '4px' }}>
+                              <span>Interval: <strong>{mon.interval}</strong></span>
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                Stav: <strong style={{ color: statusColor }}>
+                                  {mon.lastRunStatus === 'success' && 'V pořádku (OK)'}
+                                  {mon.lastRunStatus === 'failure' && `Chyby (${mon.lastRunBugsCount}x 🐛)`}
+                                  {mon.lastRunStatus === 'error' && 'Chyba běhu'}
+                                  {mon.lastRunStatus === 'none' && 'Dosud neběžel'}
+                                </strong>
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+                <div className="card">
+                  <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                    <Database size={16} color="var(--accent)" /> Projekty a API Klíče
+                  </h3>
+                  
+                  {/* Formulář pro nový projekt */}
+                  <form 
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!projectName) return;
+                      const allowedOrigins = projectOrigins.split(',').map(o => o.trim()).filter(Boolean);
+                      try {
+                        const res = await fetch('/api/projects', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ name: projectName, allowedOrigins })
+                        });
+                        if (res.ok) {
+                          setProjectName('');
+                          setProjectOrigins('');
+                          fetchProjects();
+                        }
+                      } catch (err) {
+                        console.error(err);
+                      }
+                    }}
+                    style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: 'var(--radius-sm)', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}
+                  >
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label style={{ fontSize: '0.75rem' }}>Název nového projektu</label>
+                      <input 
+                        type="text" 
+                        value={projectName} 
+                        onChange={(e) => setProjectName(e.target.value)} 
+                        placeholder="Např. Eshop Production" 
+                        required 
+                        style={{ padding: '6px', fontSize: '0.8rem' }}
+                      />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label style={{ fontSize: '0.75rem' }}>Povolené domény (Origin whitelist)</label>
+                      <input 
+                        type="text" 
+                        value={projectOrigins} 
+                        onChange={(e) => setProjectOrigins(e.target.value)} 
+                        placeholder="Např. http://localhost:3000, https://mujweb.cz" 
+                        style={{ padding: '6px', fontSize: '0.8rem' }}
+                      />
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Čárkami oddělený seznam domén. Nechte prázdné pro povolení všech domén.</span>
+                    </div>
+                    <button type="submit" className="btn btn-primary" style={{ padding: '6px', fontSize: '0.8rem', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <Plus size={12} /> Vytvořit projekt
+                    </button>
+                  </form>
+
+                  {/* Seznam projektů */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+                    {projects.length === 0 ? (
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center', padding: '12px' }}>
+                        Zatím nemáte vytvořený žádný projekt.
+                      </div>
+                    ) : (
+                      projects.map(p => (
+                        <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', borderRadius: '4px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', fontSize: '0.75rem' }}>
+                          <div>
+                            <strong style={{ color: 'white' }}>{p.name}</strong>
+                            <div style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
+                              Klíč: {p.id}
+                              <button 
+                                onClick={() => { navigator.clipboard.writeText(p.id); alert('Klíč projektu zkopírován!'); }}
+                                style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', padding: 0 }}
+                              >
+                                <Copy size={10} />
+                              </button>
+                            </div>
+                            {p.allowedOrigins && p.allowedOrigins.length > 0 && (
+                              <div style={{ fontSize: '0.65rem', color: '#fbbf24', marginTop: '2px' }}>
+                                Whitelist: {p.allowedOrigins.join(', ')}
+                              </div>
+                            )}
+                          </div>
+                          <button 
+                            onClick={async () => {
+                              if (confirm(`Opravdu smazat projekt ${p.name}?`)) {
+                                await fetch(`/api/projects/${p.id}`, { method: 'DELETE' });
+                                fetchProjects();
+                              }
+                            }}
+                            style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '4px' }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Generátor SDK kódu */}
+                <div className="card">
+                  <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <CodeIcon size={16} color="var(--accent)" /> Integrace AuraAuraGuard SDK
+                  </h3>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                    Chcete monitorovat výskyt chyb přímo z produkčních webů od reálných uživatelů? Zaklikněte konfiguraci níže a vložte kód do své HTML šablony.
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: 'var(--radius)', marginBottom: '12px' }}>
+                    <div className="form-group">
+                      <label>Vyberte Projekt</label>
+                      {projects.length === 0 ? (
+                        <span style={{ fontSize: '0.75rem', color: '#ef4444' }}>Nejprve vytvořte projekt výše.</span>
+                      ) : (
+                        <select 
+                          value={selectedProjectId} 
+                          onChange={(e) => setSelectedProjectId(e.target.value)} 
+                          style={{ fontSize: '0.8rem', padding: '6px', width: '100%' }}
+                        >
+                          {projects.map(p => (
+                            <option key={p.id} value={p.id}>{p.name} ({p.id})</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                    
+                    <div style={{ display: 'flex', gap: '12px', fontSize: '0.75rem', flexWrap: 'wrap' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={sdkErrors} onChange={(e) => setSdkErrors(e.target.checked)} /> Hlídat chyby JS
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={sdkPerf} onChange={(e) => setSdkPerf(e.target.checked)} /> Hlídat plynulost a API
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: 'var(--accent)', fontWeight: 'bold' }}>
+                        <input type="checkbox" checked={gdprSentinel} onChange={(e) => setGdprSentinel(e.target.checked)} /> 🔒 Aktivovat GDPR AI Sentinel
+                      </label>
+                    </div>
+
+                    {sdkPerf && (
+                      <div className="form-group">
+                        <label>Limit pomalých API (ms)</label>
+                        <input type="number" value={sdkSlowThreshold} onChange={(e) => setSdkSlowThreshold(parseInt(e.target.value) || 1500)} style={{ fontSize: '0.8rem', padding: '4px' }} />
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ position: 'relative' }}>
+                    <pre style={{ margin: 0, background: 'black', color: '#a9b7c6', padding: '12px', borderRadius: 'var(--radius-sm)', fontSize: '0.7rem', overflowX: 'auto', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+{`<script 
+  src="${window.location.protocol}//${window.location.host}/api/auraguard/sdk.js" 
+  data-project="${selectedProjectId}" 
+  data-track-errors="${sdkErrors}" 
+  data-track-perf="${sdkPerf}" 
+  data-gdpr-sentinel="${gdprSentinel}"
+  data-slow-api-threshold="${sdkSlowThreshold}">
+</script>`}
+                    </pre>
+                    <button 
+                      className="btn btn-secondary" 
+                      onClick={() => {
+                        if (!selectedProjectId) {
+                          alert('Nejprve vyberte nebo vytvořte projekt!');
+                          return;
+                        }
+                        const code = `<script \n  src="${window.location.protocol}//${window.location.host}/api/auraguard/sdk.js" \n  data-project="${selectedProjectId}" \n  data-track-errors="${sdkErrors}" \n  data-track-perf="${sdkPerf}" \n  data-slow-api-threshold="${sdkSlowThreshold}">\n</script>`;
+                        navigator.clipboard.writeText(code);
+                        alert('Kód SDK byl zkopírován do schránky!');
+                      }}
+                      style={{ position: 'absolute', top: '8px', right: '8px', padding: '3px 6px', fontSize: '0.7rem', background: 'rgba(255,255,255,0.1)', cursor: 'pointer' }}
+                    >
+                      <Copy size={12} /> Kopírovat
+                    </button>
+                  </div>
+                </div>-slow-api-threshold="\${sdkSlowThreshold}">\n</script>`;
+                        navigator.clipboard.writeText(code);
+                        alert('Kód SDK byl zkopírován do schránky!');
+                      }}
+                      style={{ position: 'absolute', top: '8px', right: '8px', padding: '3px 6px', fontSize: '0.7rem', background: 'rgba(255,255,255,0.1)' }}
+                    >
+                      <Copy size={12} /> Kopírovat
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Pravý sloupec: Live Stream produkčních chyb */}
+              <div className="card" style={{ height: 'calc(100vh - 130px)', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <h3 className="card-title" style={{ margin: 0 }}>
+                    📊 Produkční telemetry Live Stream
+                  </h3>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button 
+                      className="btn btn-primary" 
+                      onClick={() => {
+                        const filteredEvents = auraguardEvents.filter(evt => {
+                          const passProj = activeAuraGuardProjectFilter === 'all' || evt.project === activeAuraGuardProjectFilter;
+                          const passType = activeAuraGuardTypeFilter === 'all' || evt.type === activeAuraGuardTypeFilter;
+                          return passProj && passType;
+                        });
+                        runSecurityAnalysis(filteredEvents);
+                      }}
+                      style={{ padding: '3px 8px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      <Shield size={14} /> AI Audit
+                    </button>
+                    <button 
+                      className="btn btn-secondary" 
+                      onClick={() => { setAuraGuardEvents([]); }}
+                      style={{ padding: '3px 8px', fontSize: '0.75rem' }}
+                    >
+                      Vymazat log
+                    </button>
+                  </div>
+                </div>
+
+                {/* Filtry */}
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Filtrovat projekt</label>
+                    <select 
+                      value={activeAuraGuardProjectFilter} 
+                      onChange={(e) => setActiveAuraGuardProjectFilter(e.target.value)}
+                      style={{ width: '100%', fontSize: '0.75rem', padding: '4px' }}
+                    >
+                      <option value="all">Všechny projekty</option>
+                      {[...new Set(auraguardEvents.map(e => e.project))].map(proj => (
+                        <option key={proj} value={proj}>{proj}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Filtrovat typ</label>
+                    <select 
+                      value={activeAuraGuardTypeFilter} 
+                      onChange={(e) => setActiveAuraGuardTypeFilter(e.target.value)}
+                      style={{ width: '100%', fontSize: '0.75rem', padding: '4px' }}
+                    >
+                      <option value="all">Všechny události</option>
+                      <option value="error">JS Chyby (Error)</option>
+                      <option value="promise">Sliby (Promise)</option>
+                      <option value="performance">Plynulost (UI Block)</option>
+                      <option value="network_slow">Pomalá API</option>
+                      <option value="network_error">Chyby API (status >= 400)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Výpis událostí */}
+                <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {auraguardEvents.filter(evt => {
+                    const passProj = activeAuraGuardProjectFilter === 'all' || evt.project === activeAuraGuardProjectFilter;
+                    const passType = activeAuraGuardTypeFilter === 'all' || evt.type === activeAuraGuardTypeFilter;
+                    return passProj && passType;
+                  }).length === 0 ? (
+                    <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '32px', fontSize: '0.85rem' }}>
+                      Žádné přicházející události. Zde se v reálném čase zobrazí chyby ze stránek s integrovaným AuraAuraGuard SDK.
+                    </div>
+                  ) : (
+                    auraguardEvents.filter(evt => {
+                      const passProj = activeAuraGuardProjectFilter === 'all' || evt.project === activeAuraGuardProjectFilter;
+                      const passType = activeAuraGuardTypeFilter === 'all' || evt.type === activeAuraGuardTypeFilter;
+                      return passProj && passType;
+                    }).map((evt) => {
+                      const dateStr = new Date(evt.timestamp).toLocaleTimeString();
+                      const typeBadge = evt.type === 'error' ? '❌ JS ERROR' : (evt.type === 'promise' ? '⚠️ PROMISE' : (evt.type === 'performance' ? '⚡ PERFORMANCE' : (evt.type === 'network_slow' ? '⏳ SLOW API' : '🌐 NET ERROR')));
+                      const badgeBg = evt.type === 'error' || evt.type === 'network_error' ? 'rgba(239,68,68,0.15)' : (evt.type === 'performance' || evt.type === 'network_slow' ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.15)');
+                      const badgeColor = evt.type === 'error' || evt.type === 'network_error' ? '#ef4444' : (evt.type === 'performance' || evt.type === 'network_slow' ? '#fbbf24' : '#60a5fa');
+
+                      return (
+                        <div 
+                          key={evt.id} 
+                          style={{ border: '1px solid rgba(255,255,255,0.06)', padding: '10px', borderRadius: 'var(--radius-sm)', background: 'rgba(255,255,255,0.01)', fontSize: '0.8rem', display: 'flex', flexDirection: 'column', gap: '4px' }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--accent)' }}>Project: {evt.project}</span>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{dateStr}</span>
+                          </div>
+                          
+                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '2px' }}>
+                            <span style={{ background: badgeBg, color: badgeColor, fontSize: '0.65rem', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
+                              {typeBadge}
+                            </span>
+                            {evt.count > 1 && (
+                              <span style={{ background: 'rgba(255, 255, 255, 0.1)', color: 'var(--text-light)', fontSize: '0.65rem', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
+                                x{evt.count}
+                              </span>
+                            )}
+                            <span style={{ fontWeight: '600' }}>
+                              {evt.type === 'error' && formatRedactedText(evt.data.message)}
+                              {evt.type === 'promise' && formatRedactedText(evt.data.message)}
+                              {evt.type === 'performance' && 'Zablokování UI hlavního vlákna'}
+                              {evt.type === 'network_slow' && `Pomalé API: ${evt.data.method} ${getDomain(evt.data.url)}`}
+                              {evt.type === 'network_error' && `Selhání API: HTTP ${evt.data.status} pro ${evt.data.method}`}
+                            </span>
+                          </div>
+
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-dark)', wordBreak: 'break-all', background: 'rgba(0,0,0,0.1)', padding: '6px', borderRadius: '4px', fontFamily: 'monospace' }}>
+                            {evt.type === 'error' && `Chyba v ${evt.data.filename || 'unknown'}:${evt.data.lineno || 0}`}
+                            {evt.type === 'promise' && `Neošetřený Slib (Promise rejection)`}
+                            {evt.type === 'performance' && `Trvání blokování: ${evt.data.duration} ms`}
+                            {evt.type === 'network_slow' && `Odezva: ${evt.data.duration} ms, URL: ${evt.data.url}`}
+                            {evt.type === 'network_error' && `URL: ${evt.data.url}`}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+            </div>
+          )}
         </div>
       </main>
+
+      {/* Modální okno pro Audit Přístupnosti (EAA) */}
+      {a11yModalOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card" style={{ width: '100%', maxWidth: '800px', maxHeight: '90vh', overflowY: 'auto', backgroundColor: '#1e1e1e', border: '1px solid var(--accent)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Shield size={24} color="var(--accent)" /> EAA Audit Přístupnosti (WCAG)
+              </h2>
+              <button 
+                onClick={() => setA11yModalOpen(false)}
+                style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                &times;
+              </button>
+            </div>
+            
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6' }}>
+              {a11yLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}>
+                  <div className="spinner" style={{ marginBottom: '16px' }}></div>
+                  <p>Probíhá skenování přístupnosti stránky pro shodu s European Accessibility Act...</p>
+                </div>
+              ) : a11yResult ? (
+                <div>
+                  <div style={{ marginBottom: '16px' }}>
+                    <strong style={{ color: a11yResult.violations.length === 0 ? '#10b981' : '#ef4444', fontSize: '1.2rem' }}>
+                      Nalezeno porušení: {a11yResult.violations.length}
+                    </strong>
+                  </div>
+                  {a11yResult.violations.length === 0 ? (
+                    <p>Skvělá práce! Stránka neobsahuje žádné detekovatelné chyby v přístupnosti.</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      {a11yResult.violations.map(v => (
+                        <div key={v.id} style={{ background: 'rgba(255,255,255,0.05)', padding: '12px', borderRadius: 'var(--radius-sm)' }}>
+                          <h4 style={{ margin: '0 0 8px 0', color: 'var(--accent)' }}>{v.id} ({v.impact})</h4>
+                          <p style={{ margin: '0 0 8px 0', fontSize: '0.9rem' }}>{v.description}</p>
+                          <a href={v.helpUrl} target="_blank" rel="noreferrer" style={{ color: '#60a5fa', fontSize: '0.8rem' }}>{v.help}</a>
+                          <div style={{ marginTop: '8px', fontSize: '0.8rem', background: 'rgba(0,0,0,0.3)', padding: '8px', fontFamily: 'monospace' }}>
+                            {v.nodes.map((n, i) => (
+                              <div key={i} style={{ marginBottom: i < v.nodes.length - 1 ? '8px' : 0 }}>
+                                <div style={{ color: '#ef4444' }}>{n.failureSummary}</div>
+                                <div style={{ color: '#a9b7c6', whiteSpace: 'pre-wrap', marginTop: '4px' }}>{n.html}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p>Nepodařilo se načíst výsledky.</p>
+              )}
+            </div>
+            
+            <div style={{ marginTop: '20px', textAlign: 'right', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '20px' }}>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => setA11yModalOpen(false)}
+              >
+                Zavřít
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modální okno pro NIS2 a PQC */}
+      {nis2ModalOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card" style={{ width: '100%', maxWidth: '800px', maxHeight: '90vh', overflowY: 'auto', backgroundColor: '#1e1e1e', border: '1px solid #10b981' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#10b981' }}>
+                <Shield size={24} /> Evropský bezpečnostní audit (NIS2 & PQC)
+              </h2>
+              <button 
+                onClick={() => setNis2ModalOpen(false)}
+                style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                &times;
+              </button>
+            </div>
+            
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6' }}>
+              {nis2Loading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}>
+                  <div className="spinner" style={{ marginBottom: '16px', borderColor: '#10b981', borderTopColor: 'transparent' }}></div>
+                  <p>Probíhá kybernetický audit pro NIS2 a skenování PQC readiness...</p>
+                </div>
+              ) : nis2Result ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                  
+                  {/* NIS2 Sekce */}
+                  <div>
+                    <h3 style={{ color: '#10b981', marginTop: 0, borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '8px' }}>1. Kybernetická odolnost (NIS2 Hlavičky)</h3>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Směrnice NIS2 vyžaduje zabezpečenou infrastrukturu. Kontrolujeme přítomnost základních HTTP hlaviček proti útokům jako Clickjacking, XSS a downgrade útokům.</p>
+                    
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '16px' }}>
+                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: \`4px solid \${nis2Result.nis2.hsts ? '#10b981' : '#ef4444'}\` }}>
+                        <div style={{ fontWeight: 'bold' }}>Strict-Transport-Security (HSTS)</div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Vynucuje HTTPS spojení.</div>
+                      </div>
+                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: \`4px solid \${nis2Result.nis2.csp ? '#10b981' : '#ef4444'}\` }}>
+                        <div style={{ fontWeight: 'bold' }}>Content-Security-Policy (CSP)</div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Zabraňuje XSS útokům.</div>
+                      </div>
+                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: \`4px solid \${nis2Result.nis2.xFrameOptions ? '#10b981' : '#ef4444'}\` }}>
+                        <div style={{ fontWeight: 'bold' }}>X-Frame-Options</div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Zabraňuje Clickjackingu.</div>
+                      </div>
+                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: \`4px solid \${nis2Result.nis2.xContentTypeOptions ? '#10b981' : '#ef4444'}\` }}>
+                        <div style={{ fontWeight: 'bold' }}>X-Content-Type-Options</div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Zabraňuje MIME-sniffingu.</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* PQC Sekce */}
+                  <div>
+                    <h3 style={{ color: '#10b981', marginTop: 0, borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '8px' }}>2. Kvantová bezpečnost (PQC Readiness)</h3>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Zhodnocení šifrování z hlediska budoucí odolnosti proti kvantovým počítačům (dle doporučení ENISA).</p>
+                    
+                    <div style={{ background: 'rgba(0,0,0,0.2)', padding: '16px', borderRadius: '8px', marginTop: '16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span>Protokol:</span>
+                        <strong style={{ color: nis2Result.pqc.protocol.includes('TLS 1.3') ? '#10b981' : '#f59e0b' }}>{nis2Result.pqc.protocol}</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span>Certifikační autorita:</span>
+                        <strong>{nis2Result.pqc.issuer}</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span>Šifrováno (HTTPS):</span>
+                        <strong style={{ color: nis2Result.pqc.secure ? '#10b981' : '#ef4444' }}>{nis2Result.pqc.secure ? 'Ano' : 'Ne'}</strong>
+                      </div>
+                      
+                      <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '4px', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                        <strong style={{ color: '#10b981' }}>Hodnocení a Doporučení:</strong>
+                        <p style={{ margin: '8px 0 0 0', fontSize: '0.9rem' }}>{nis2Result.pqc.recommendation}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              ) : (
+                <p>Nepodařilo se načíst výsledky.</p>
+              )}
+            </div>
+            
+            <div style={{ marginTop: '20px', textAlign: 'right', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '20px' }}>
+              <button className="btn btn-secondary" onClick={() => setNis2ModalOpen(false)}>
+                Zavřít
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modální okno pro Green Deal a GDPR */}
+      {greenModalOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card" style={{ width: '100%', maxWidth: '900px', maxHeight: '90vh', overflowY: 'auto', backgroundColor: '#1e1e1e', border: '1px solid #059669' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#059669' }}>
+                <Shield size={24} /> Audit Udržitelnosti a Soukromí
+              </h2>
+              <button 
+                onClick={() => setGreenModalOpen(false)}
+                style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                &times;
+              </button>
+            </div>
+            
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6' }}>
+              {greenLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}>
+                  <div className="spinner" style={{ marginBottom: '16px', borderColor: '#059669', borderTopColor: 'transparent' }}></div>
+                  <p>Probíhá měření uhlíkové stopy a geolokace síťových spojení...</p>
+                </div>
+              ) : greenResult ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
+                  
+                  {/* Green Deal Sekce */}
+                  <div>
+                    <h3 style={{ color: '#059669', marginTop: 0, borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '8px' }}>1. Uhlíková stopa (Green Software Engineering)</h3>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Měření objemu stažených dat při inicializaci a jejich přepočet na produkci CO2 (dle metodiky Sustainable Web Design).</p>
+                    
+                    <div style={{ display: 'flex', gap: '20px', marginTop: '16px' }}>
+                      <div style={{ flex: 1, padding: '20px', borderRadius: '8px', background: 'rgba(5, 150, 105, 0.1)', border: '1px solid rgba(5, 150, 105, 0.3)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#059669' }}>{greenResult.green.totalMb} MB</div>
+                        <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Přeneseno dat</div>
+                      </div>
+                      <div style={{ flex: 1, padding: '20px', borderRadius: '8px', background: 'rgba(5, 150, 105, 0.1)', border: '1px solid rgba(5, 150, 105, 0.3)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#059669' }}>{greenResult.green.co2Grams} g</div>
+                        <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>CO2 na načtení</div>
+                      </div>
+                      <div style={{ flex: 1, padding: '20px', borderRadius: '8px', background: 'rgba(5, 150, 105, 0.1)', border: '1px solid rgba(5, 150, 105, 0.3)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: greenResult.green.rating.includes('A') ? '#10b981' : (greenResult.green.rating.includes('C') ? '#f59e0b' : '#ef4444') }}>{greenResult.green.rating}</div>
+                        <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Hodnocení</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* GDPR Residency Sekce */}
+                  <div>
+                    <h3 style={{ color: '#059669', marginTop: 0, borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '8px' }}>2. Toky dat a Data Residency (GDPR/Schrems II)</h3>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Analýza fyzické lokace serverů. Odesílání dat do zemí bez adekvátní ochrany (např. USA) může být rizikové pro osobní údaje Evropanů.</p>
+                    
+                    {greenResult.residency.usesUSServers && (
+                      <div style={{ padding: '12px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '4px', color: '#ef4444', marginBottom: '16px' }}>
+                        <strong>⚠️ Upozornění:</strong> Bylo zjištěno odesílání dat na servery ve Spojených státech (US). Ujistěte se, že máte vyřešený Data Privacy Framework nebo SCC.
+                      </div>
+                    )}
+                    
+                    <div style={{ maxHeight: '250px', overflowY: 'auto', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', padding: '12px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', textAlign: 'left' }}>
+                            <th style={{ padding: '8px' }}>Doména (Third-party/API)</th>
+                            <th style={{ padding: '8px' }}>IP Adresa</th>
+                            <th style={{ padding: '8px' }}>Lokalita</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {greenResult.residency.locations.map((loc, i) => (
+                            <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                              <td style={{ padding: '8px', fontFamily: 'monospace' }}>{loc.domain}</td>
+                              <td style={{ padding: '8px', color: 'var(--text-muted)' }}>{loc.ip}</td>
+                              <td style={{ padding: '8px', color: loc.isEU ? '#10b981' : '#f59e0b', fontWeight: 'bold' }}>
+                                {loc.country} {loc.isEU ? '(EU)' : '(Mimo EU)'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                </div>
+              ) : (
+                <p>Nepodařilo se načíst výsledky.</p>
+              )}
+            </div>
+            
+            <div style={{ marginTop: '20px', textAlign: 'right', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '20px' }}>
+              <button className="btn btn-secondary" onClick={() => setGreenModalOpen(false)}>
+                Zavřít
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CRA SBOM Modal */}
+      {craModalOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card" style={{ width: '100%', maxWidth: '700px', backgroundColor: '#1e1e1e', border: '1px solid #4f46e5' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#4f46e5' }}>
+                <Shield size={24} /> Cyber Resilience Act (SBOM)
+              </h2>
+              <button onClick={() => setCraModalOpen(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}>&times;</button>
+            </div>
+            
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6' }}>
+              {craLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}>
+                  <div className="spinner" style={{ marginBottom: '16px', borderColor: '#4f46e5', borderTopColor: 'transparent' }}></div>
+                  <p>Analyzuji klientské knihovny a sestavuji SBOM (Software Bill of Materials)...</p>
+                </div>
+              ) : craResult ? (
+                <div>
+                  <p style={{ marginBottom: '16px', fontSize: '0.9rem', color: 'var(--text-muted)' }}>CRA (Cyber Resilience Act) vyžaduje, aby digitální produkty měly přehled o komponentách třetích stran. Zde je dynamicky sestavený SBOM pro testovanou stránku.</p>
+                  
+                  {craResult.sbom.length === 0 ? (
+                    <div style={{ padding: '16px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', textAlign: 'center' }}>
+                      Nebyly detekovány žádné známé klientské frameworky nebo knihovny (např. React, Vue, jQuery).
+                    </div>
+                  ) : (
+                    <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '8px', padding: '12px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', textAlign: 'left' }}>
+                            <th style={{ padding: '8px' }}>Komponenta</th>
+                            <th style={{ padding: '8px' }}>Verze</th>
+                            <th style={{ padding: '8px' }}>Typ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {craResult.sbom.map((lib, i) => (
+                            <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                              <td style={{ padding: '8px', fontWeight: 'bold' }}>{lib.name}</td>
+                              <td style={{ padding: '8px', color: 'var(--text-muted)' }}>{lib.version}</td>
+                              <td style={{ padding: '8px' }}>
+                                <span style={{ padding: '2px 6px', background: lib.type === 'Framework' ? 'rgba(79, 70, 229, 0.2)' : 'rgba(16, 185, 129, 0.2)', color: lib.type === 'Framework' ? '#818cf8' : '#34d399', borderRadius: '4px', fontSize: '0.8rem' }}>
+                                  {lib.type}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p>Nepodařilo se načíst SBOM.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Auto-Heal Modal */}
+      {autoHealModalOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card" style={{ width: '100%', maxWidth: '800px', maxHeight: '90vh', overflowY: 'auto', backgroundColor: '#1e1e1e', border: '1px solid #10b981' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#10b981' }}>
+                <Code size={24} /> Polyglot Auto-Healing AI
+              </h2>
+              <button onClick={() => setAutoHealModalOpen(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}>&times;</button>
+            </div>
+            
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6' }}>
+              <p style={{ marginBottom: '16px', fontSize: '0.9rem', color: 'var(--text-muted)' }}>Umělá inteligence analyzovala stack trace a vygenerovala následující Unified Diff patch pro opravu chyby.</p>
+              
+              <div style={{ background: '#111', padding: '16px', borderRadius: '4px', overflowX: 'auto', whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.9rem', color: '#a78bfa' }}>
+                {autoHealPatch}
+              </div>
+            </div>
+            
+            <div style={{ marginTop: '20px', textAlign: 'right', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '20px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button className="btn btn-secondary" onClick={() => copyToClipboard(autoHealPatch)}>
+                Kopírovat Patch
+              </button>
+              <button className="btn btn-secondary" onClick={() => setAutoHealModalOpen(false)}>
+                Zavřít
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal pro zobrazení bezpečnostní analýzy */}
+      {securityAnalysisModalOpen && (
+        <div className="modal-overlay" style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <div className="modal-content" style={{
+            backgroundColor: 'var(--bg-main)', border: '1px solid var(--border-color)',
+            borderRadius: 'var(--radius)', padding: '20px', width: '80%', maxWidth: '900px',
+            maxHeight: '90vh', display: 'flex', flexDirection: 'column'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Shield color="var(--accent)" /> Komplexní AI Bezpečnostní Analýza
+              </h2>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => setSecurityAnalysisModalOpen(false)}
+                style={{ padding: '4px 8px' }}
+              >
+                Zavřít
+              </button>
+            </div>
+            
+            <div style={{ flex: 1, overflowY: 'auto', backgroundColor: 'var(--bg-secondary)', padding: '16px', borderRadius: 'var(--radius-sm)' }}>
+              {securityAnalysisLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px', gap: '16px' }}>
+                  <Loader2 size={32} className="spinning" color="var(--accent)" />
+                  <p>Analyzuji AuraGuard události z hlediska kyberbezpečnosti...</p>
+                </div>
+              ) : securityAnalysisResult ? (
+                <div className="markdown-body" style={{ color: 'var(--text-main)', fontSize: '0.9rem', lineHeight: 1.6 }}>
+                  <ReactMarkdown>{securityAnalysisResult}</ReactMarkdown>
+                </div>
+              ) : (
+                <p>Nebyly nalezeny žádné výsledky.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

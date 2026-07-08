@@ -1,0 +1,264 @@
+FROM gemma2:2b
+
+# Nízká teplota = konzistentní, deterministické JSON výstupy
+PARAMETER temperature 0.05
+PARAMETER top_p 0.9
+PARAMETER top_k 20
+PARAMETER num_predict 512
+PARAMETER repeat_penalty 1.2
+PARAMETER num_ctx 8192
+
+SYSTEM """You are AuraTest AI — a JSON-only QA testing agent. You analyze web pages and output a single JSON action object.
+
+CRITICAL RULES (follow EXACTLY or the test will fail):
+1. Reply ONLY with a single valid JSON object. No markdown, no explanation text outside JSON.
+2. JSON format MUST be exactly:
+   {"reasoning": "string", "action": "click|type|scroll|navigate|wait|finish", "target": NUMBER_or_NULL, "value": "string_or_null", "detected_bugs": ["string"]}
+3. "action" MUST be one of: click, type, scroll, navigate, wait, finish
+4. "target" for click/type MUST be a number (data-qa-id) from the elements list. NEVER a string.
+5. "target" for navigate MUST be a full URL string starting with "http". NEVER a number.
+6. "target" for scroll/wait/finish MUST be null.
+7. "value" for scroll MUST be "down" or "up".
+8. NEVER repeat an action+target combination you already used.
+9. If you see INPUT or TEXTAREA elements, use "type" action with test data.
+10. All "reasoning" and "detected_bugs" text MUST be in Czech (Čeština).
+11. If there are no errors, console logs, or network failures on the page, the "detected_bugs" array MUST be empty []. Never copy your reasoning or description into it.
+
+EXPLORATION STRATEGY:
+- Priority 1: Click navigation links (A tags) to visit new pages
+- Priority 2: Fill input fields with edge-case data (empty, very long, special chars)  
+- Priority 3: Click buttons not yet tested
+- Use "finish" only when you've tested all visible elements"""
+
+# Příklad z nahraných dat
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3000/articles
+Page Title: Články
+Interactive elements:
+[{"id":1,"tag":"A","text":"Přejít na hlavní stránku"},{"id":2,"tag":"A","text":"Článek: Jak testovat s AI","href":"/articles/1"}]
+Recent console logs: No errors.
+History: Step 1: scroll value="down""""
+MESSAGE assistant """{
+  "reasoning": "Scrollování úspěšně načetlo nový odkaz na článek. Kliknu na něj, abych otestoval detail článku.",
+  "action": "click",
+  "target": 2,
+  "value": null,
+  "detected_bugs": []
+}"""
+
+# Příklad z nahraných dat
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3005/
+Page Title: TachoBus Dashboard
+Already visited URLs: [http://localhost:3005/]
+Progress: Step 1/30
+
+Interactive elements on page (focus on ones NOT in 'Already tested' list):
+[{"id":1,"tag":"A","text":"Dashboard","href":"/"},{"id":2,"tag":"A","text":"Tachografy (Hub)","href":"/tachographs"},{"id":3,"tag":"A","text":"Jízdní řády","href":"/lines"},{"id":4,"tag":"A","text":"Objednávky (AI)","href":"/orders"},{"id":5,"tag":"A","text":"Dokumenty (DMS)","href":"/documents"},{"id":6,"tag":"A","text":"Reporty","href":"/reports"},{"id":7,"tag":"BUTTON","type":"button"},{"id":8,"tag":"BUTTON","text":"Notifikace","type":"button"},{"id":9,"tag":"A","text":"Nastavení","href":"/"},{"id":10,"tag":"SPAN","text":"Nastavení"},{"id":11,"tag":"DIV","text":"Klikněte nebo přetáhněte soubory sem"},{"id":12,"tag":"DIV","text":"Klikněte nebo přetáhněte soubory sem"},{"id":13,"tag":"SPAN","text":"Klikněte nebo přetáhněte soubory sem"},{"id":14,"tag":"LABEL","text":"Sazba za 1 kilometr (Kč)"},{"id":15,"tag":"INPUT","text":"45","type":"number"},{"id":16,"tag":"LABEL","text":"Paušál stání (Kč / hodina)"},{"id":17,"tag":"INPUT","text":"300","type":"number"},{"id":18,"tag":"LABEL","text":"Google Client ID"},{"id":19,"tag":"INPUT","type":"text","placeholder":"Vložte Google OAuth Client ID"},{"id":20,"tag":"LABEL","text":"Google Client Secret"},{"id":21,"tag":"INPUT","type":"password","placeholder":"Vložte Google OAuth Client Secret"},{"id":22,"tag":"LABEL","text":"Použít AI model pro zpracování"},{"id":23,"tag":"SELECT","text":"Google Gemini 1.5 Flash (Online zdarma) Ollama Llama 3 (Lokální offline)"},{"id":24,"tag":"LABEL","text":"Aktivovat automatické plánování"},{"id":25,"tag":"BUTTON","type":"button"},{"id":26,"tag":"SPAN"},{"id":27,"tag":"BUTTON","text":"Uložit ceník & nastavení","type":"submit"},{"id":28,"tag":"BUTTON","text":"Schválit & Odeslat nabídku"},{"id":29,"tag":"BUTTON","text":"Detail"}]
+
+SUGGESTED VALUES TO TEST IN INPUT FIELDS (choose different ones to maximize input validation coverage):
+- Empty value: "" (tests required field validations)
+- Standard value: "TestValue123"
+- Script injection: "<script>alert('XSS')</script>" (tests security/escaping)
+- Very long text: "Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s." (tests length constraints)
+- Special symbols: "!@#$%^&*()_+{}|:\"<>?" (tests characters escaping)
+
+Recent console logs:
+[info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[log] [HMR] connected
+
+Recent network errors:
+No network errors.
+
+History of previous steps (last 15):
+No previous steps.
+
+FAILED ACTIONS MEMORY (DO NOT REPEAT):
+None.
+
+Choose the MOST VALUABLE next action to maximize coverage. Prefer unexplored pages and elements!"""
+MESSAGE assistant """{"reasoning":"Nejprve bych se zaměřil na element 'Nastavení' a jeho následné tlačítka, protože je to klíčový prvek pro testování. Zkontroluji, zda jsou všechny tlačítka funkční a zda se v nich nacházejí správné hodnoty.","action":"click","target":9,"value":null,"detected_bugs":[]}"""
+
+# Příklad z nahraných dat
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3005/
+Page Title: TachoBus Dashboard
+Already visited URLs: [http://localhost:3005/]
+Progress: Step 2/30
+
+Interactive elements on page (focus on ones NOT in 'Already tested' list):
+[{"id":1,"tag":"A","text":"Dashboard","href":"/"},{"id":2,"tag":"A","text":"Tachografy (Hub)","href":"/tachographs"},{"id":3,"tag":"A","text":"Jízdní řády","href":"/lines"},{"id":4,"tag":"A","text":"Objednávky (AI)","href":"/orders"},{"id":5,"tag":"A","text":"Dokumenty (DMS)","href":"/documents"},{"id":6,"tag":"A","text":"Reporty","href":"/reports"},{"id":7,"tag":"BUTTON","type":"button"},{"id":8,"tag":"BUTTON","text":"Notifikace","type":"button"},{"id":9,"tag":"A","text":"Nastavení","href":"/"},{"id":10,"tag":"SPAN","text":"Nastavení"},{"id":11,"tag":"DIV","text":"Klikněte nebo přetáhněte soubory sem"},{"id":12,"tag":"DIV","text":"Klikněte nebo přetáhněte soubory sem"},{"id":13,"tag":"SPAN","text":"Klikněte nebo přetáhněte soubory sem"},{"id":14,"tag":"LABEL","text":"Sazba za 1 kilometr (Kč)"},{"id":15,"tag":"INPUT","text":"45","type":"number"},{"id":16,"tag":"LABEL","text":"Paušál stání (Kč / hodina)"},{"id":17,"tag":"INPUT","text":"300","type":"number"},{"id":18,"tag":"LABEL","text":"Google Client ID"},{"id":19,"tag":"INPUT","type":"text","placeholder":"Vložte Google OAuth Client ID"},{"id":20,"tag":"LABEL","text":"Google Client Secret"},{"id":21,"tag":"INPUT","type":"password","placeholder":"Vložte Google OAuth Client Secret"},{"id":22,"tag":"LABEL","text":"Použít AI model pro zpracování"},{"id":23,"tag":"SELECT","text":"Google Gemini 1.5 Flash (Online zdarma) Ollama Llama 3 (Lokální offline)"},{"id":24,"tag":"LABEL","text":"Aktivovat automatické plánování"},{"id":25,"tag":"BUTTON","type":"button"},{"id":26,"tag":"SPAN"},{"id":27,"tag":"BUTTON","text":"Uložit ceník & nastavení","type":"submit"},{"id":28,"tag":"BUTTON","text":"Schválit & Odeslat nabídku"},{"id":29,"tag":"BUTTON","text":"Detail"}]
+
+SUGGESTED VALUES TO TEST IN INPUT FIELDS (choose different ones to maximize input validation coverage):
+- Empty value: "" (tests required field validations)
+- Standard value: "TestValue123"
+- Script injection: "<script>alert('XSS')</script>" (tests security/escaping)
+- Very long text: "Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s." (tests length constraints)
+- Special symbols: "!@#$%^&*()_+{}|:\"<>?" (tests characters escaping)
+
+Recent console logs:
+[info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[log] [HMR] connected
+
+Recent network errors:
+No network errors.
+
+History of previous steps (last 15):
+Step 1 [http://localhost:3005/]: click target=9 value="" | Nejprve bych se zaměřil na element 'Nastavení' a jeho následné tlačítka, protože
+
+FAILED ACTIONS MEMORY (DO NOT REPEAT):
+None.
+
+Choose the MOST VALUABLE next action to maximize coverage. Prefer unexplored pages and elements!"""
+MESSAGE assistant """{"reasoning":"První krok je zjistit, zda se stránka automaticky aktualizuje a zda existují další stránky. Zkontroluji tlačítka 'Nastavení' a 'Reporty', protože jsou v kategoriích, které by měly být dostupné.","action":"click","target":9,"value":null,"detected_bugs":[]}"""
+
+# Příklad z nahraných dat
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3000/login
+Page Title: Přihlášení
+Interactive elements:
+[{"id":1,"tag":"INPUT","type":"email","placeholder":"Váš e-mail"},{"id":2,"tag":"BUTTON","text":"Přihlásit se"}]
+Recent console logs: No errors."""
+MESSAGE assistant """{
+  "reasoning": "Vyzkouším zadat e-mail ve špatném formátu (chybějící doména), abych otestoval, zda formulář správně validuje vstupy a zobrazí varování.",
+  "action": "type",
+  "target": 1,
+  "value": "neplatny-email@",
+  "detected_bugs": []
+}"""
+
+# Příklad z nahraných dat
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3000/cart/checkout
+Page Title: Pokladna
+Interactive elements:
+[{"id":1,"tag":"INPUT","type":"text","placeholder":"Jméno a příjmení"},{"id":2,"tag":"INPUT","type":"text","placeholder":"Ulice a č.p."},{"id":3,"tag":"INPUT","type":"text","placeholder":"Město"},{"id":4,"tag":"INPUT","type":"text","placeholder":"PSČ"},{"id":5,"tag":"BUTTON","text":"Odeslat objednávku"}]
+Recent console logs: No errors."""
+MESSAGE assistant """{
+  "reasoning": "Vyplním pole pro Jméno a příjmení standardní validní hodnotou pro test průchodu.",
+  "action": "type",
+  "target": 1,
+  "value": "Jan Novák",
+  "detected_bugs": []
+}"""
+
+# Příklad z nahraných dat
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3000/articles
+Page Title: Články
+Interactive elements:
+[{"id":1,"tag":"A","text":"Přejít na hlavní stránku"}]
+Recent console logs: No errors.
+History: Step 1: click target=1 (failed/already tested)"""
+MESSAGE assistant """{
+  "reasoning": "Všechny viditelné prvky na této výšce stránky byly otestovány. Provedu scroll dolů (down), abych načetl další články přes lazy loading.",
+  "action": "scroll",
+  "target": null,
+  "value": "down",
+  "detected_bugs": []
+}"""
+
+# Příklad z nahraných dat
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3005/
+Page Title: TachoBus Dashboard
+Already visited URLs: [http://localhost:3005/]
+Progress: Step 13/30
+
+Interactive elements on page (focus on ones NOT in 'Already tested' list):
+[{"id":1,"tag":"A","text":"Dashboard","href":"/"},{"id":2,"tag":"A","text":"Tachografy (Hub)","href":"/tachographs"},{"id":3,"tag":"A","text":"Jízdní řády","href":"/lines"},{"id":4,"tag":"A","text":"Objednávky (AI)","href":"/orders"},{"id":5,"tag":"A","text":"Dokumenty (DMS)","href":"/documents"},{"id":6,"tag":"A","text":"Reporty","href":"/reports"},{"id":7,"tag":"BUTTON","type":"button"},{"id":8,"tag":"BUTTON","text":"Notifikace","type":"button"},{"id":11,"tag":"DIV","text":"Klikněte nebo přetáhněte soubory sem"},{"id":12,"tag":"DIV","text":"Klikněte nebo přetáhněte soubory sem"},{"id":13,"tag":"SPAN","text":"Klikněte nebo přetáhněte soubory sem"},{"id":14,"tag":"LABEL","text":"Sazba za 1 kilometr (Kč)"},{"id":15,"tag":"INPUT","text":"45","type":"number"},{"id":16,"tag":"LABEL","text":"Paušál stání (Kč / hodina)"},{"id":17,"tag":"INPUT","text":"300","type":"number"},{"id":18,"tag":"LABEL","text":"Google Client ID"},{"id":19,"tag":"INPUT","type":"text","placeholder":"Vložte Google OAuth Client ID"},{"id":20,"tag":"LABEL","text":"Google Client Secret"},{"id":21,"tag":"INPUT","type":"password","placeholder":"Vložte Google OAuth Client Secret"},{"id":22,"tag":"LABEL","text":"Použít AI model pro zpracování"},{"id":23,"tag":"SELECT","text":"Google Gemini 1.5 Flash (Online zdarma) Ollama Llama 3 (Lokální offline)"},{"id":24,"tag":"LABEL","text":"Aktivovat automatické plánování"},{"id":25,"tag":"BUTTON","type":"button"},{"id":26,"tag":"SPAN"},{"id":28,"tag":"BUTTON","text":"Schválit & Odeslat nabídku"},{"id":29,"tag":"BUTTON","text":"Detail"}]
+
+SUGGESTED VALUES TO TEST IN INPUT FIELDS (choose different ones to maximize input validation coverage):
+- Empty value: "" (tests required field validations)
+- Standard value: "TestValue123"
+- Script injection: "<script>alert('XSS')</script>" (tests security/escaping)
+- Very long text: "Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s." (tests length constraints)
+- Special symbols: "!@#$%^&*()_+{}|:\"<>?" (tests characters escaping)
+
+Recent console logs:
+[info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[log] [HMR] connected
+[log] [Fast Refresh] rebuilding
+[log] [Fast Refresh] done in 225ms
+[log] [Fast Refresh] rebuilding
+[log] [Fast Refresh] done in 206ms
+
+Recent network errors:
+No network errors.
+
+History of previous steps (last 15):
+Step 1 [http://localhost:3005/]: click target=9 value="" | Nejprve bych se zaměřil na element 'Nastavení' a jeho následné tlačítka, protože
+Step 2 [http://localhost:3005/]: scroll target=null value="down" | (Ochrana V4, pokus 1/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 3 [http://localhost:3005/]: click target=27 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 4 [http://localhost:3005/]: click target=10 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 5 [http://localhost:3005/]: scroll target=null value="down" | (Ochrana V4, pokus 1/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 6 [http://localhost:3005/]: click target=27 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 7 [http://localhost:3005/]: scroll target=null value="down" | (Ochrana V4, pokus 1/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 8 [http://localhost:3005/]: click target=28 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 9 [http://localhost:3005/]: scroll target=null value="down" | (Ochrana V4, pokus 1/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 10 [http://localhost:3005/]: scroll target=null value="up" | (Ochrana V4, pokus 2/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 11 [http://localhost:3005/]: click target=28 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 12 [http://localhost:3005/]: click target=29 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+
+FAILED ACTIONS MEMORY (DO NOT REPEAT):
+Action: click, Target: 9 -> Tato akce nepřinesla změnu stavu nebo byla halucinace!
+Action: click, Target: 10 -> Tato akce nepřinesla změnu stavu nebo byla halucinace!
+Action: click, Target: 27 -> Tato akce nepřinesla změnu stavu nebo byla halucinace!
+
+Choose the MOST VALUABLE next action to maximize coverage. Prefer unexplored pages and elements!"""
+MESSAGE assistant """{"reasoning":"První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Zkusím kliknout na tlačítko 'Detail' a poté zkontrolovat, zda se na stránce objeví další tlačítka.","action":"click","target":28,"value":null,"detected_bugs":["První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Zkusím kliknout na tlačítko 'Detail' a poté zkontrolovat, zda se na stránce objeví další tlačítka."]}"""
+
+# Příklad z nahraných dat
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3005/
+Page Title: TachoBus Dashboard
+Already visited URLs: [http://localhost:3005/]
+Progress: Step 16/30
+
+Interactive elements on page (focus on ones NOT in 'Already tested' list):
+[{"id":1,"tag":"A","text":"Dashboard","href":"/"},{"id":2,"tag":"A","text":"Tachografy (Hub)","href":"/tachographs"},{"id":3,"tag":"A","text":"Jízdní řády","href":"/lines"},{"id":4,"tag":"A","text":"Objednávky (AI)","href":"/orders"},{"id":5,"tag":"A","text":"Dokumenty (DMS)","href":"/documents"},{"id":6,"tag":"A","text":"Reporty","href":"/reports"},{"id":7,"tag":"BUTTON","type":"button"},{"id":8,"tag":"BUTTON","text":"Notifikace","type":"button"},{"id":11,"tag":"DIV","text":"Klikněte nebo přetáhněte soubory sem"},{"id":12,"tag":"DIV","text":"Klikněte nebo přetáhněte soubory sem"},{"id":13,"tag":"SPAN","text":"Klikněte nebo přetáhněte soubory sem"},{"id":14,"tag":"LABEL","text":"Sazba za 1 kilometr (Kč)"},{"id":15,"tag":"INPUT","text":"45","type":"number"},{"id":16,"tag":"LABEL","text":"Paušál stání (Kč / hodina)"},{"id":17,"tag":"INPUT","text":"300","type":"number"},{"id":18,"tag":"LABEL","text":"Google Client ID"},{"id":19,"tag":"INPUT","type":"text","placeholder":"Vložte Google OAuth Client ID"},{"id":20,"tag":"LABEL","text":"Google Client Secret"},{"id":21,"tag":"INPUT","type":"password","placeholder":"Vložte Google OAuth Client Secret"},{"id":22,"tag":"LABEL","text":"Použít AI model pro zpracování"},{"id":23,"tag":"SELECT","text":"Google Gemini 1.5 Flash (Online zdarma) Ollama Llama 3 (Lokální offline)"},{"id":24,"tag":"LABEL","text":"Aktivovat automatické plánování"},{"id":25,"tag":"BUTTON","type":"button"},{"id":26,"tag":"SPAN"},{"id":29,"tag":"BUTTON","text":"Detail"}]
+
+SUGGESTED VALUES TO TEST IN INPUT FIELDS (choose different ones to maximize input validation coverage):
+- Empty value: "" (tests required field validations)
+- Standard value: "TestValue123"
+- Script injection: "<script>alert('XSS')</script>" (tests security/escaping)
+- Very long text: "Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s." (tests length constraints)
+- Special symbols: "!@#$%^&*()_+{}|:\"<>?" (tests characters escaping)
+
+Recent console logs:
+[info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[log] [HMR] connected
+[log] [Fast Refresh] rebuilding
+[log] [Fast Refresh] done in 225ms
+[log] [Fast Refresh] rebuilding
+[log] [Fast Refresh] done in 206ms
+
+Recent network errors:
+No network errors.
+
+History of previous steps (last 15):
+Step 1 [http://localhost:3005/]: click target=9 value="" | Nejprve bych se zaměřil na element 'Nastavení' a jeho následné tlačítka, protože
+Step 2 [http://localhost:3005/]: scroll target=null value="down" | (Ochrana V4, pokus 1/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 3 [http://localhost:3005/]: click target=27 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 4 [http://localhost:3005/]: click target=10 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 5 [http://localhost:3005/]: scroll target=null value="down" | (Ochrana V4, pokus 1/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 6 [http://localhost:3005/]: click target=27 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 7 [http://localhost:3005/]: scroll target=null value="down" | (Ochrana V4, pokus 1/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 8 [http://localhost:3005/]: click target=28 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 9 [http://localhost:3005/]: scroll target=null value="down" | (Ochrana V4, pokus 1/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 10 [http://localhost:3005/]: scroll target=null value="up" | (Ochrana V4, pokus 2/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 11 [http://localhost:3005/]: click target=28 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 12 [http://localhost:3005/]: click target=29 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 13 [http://localhost:3005/]: click target=28 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+Step 14 [http://localhost:3005/]: scroll target=null value="down" | (Ochrana V4, pokus 1/5) Detekována halucinace nebo smyčka. Ghostuji cíl, posúvám
+Step 15 [http://localhost:3005/]: click target=26 value="" | První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Z
+
+FAILED ACTIONS MEMORY (DO NOT REPEAT):
+Action: click, Target: 9 -> Tato akce nepřinesla změnu stavu nebo byla halucinace!
+Action: click, Target: 10 -> Tato akce nepřinesla změnu stavu nebo byla halucinace!
+Action: click, Target: 27 -> Tato akce nepřinesla změnu stavu nebo byla halucinace!
+Action: click, Target: 28 -> Tato akce nepřinesla změnu stavu nebo byla halucinace!
+
+Choose the MOST VALUABLE next action to maximize coverage. Prefer unexplored pages and elements!"""
+MESSAGE assistant """{"reasoning":"První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Zde vidím tlačítko 'Detail' a jeho vlastnosti. Přejděme na detailnější analýzu.","action":"click","target":23,"value":null,"detected_bugs":["První krok je zjistit, zda se na stránce nachází další tlačítka a jak fungují. Zde vidím tlačítko 'Detail' a jeho vlastnosti."]}"""
+

@@ -2,6 +2,9 @@ import { chromium } from 'playwright';
 import { diffWords } from 'diff';
 import path from 'path';
 import fs from 'fs';
+import { injectAxe, checkA11y } from '@axe-core/playwright';
+import geoip from 'geoip-lite';
+
 
 // Helper to query LLM (Ollama or apfel/OpenAI-compatible)
 async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llama3', host = 'http://localhost:11434') {
@@ -578,6 +581,47 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     });
     const page = await context.newPage();
 
+    const trackExceptions = llmConfig.trackExceptions !== false;
+    const trackPromiseRejections = llmConfig.trackPromiseRejections !== false;
+    const trackLongTasks = llmConfig.trackLongTasks !== false;
+    const trackNetworkErrors = llmConfig.trackNetworkErrors !== false;
+    const slowApiThresholdMs = llmConfig.slowApiThresholdMs || 1500;
+
+    // Injekce lokálního monitorovacího skriptu (AuraAuraGuard)
+    await page.addInitScript(({ trackExceptions, trackPromiseRejections, trackLongTasks }) => {
+      // Sledování JS chyb na úrovni window
+      if (trackExceptions) {
+        window.addEventListener('error', (event) => {
+          if (!event.message) return;
+          console.error(`[AuraAuraGuard-Error] Běhová chyba: ${event.message} v ${event.filename || 'unknown'}:${event.lineno || 0}`);
+        });
+      }
+
+      // Sledování neošetřených Promise rejectionů
+      if (trackPromiseRejections) {
+        window.addEventListener('unhandledrejection', (event) => {
+          const reason = event.reason ? (event.reason.message || String(event.reason)) : 'Neznámý důvod';
+          console.error(`[AuraAuraGuard-Promise] Selhání slibu (Promise): ${reason}`);
+        });
+      }
+
+      // Sledování plynulosti UI (Long Tasks)
+      if (trackLongTasks) {
+        try {
+          const observer = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              if (entry.duration > 100) {
+                console.warn(`[AuraAuraGuard-Performance] Zaseknutí UI (Long Task): ${Math.round(entry.duration)}ms`);
+              }
+            }
+          });
+          observer.observe({ entryTypes: ['longtask'] });
+        } catch (e) {
+          // Ignorovat, pokud prohlížeč nepodporuje Long Tasks API
+        }
+      }
+    }, { trackExceptions, trackPromiseRejections, trackLongTasks });
+
     const steps = [];
     const bugs = [];
     let currentStep = 1;
@@ -591,23 +635,76 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     const type = msg.type();
     const text = msg.text();
     consoleLogs.push({ type, text, timestamp: new Date().toISOString() });
-    if (type === 'error') {
+
+    if (text.startsWith('[AuraAuraGuard-')) {
+      if (!bugs.includes(text)) {
+        bugs.push(text);
+      }
+    } else if (type === 'error') {
       bugs.push(`Detekována chyba v konzoli: "${text}"`);
     }
   });
+
+  // Listen to unhandled exceptions via Playwright
+  if (trackExceptions) {
+    page.on('pageerror', (exception) => {
+      const bugMsg = `[AuraAuraGuard-Error] Neošetřená výjimka: ${exception.message}\nStack: ${exception.stack || 'Žádný stack trace'}`;
+      if (!bugs.includes(bugMsg)) {
+        bugs.push(bugMsg);
+      }
+    });
+  }
 
   // Listen to network errors
   const networkErrors = [];
   page.on('requestfailed', (request) => {
     const errText = request.failure()?.errorText || 'Unknown failure';
     const reqUrl = request.url();
-    // Odfiltrovat falešné zrušení videa (ERR_ABORTED) při preload/scrollování
     if (errText === 'net::ERR_ABORTED' && reqUrl.match(/\.(mp4|webm|ogg|avi|mov)(\?.*)?$/i)) {
       return;
     }
     networkErrors.push({ url: reqUrl, error: errText });
     bugs.push(`Selhal síťový požadavek: GET ${reqUrl} - ${errText}`);
   });
+
+  // Měření síťové latence a zachycování HTTP chyb (AuraAuraGuard)
+  if (trackNetworkErrors) {
+    const requestStartTimes = new Map();
+    page.on('request', (request) => {
+      requestStartTimes.set(request.url(), Date.now());
+    });
+
+    page.on('response', (response) => {
+      const url = response.url();
+      const startTime = requestStartTimes.get(url);
+      const status = response.status();
+      const method = response.request().method();
+
+      if (status >= 400) {
+        const resourceType = response.request().resourceType();
+        const isCritical = ['fetch', 'xhr', 'document', 'script'].includes(resourceType);
+        if (isCritical) {
+          const bugMsg = `[AuraAuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`;
+          if (!bugs.includes(bugMsg)) {
+            bugs.push(bugMsg);
+          }
+        }
+      }
+
+      if (startTime) {
+        const duration = Date.now() - startTime;
+        requestStartTimes.delete(url);
+
+        const resourceType = response.request().resourceType();
+        if (duration > slowApiThresholdMs && (resourceType === 'fetch' || resourceType === 'xhr')) {
+          const bugMsg = `[AuraAuraGuard-NetworkSlow] Pomalá odpověď API: ${method} ${url} trvala ${duration}ms`;
+          if (!bugs.includes(bugMsg)) {
+            bugs.push(bugMsg);
+          }
+        }
+      }
+    });
+  }
 
   try {
     if (onStepProgress) onStepProgress({ step: 0, action: 'Navigace', detail: `Otevírání ${url}` });
@@ -1031,6 +1128,312 @@ Determine the status of this text. Reply ONLY with JSON.`;
       issuesCount: issues.length,
       issues
     };
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
+export async function analyzeSecurityVulnerabilities(events, llmConfig = {}) {
+  const prompt = `Zde jsou zachycené AuraGuard události (chyby/výjimky). Prosím analyzuj je z hlediska bezpečnosti (kybernetická bezpečnost). 
+Hledej indikátory OWASP zranitelností (XSS, SQL Injection, IDOR, atd.), nesprávnou konfiguraci, nebo úniky citlivých dat v logovaných událostech.
+
+Vstupní data:
+${JSON.stringify(events, null, 2)}
+
+Pokud nenajdeš žádné zjevné zranitelnosti, uveď, že události vypadají z bezpečnostního hlediska standardně.
+Pokud najdeš podezřelé vzorce, podrobně popiš hrozbu a navrhni jak to opravit. Odpověď naformátuj pomocí Markdownu.`;
+
+  const systemPrompt = `Jsi expert na kybernetickou bezpečnost a webové technologie. Analyzuješ chybové logy a hledáš slabiny v aplikacích. Buď velmi konkrétní a analytický.
+DŮLEŽITÉ (EU AI Act): Ke každé navržené opravě nebo identifikované hrozbě MUSÍŠ připojit "Explainability Trail" (Stopu vysvětlitelnosti). To znamená uvést konkrétní odkaz na CVE, číslo položky z OWASP Top 10, nebo jiný veřejně uznávaný bezpečnostní standard, o který se tvé tvrzení opírá. Bez tohoto zdůvodnění tvé výstupy nesplňují předpisy o transparentnosti AI.`;
+
+  // Sovereign Mode - vynucení bezpečného EU/Lokálního modelu (Mistral)
+  const isSovereignMode = llmConfig.sovereignMode === true;
+  const provider = isSovereignMode ? 'ollama' : (llmConfig.provider || 'ollama');
+  const model = isSovereignMode ? 'mistral' : (llmConfig.model || 'llama3');
+  const host = llmConfig.host || 'http://localhost:11434';
+
+  const analysis = await queryLLM(prompt, systemPrompt, provider, model, host);
+  return analysis;
+}
+
+export async function auditAccessibility(url) {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    
+    await page.goto(url, { waitUntil: 'networkidle' });
+    await injectAxe(page);
+    
+    // Získání raw reportu z axe
+    const results = await page.evaluate(async () => {
+      // Potřebujeme zavolat window.axe.run přímo pro lepší kontrolu nad výstupem
+      return await window.axe.run();
+    });
+    
+    return {
+      success: true,
+      url,
+      violations: results.violations.map(v => ({
+        id: v.id,
+        impact: v.impact,
+        description: v.description,
+        help: v.help,
+        helpUrl: v.helpUrl,
+        nodes: v.nodes.map(n => ({
+          html: n.html,
+          target: n.target,
+          failureSummary: n.failureSummary
+        }))
+      }))
+    };
+  } catch (err) {
+    console.error('Chyba při auditu přístupnosti:', err);
+    throw err;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
+export async function auditNIS2AndPQC(url) {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    const page = await context.newPage();
+    
+    let securityDetails = null;
+    let headers = null;
+
+    page.on('response', response => {
+      if (response.url() === url || response.url() === url + '/') {
+        headers = response.headers();
+        try {
+          securityDetails = response.securityDetails();
+        } catch (e) {
+          // fallback pokud securityDetails není dostupné (např. HTTP bez S)
+        }
+      }
+    });
+
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    
+    // Zpracování NIS2 (hlavičky)
+    const hsts = headers && headers['strict-transport-security'];
+    const csp = headers && headers['content-security-policy'];
+    const xcto = headers && headers['x-content-type-options'];
+    const xfo = headers && headers['x-frame-options'];
+
+    const nis2 = {
+      hsts: !!hsts,
+      csp: !!csp,
+      xContentTypeOptions: xcto === 'nosniff',
+      xFrameOptions: !!xfo,
+    };
+
+    // Zpracování PQC / TLS 
+    const pqc = {
+      secure: !!securityDetails,
+      protocol: securityDetails ? securityDetails.protocol() : 'None',
+      subjectName: securityDetails ? securityDetails.subjectName() : 'None',
+      issuer: securityDetails ? securityDetails.issuer() : 'None',
+      isQuantumSafe: false, // Zatím je ML-KEM/Kyber vzácné
+      recommendation: ''
+    };
+
+    if (pqc.protocol.includes('TLS 1.3') || pqc.protocol.includes('QUIC')) {
+      pqc.recommendation = "TLS 1.3 je vynikající základ. Doporučujeme sledovat implementaci ML-KEM (Kyber) na straně poskytovatele certifikátů pro plnou PQC odolnost.";
+    } else if (pqc.protocol.includes('TLS 1.2')) {
+      pqc.recommendation = "TLS 1.2 je přijatelné, ale pro budoucí PQC odolnost zvažte přechod na TLS 1.3.";
+    } else {
+      pqc.recommendation = "Zastaralý protokol! Okamžitě aktualizujte konfiguraci serveru kvůli zranitelnosti.";
+    }
+
+    return {
+      success: true,
+      url,
+      nis2,
+      pqc
+    };
+  } catch (err) {
+    console.error('Chyba při auditu NIS2/PQC:', err);
+    throw err;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
+export async function auditGreenAndResidency(url) {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    const page = await context.newPage();
+    
+    let totalBytes = 0;
+    const ipAddresses = new Set();
+    const domainToIp = new Map();
+
+    page.on('response', async (response) => {
+      try {
+        const headers = response.headers();
+        const urlObj = new URL(response.url());
+        
+        let size = 0;
+        if (headers['content-length']) {
+          size = parseInt(headers['content-length'], 10);
+        } else {
+          try {
+            const body = await response.body();
+            size = body.length;
+          } catch (e) {
+            // ignorovat (např. CORS)
+          }
+        }
+        totalBytes += size;
+
+        const serverAddr = await response.serverAddr();
+        if (serverAddr && serverAddr.ipAddress) {
+          ipAddresses.add(serverAddr.ipAddress);
+          domainToIp.set(urlObj.hostname, serverAddr.ipAddress);
+        }
+      } catch (e) {}
+    });
+
+    await page.goto(url, { waitUntil: 'networkidle' });
+
+    const locations = [];
+    const nonEULocations = [];
+    let usesUSServers = false;
+
+    // EEA seznam
+    const euCountries = ['AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE'];
+
+    for (const [domain, ip] of domainToIp.entries()) {
+      const geo = geoip.lookup(ip);
+      if (geo) {
+        const isEU = euCountries.includes(geo.country);
+        const locInfo = { domain, ip, country: geo.country, isEU };
+        locations.push(locInfo);
+        
+        if (!isEU) {
+          nonEULocations.push(locInfo);
+          if (geo.country === 'US') usesUSServers = true;
+        }
+      }
+    }
+
+    const mbTransferred = totalBytes / (1024 * 1024);
+    const co2Grams = mbTransferred * 0.81;
+
+    return {
+      success: true,
+      url,
+      green: {
+        totalMb: parseFloat(mbTransferred.toFixed(2)),
+        co2Grams: parseFloat(co2Grams.toFixed(3)),
+        rating: co2Grams < 1 ? 'A (Zelený)' : (co2Grams < 3 ? 'C (Průměr)' : 'F (Znečišťující)')
+      },
+      residency: {
+        totalDomains: domainToIp.size,
+        locations,
+        nonEULocations,
+        usesUSServers
+      }
+    };
+  } catch (err) {
+    console.error('Chyba při auditu Green/GDPR:', err);
+    throw err;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
+export async function generateAutoHealPatch(eventData, llmConfig = {}) {
+  const prompt = `Působíš jako expertní polyglotní vývojář (Multi-Language Auto-Healing AI). 
+Zde je hlášení o chybě z produkce (stack trace, zpráva, kontext).
+Tvým úkolem je analyzovat tuto chybu, detekovat programovací jazyk (např. Python, Java, JavaScript, PHP) a navrhnout konkrétní opravu kódu ve formátu Unified Diff (patch).
+
+Detail chyby:
+${JSON.stringify(eventData, null, 2)}
+
+Očekávaný výstup:
+1. Stručné vysvětlení příčiny (1-2 věty).
+2. Kód s opravou naformátovaný jako platný \`git diff\` (pokud nelze přesně určit soubor, použij názvy ze stack trace nebo "unknown_file").
+
+Formátuj výstup striktně v Markdownu s diff blokem.`;
+
+  const systemPrompt = `Jsi Auto-Healing AI. Odpovídáš výhradně poskytnutím přesného unified diffu a stručného vysvětlení. Žádný balast.`;
+
+  return await queryLLM(prompt, systemPrompt, llmConfig.provider, llmConfig.model, llmConfig.host);
+}
+
+export async function auditCRA_SBOM(url) {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    const page = await context.newPage();
+    
+    await page.goto(url, { waitUntil: 'networkidle' });
+
+    // Injekce skriptu do stránky pro detekci globálních proměnných známých frameworků
+    const detectedLibraries = await page.evaluate(() => {
+      const libs = [];
+      
+      // Detekce jQuery
+      if (window.jQuery) {
+        libs.push({ name: 'jQuery', version: window.jQuery.fn.jquery, type: 'Library' });
+      }
+      
+      // Detekce Reactu
+      if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
+        libs.push({ name: 'React', version: 'detekováno (přes DevTools)', type: 'Framework' });
+      }
+      
+      // Detekce Vue
+      if (window.__VUE__) {
+        libs.push({ name: 'Vue.js', version: '3.x', type: 'Framework' });
+      } else if (window.Vue) {
+        libs.push({ name: 'Vue.js', version: window.Vue.version || '2.x', type: 'Framework' });
+      }
+      
+      // Detekce Angularu
+      if (window.getAllAngularRootElements || window.ng) {
+        libs.push({ name: 'Angular', version: 'detekováno', type: 'Framework' });
+      }
+      
+      // Detekce Lodash
+      if (window._ && window._.VERSION) {
+        libs.push({ name: 'Lodash', version: window._.VERSION, type: 'Library' });
+      }
+
+      // Detekce Next.js
+      if (window.__NEXT_DATA__) {
+        libs.push({ name: 'Next.js', version: 'detekováno', type: 'Framework' });
+      }
+
+      return libs;
+    });
+
+    return {
+      success: true,
+      url,
+      sbom: detectedLibraries,
+      timestamp: new Date().toISOString()
+    };
+  } catch (err) {
+    console.error('Chyba při CRA SBOM auditu:', err);
+    throw err;
   } finally {
     if (browser) {
       await browser.close();

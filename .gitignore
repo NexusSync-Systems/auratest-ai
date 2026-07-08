@@ -6,3 +6,7 @@ screenshots/
 test-results.json
 playwright-report/
 test-results/
+firebase-credentials.json
+scratch/
+sessions/
+videos/

@@ -1,3 +1,24 @@
+import { jest } from '@jest/globals';
+
+// Mock the db.js layer to prevent Firestore initialization and database calls during tests
+jest.mock('../db.js', () => {
+  return {
+    getSessions: jest.fn(() => Promise.resolve([])),
+    getSession: jest.fn(() => Promise.resolve(null)),
+    saveSession: jest.fn(() => Promise.resolve(true))
+  };
+});
+
+// Mock the auth.js middleware
+jest.mock('../auth.js', () => {
+  return {
+    authenticateToken: (req, res, next) => {
+      req.user = { userId: 'mock-user-123', email: 'test@example.com' };
+      next();
+    }
+  };
+});
+
 import request from 'supertest';
 import { app } from '../server.js';
 
