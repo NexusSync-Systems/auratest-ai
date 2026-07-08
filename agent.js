@@ -158,7 +158,15 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+
+      // ⚡ Bolt: Fast DOM retrieval using getElementsByTagName instead of slow querySelectorAll
+      const liveElements = document.getElementsByTagName('*');
+      const liveElementsLen = liveElements.length;
+      const elements = new Array(liveElementsLen);
+      for (let i = 0; i < liveElementsLen; i++) {
+        elements[i] = liveElements[i];
+      }
+
       const interactiveList = [];
       let qaIdCounter = 1;
 
