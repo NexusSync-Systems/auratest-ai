@@ -7,13 +7,18 @@ import fetch from 'node-fetch';
  * @param {string} title - Nadpis zprávy
  * @param {string} message - Detail zprávy
  * @param {boolean} isError - Zda jde o chybu (červená barva) nebo info (zelená)
- * @param {Array} blocks - Volitelné další bloky (Slack Block Kit)
+ * @param {Array} extraBlocks - Volitelné další bloky (Slack Block Kit)
+ * @param {string} botType - Typ bota ('compliance', 'uptime', 'ai')
  */
-export async function sendSlackNotification(channel, title, message, isError = true, extraBlocks = []) {
-  const token = process.env.SLACK_BOT_TOKEN;
+export async function sendSlackNotification(channel, title, message, isError = true, extraBlocks = [], botType = 'compliance') {
+  let token = process.env.SLACK_BOT_TOKEN; // Fallback for backwards compatibility
+
+  if (botType === 'uptime') token = process.env.SLACK_UPTIME_BOT_TOKEN;
+  else if (botType === 'compliance') token = process.env.SLACK_COMPLIANCE_BOT_TOKEN || process.env.SLACK_BOT_TOKEN;
+  else if (botType === 'ai') token = process.env.SLACK_AI_BOT_TOKEN || process.env.SLACK_COMPLIANCE_BOT_TOKEN || process.env.SLACK_BOT_TOKEN;
   
   if (!token) {
-    console.warn('⚠️ SLACK_BOT_TOKEN není definována, přeskočeno odesílání upozornění.');
+    console.warn(`⚠️ Slack Token pro bota '${botType}' není definován, přeskočeno odesílání upozornění.`);
     return false;
   }
 

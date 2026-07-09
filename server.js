@@ -231,7 +231,7 @@ app.post('/api/run-test', authenticateToken, async (req, res) => {
                 ]
               }
             ];
-            await sendSlackNotification(channel, 'AuraGuard AI: Nalezena funkční chyba na webu', `URL: *${url}*\nTestováno: _${sessionData.goal}_\nBugs: ${result.bugs.length}`, true, blocks);
+            await sendSlackNotification(channel, 'AuraGuard AI: Nalezena funkční chyba na webu', `URL: *${url}*\nTestováno: _${sessionData.goal}_\nBugs: ${result.bugs.length}`, true, blocks, 'ai');
           }
         }
       } catch (err) {
@@ -668,7 +668,7 @@ app.post('/api/auraguard/monitor-page', authenticateToken, async (req, res) => {
         { type: 'context', elements: [{ type: 'mrkdwn', text: `Odezva: ${result.responseTime}ms` }] },
         { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Zkontrolovat znovu', emoji: true }, style: 'primary', value: target.url, action_id: 'run_audit_again' }] }
       ];
-      await sendSlackNotification(channel, 'AuraGuard: VÝPADEK WEBU', `Stránka *${target.url}* neodpovídá správně!`, true, blocks);
+      await sendSlackNotification(channel, 'AuraGuard: VÝPADEK WEBU', `Stránka *${target.url}* neodpovídá správně!`, true, blocks, 'uptime');
     }
     
     res.json(result);
@@ -691,7 +691,7 @@ app.post('/api/auraguard/monitor-form', authenticateToken, async (req, res) => {
         { type: 'section', text: { type: 'mrkdwn', text: `*Detail chyby:*\n${result.error || 'Formulář nešel odeslat'}` } },
         { type: 'context', elements: [{ type: 'mrkdwn', text: `Odezva: ${result.responseTime}ms` }] }
       ];
-      await sendSlackNotification(channel, 'AuraGuard: CHYBA FORMULÁŘE', `Formulář na *${target.url}* selhal v odeslání.`, true, blocks);
+      await sendSlackNotification(channel, 'AuraGuard: CHYBA FORMULÁŘE', `Formulář na *${target.url}* selhal v odeslání.`, true, blocks, 'uptime');
     }
     
     res.json(result);
@@ -728,7 +728,9 @@ app.post('/api/slack/events', async (req, res) => {
           channelId,
           'Test znovu spuštěn',
           `Spouštím nový on-demand test pro URL: ${urlToTest} na žádost uživatele @${payload.user.username}...`,
-          false
+          false,
+          [],
+          'compliance' // Pro teď použijeme compliance jako fallback
         );
         // Zde by normálně následovalo asynchronní volání agent.js (runAutonomousTest nebo podobně)
         // ...
@@ -737,7 +739,9 @@ app.post('/api/slack/events', async (req, res) => {
           channelId,
           'Upozornění ignorováno',
           `Uživatel @${payload.user.username} označil tento alert jako vyřešený.`,
-          false
+          false,
+          [],
+          'compliance'
         );
       }
     }
