@@ -1,54 +1,74 @@
-# AuraTest AI 🤖
+# AuraGuard 🛡️ (dříve AuraTest AI)
 
-Moderní AI agent pro autonomní testování webových aplikací pomocí Playwrightu a umělé inteligence (Apfel / Llama3). Nástroj si web sám prozkoumá, objeví případné chyby (funkční i vizuální) a na konci vám naservíruje statistiky načítání a kompletní skript Playwrightu pro zopakování testu.
+AuraGuard je absolutní evropská špička v **Compliance-as-a-Code** a automatizovaném QA testování. Kombinuje sílu umělé inteligence (LLM), Playwrightu a expertních statických analyzátorů k tomu, aby vaše webové aplikace splňovaly přísné technické, bezpečnostní a evropské normy ještě před nasazením do produkce (CI/CD) i dlouho po něm.
 
 ---
 
-## 🚀 Jak to rozběhnout za 2 minuty (Bez Dockeru)
+## 🚀 Fáze 1: Jádro a AI Testing (Původní funkce)
+Původní jádro systému se soustředí na funkční testování webu "lidským způsobem".
+- **Autonomní AI Playwright Agent**: AI (např. přes model Llama 3 nebo Apfel) projde vaši aplikaci, "kliká" na tlačítka, hledá chyby a vygeneruje čistý Playwright skript pro opakovatelné testy.
+- **Monitoring sítě a konzole**: Sleduje selhání HTTP požadavků (500/404) a JS errory v konzoli přímo během běhu.
 
-Pokud nemáte nebo nechcete používat Docker, aplikace jde velice jednoduše nastartovat. Stačí mít nainstalované [Node.js](https://nodejs.org/) (ideálně verzi 18+).
+## 🇪🇺 Fáze 2: Evropské směrnice & Resilence
+Nástroj se transformoval na ochránce evropské byrokracie a spolehlivosti.
+- **Evropský akt o přístupnosti (EAA)**: Integrovaný Axe-Core skener testuje kontrast, aria-labels a celkovou webovou přístupnost aplikací pro hendikepované (povinné v EU).
+- **NIS2 & Post-Quantum Cryptography**: Ověřuje připravenost aplikace na tvrdou bezpečnost, např. analyzuje zabezpečení TLS/SSL vrstvy.
+- **DORA Chaos Engineering**: Vkládá do sítě šumy a zpoždění (např. +1000ms na každé API volání) pro otestování frontendové odolnosti, jak vyžaduje nařízení DORA.
+- **Green-Aware Computing**: Optimalizační widget a backend endpoint varují před deployem v době špičky nebo ve chvíli, kdy elektrická síť využívá příliš mnoho fosilních paliv.
 
-### 1. Instalace
-Otevřete si v této složce terminál a spusťte tento jediný příkaz:
+## 🏛️ Fáze 3: Kybernetická bezpečnost a Ochrana dat
+Plní další kritické body nutné k provozu webových služeb.
+- **AI Act Scanner**: Hledá odchozí LLM volání z aplikace a zjišťuje, zda je koncový uživatel transparentně informován, že s ním komunikuje AI.
+- **Striktní GDPR Cookie Auditor**: Tvrdý ePrivacy test – robot navštíví aplikaci a ignoruje cookie lištu. Pokud se před odsouhlasením naláduje Google Analytics nebo Meta Pixel do `localStorage` nebo cookies, systém zablokuje nasazení.
+- **Cyber Resilience Act (CRA) Scanner**: Generuje frontendový SBOM (seznam závislostí) a pinguje centrální Google OSV.dev (CVE) databázi. Nenechá projít jedinou známou veřejnou zranitelnost.
+- **Executive PDF Report**: Pomocí Print CSS exportuje celou záložku Audit do čistého PDF pro auditní orgány nebo management.
+
+## 🟢 Fáze 4: Kontinuální Uptime & Form Monitoring
+Slouží k provoznímu hlídání. Funguje bez těžkopádného Playwrightu, aby mohl aplikace kontrolovat bleskovou rychlostí každou minutu.
+- **On-Demand Page Monitor**: Bleskově kontroluje HTTP odpovědi (status = 200, doba odezvy) bez stahování JS balastu.
+- **Form Monitor**: Odesílá naprosto čisté HTTP POST/GET requesty simulující kontaktní/login formulář a ověřuje chování cílového serveru. Ujistí se, že "formuláře stále odesílají" bez nutnosti spouštět plný test.
+
+---
+
+## 💻 Integrace do CI/CD (AuraGuard CLI)
+
+Aplikace poskytuje vlastní bashový/CMD nástroj, kterým zablokujete pipeline v případě nesplnění legislativy.
+
+```bash
+# Nainstalování lokálního balíčku
+npm link
+
+# Spuštění testu proti produkci nebo staging serveru
+auraguard --url https://mojeaplikace.cz --audit all
+
+# Můžete volit i dílčí audity
+auraguard --url https://mojeaplikace.cz --audit nis2
+auraguard --url https://mojeaplikace.cz --audit cra
+auraguard --url https://mojeaplikace.cz --audit eaa
+auraguard --url https://mojeaplikace.cz --audit ai
+auraguard --url https://mojeaplikace.cz --audit gdpr
+auraguard --url https://mojeaplikace.cz --audit cve
+```
+
+Pokud jakýkoliv modul nahlásí kritickou nesrovnalost s legislativou, `auraguard` vrací `exit code 1` a úspěšně shodí např. GitHub Actions.
+
+---
+
+## 🛠 Jak to rozběhnout lokálně
+
+**1. Instalace**
 ```bash
 npm run setup
 ```
-*(Tento příkaz se postará úplně o všechno: stáhne knihovny pro backend, knihovny pro frontend a nakonec na pozadí stáhne samotný prohlížeč od Microsoftu pro automatické testování).*
+*(Zajistí Node.js závislosti i stažení Playwright prohlížečů).*
 
-### 2. Spuštění
-Aplikaci pak spustíte už jen příkazem:
+**2. Start (React + Node)**
 ```bash
 npm run dev
 ```
 
-Hotovo! Můžete si otevřít prohlížeč na **http://localhost:3001** a začít testovat. V pravém panelu v aplikaci vyplníte jako poskytovatele modelu "Apfel" s vaší API URL adresou, nebo lokální Ollamu.
-
-## 🍏 Jak nastavit Apfel jako chytřejší mozek
-Zatímco bezplatná lokální Ollama je skvělá na experimenty, nasazení opravdového cloudového LLM (např. přes Apfel) dodá testům vysokou stabilitu.
-1. Získejte svůj API klíč pro Apfel a zjistěte si Base URL, kam posílat requesty. (Přečtěte si [Oficiální dokumentaci k nasazení Apfel](https://apfel.ai/docs)).
-2. Pokud používáte Apfel s OpenAI kompatibilním rozhraním, stačí v pravém panelu aplikace AuraTest zvolit jako Poskytovatele **Apfel / OpenAI Compatible**.
-3. Do políčka Host URL zadejte vaši URL, typicky: `https://api.apfel.ai/v1/chat/completions` (nebo podobnou, viz. dokumentace vašeho Apfel serveru).
-4. *(Pokud Apfel vyžaduje autentizaci přes Bearer Token, je zapotřebí jej předat v UI, nebo nastavit přes systémovou proměnnou `OPENAI_API_KEY` na hostitelském serveru).*
+**3. Otevřít prohlížeč**
+Běžte na **http://localhost:3001** a začněte testovat. Pro AI funkce zadejte URL svého LLM providera v pravém panelu, případně prozkoumejte **novou záložku Audit (Ikona štítu)**.
 
 ---
-
-## 🐳 Rozběhnutí přes Docker
-Pokud máte nainstalovaný Docker a nechcete řešit ani Node.js instalaci, aplikace má připravené kompletní kontejnery:
-
-```bash
-# Pro první vytvoření aplikace (stáhne se Playwright Ubuntu image, může to trvat pár minut):
-docker compose build
-
-# Pro samotné spuštění (kdykoliv):
-docker compose up
-```
-
-Vygenerované Playwright skripty a chybové screenshoty se budou i při použití Dockeru automaticky propisovat přímo k vám na disk (do složek `screenshots/` a `generated-scripts/`).
-
----
-
-## 📋 Vlastnosti a funkce
-- **Autonomní Smoke Testy:** AI samo prokliká veřejnou část webu, zkusí se zalogovat a prošmejdí interní sekci. Následně nahlásí logické chyby.
-- **Detekce chyb v síti a v konzoli:** Monitoruje "červené errory" z API backendu a loguje je do finální zprávy.
-- **Export (Playwright skript):** Během klikání si AI zaznamenává své kroky a vygeneruje statický, profesionální kód, který si můžete vzít do vaší aplikace (TypeScript Playwright).
-- **CI/CD Endpoint:** Přístupno skrz `POST /api/trigger-test` pro automatizované nasazení (např. přes GitHub Actions). Zkuste si ho a pošlete tělo requestu.
+*Vyvinuto s podporou AI (Apfel / Gemini) v rámci transformace testování na Compliance-as-a-Code.*
