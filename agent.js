@@ -1524,3 +1524,170 @@ export function getGridEnergyStatus() {
       : 'Síť má dostatek obnovitelné energie. Ideální čas pro spuštění náročných batch jobů.'
   };
 }
+
+export async function auditAIAct(url) {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    
+    let aiApisDetected = [];
+    
+    page.on('request', request => {
+      const reqUrl = request.url().toLowerCase();
+      if (reqUrl.includes('api.openai.com') || reqUrl.includes('anthropic.com') || reqUrl.includes('generativelanguage.googleapis') || reqUrl.includes('huggingface.co')) {
+        aiApisDetected.push(request.url());
+      }
+    });
+
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+    
+    const pageText = await page.evaluate(() => document.body.innerText.toLowerCase());
+    const hasDisclaimer = pageText.includes('umělá inteligence') || pageText.includes('ai') || pageText.includes('vygenerováno') || pageText.includes('generativní');
+
+    const isCompliant = aiApisDetected.length === 0 || hasDisclaimer;
+
+    return {
+      success: true,
+      url,
+      aiAct: {
+        apisDetected: aiApisDetected,
+        hasDisclaimer,
+        isCompliant,
+        rating: isCompliant ? 'PASS: Aplikace splňuje AI Act (nebo AI nevyužívá)' : 'FAIL: Aplikace pravděpodobně využívá AI bez dostatečného upozornění uživatele (AI Transparency Violation).'
+      }
+    };
+  } catch (err) {
+    console.error('Chyba při AI Act auditu:', err);
+    throw err;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+export async function auditStrictCookies(url) {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    // Důležité: Nemažeme cookies, ale startujeme čistý kontext
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    
+    // Načteme stránku a NIKAM neklikáme
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+    
+    // Počkáme 5 sekund pro jistotu (často se trackery načítají opožděně)
+    await new Promise(r => setTimeout(r, 5000));
+    
+    const storageData = await page.evaluate(() => {
+      let ls = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        ls[key] = localStorage.getItem(key);
+      }
+      return {
+        cookies: document.cookie,
+        localStorage: ls
+      };
+    });
+
+    const cookiesArr = storageData.cookies ? storageData.cookies.split(';') : [];
+    
+    // Hledáme typické trackery
+    let suspiciousFound = [];
+    cookiesArr.forEach(c => {
+      if (c.includes('_ga') || c.includes('_fbp') || c.includes('_hj')) suspiciousFound.push(c.trim());
+    });
+    
+    Object.keys(storageData.localStorage).forEach(k => {
+      if (k.includes('amplitude') || k.includes('mixpanel') || k.includes('ga:')) suspiciousFound.push(`LS: ${k}`);
+    });
+
+    const isCompliant = suspiciousFound.length === 0;
+
+    return {
+      success: true,
+      url,
+      gdpr: {
+        suspiciousItems: suspiciousFound,
+        isCompliant,
+        rating: isCompliant 
+          ? 'PASS: Bez interakce s Cookie bannerem nebyly uloženy žádné podezřelé trackery.' 
+          : 'FAIL: ePrivacy Violation. Aplikace ukládá analytické/marketingové trackery před udělením souhlasu.'
+      }
+    };
+  } catch (err) {
+    console.error('Chyba při GDPR Cookie auditu:', err);
+    throw err;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+export async function auditCRAVulnerabilities(url) {
+  // 1. Získáme SBOM
+  const sbomReport = await auditCRA_SBOM(url);
+  const libraries = sbomReport.sbom;
+  
+  if (!libraries || libraries.length === 0) {
+    return {
+      success: true,
+      url,
+      cra: { libraries: [], vulnerabilities: [], isCompliant: true, rating: 'Nejsou detekovány žádné knihovny.' }
+    };
+  }
+
+  let vulnerabilities = [];
+  
+  // 2. Pro každou knihovnu zkontrolujeme zranitelnosti přes OSV API
+  // OSV api bere 'name' a 'version' v ekosystému 'npm' (předpokládáme frontend ekosystém)
+  for (const lib of libraries) {
+    if (lib.version !== 'Neznámá' && lib.version !== 'detekováno') {
+      try {
+        const query = {
+          version: lib.version.replace(/[^0-9.]/g, ''), // Očištění verze
+          package: { name: lib.name.toLowerCase(), ecosystem: 'npm' }
+        };
+        
+        const response = await fetch('https://api.osv.dev/v1/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(query)
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.vulns && data.vulns.length > 0) {
+            data.vulns.forEach(v => {
+              vulnerabilities.push({
+                library: lib.name,
+                version: lib.version,
+                cve: v.aliases ? v.aliases.find(a => a.startsWith('CVE-')) || v.id : v.id,
+                details: v.details || v.summary || 'Bez popisu',
+                severity: v.database_specific?.severity || 'HIGH'
+              });
+            });
+          }
+        }
+      } catch (err) {
+        console.error(`OSV API Error for ${lib.name}:`, err);
+      }
+    }
+  }
+
+  const isCompliant = vulnerabilities.length === 0;
+
+  return {
+    success: true,
+    url,
+    cra: {
+      libraries,
+      vulnerabilities,
+      isCompliant,
+      rating: isCompliant 
+        ? 'PASS: SBOM neobsahuje známé CVE zranitelnosti (CRA Compliant).' 
+        : `FAIL: Nalezeno ${vulnerabilities.length} zranitelností. Okamžitě aktualizujte závislosti!`
+    }
+  };
+}

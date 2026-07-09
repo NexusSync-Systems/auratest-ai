@@ -937,3 +937,52 @@ textarea {
 .sentry-card.info {
   border-left: 3px solid var(--accent-cyan);
 }
+/* ==========================================================================
+   Print Styles (Executive PDF Report)
+   ========================================================================== */
+@media print {
+  /* Skryjeme navigaci a všechny prvky označené třídou no-print */
+  nav, .no-print, button.btn {
+    display: none !important;
+  }
+  
+  /* Resetujeme pozadí a barvy textu pro tiskárnu */
+  body {
+    background-color: white !important;
+    color: black !important;
+  }
+  
+  .app-container {
+    background-color: white !important;
+  }
+
+  /* Modální okna (pokud chceme tisknout obsah modalu, např. s detaily) přeměníme na blok */
+  .printable {
+    position: relative !important;
+    background: white !important;
+    color: black !important;
+    border: 1px solid #ccc !important;
+    padding: 20px !important;
+    margin-bottom: 20px !important;
+    page-break-inside: avoid;
+  }
+  
+  /* Upravíme specifické barvy pro čitelnost na papíře */
+  h1, h2, h3, h4, h5, h6 {
+    color: black !important;
+  }
+  
+  .card {
+    background: white !important;
+    color: black !important;
+    border: 1px solid #ccc !important;
+    box-shadow: none !important;
+    page-break-inside: avoid;
+  }
+
+  /* Explicitně zapneme tisk background barev u některých elementů, jako jsou odznaky (badges) */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}

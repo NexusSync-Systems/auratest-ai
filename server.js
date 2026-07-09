@@ -4,7 +4,7 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
-import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM, runChaosTest, getGridEnergyStatus } from './agent.js';
+import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM, runChaosTest, getGridEnergyStatus, auditAIAct, auditStrictCookies, auditCRAVulnerabilities } from './agent.js';
 import { fetchTranslations } from './db-connector.js';
 import { authenticateToken } from './auth.js';
 import * as db from './db.js';
@@ -597,6 +597,42 @@ app.get('/api/auraguard/grid-status', authenticateToken, (req, res) => {
     res.json(status);
   } catch (err) {
     console.error('Error getting grid status:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auraguard/ai-act-audit', authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'Chybí URL' });
+    const report = await auditAIAct(url);
+    res.json(report);
+  } catch (err) {
+    console.error('Error during AI Act audit:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auraguard/cookie-audit', authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'Chybí URL' });
+    const report = await auditStrictCookies(url);
+    res.json(report);
+  } catch (err) {
+    console.error('Error during Cookie audit:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auraguard/cra-vuln-audit', authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'Chybí URL' });
+    const report = await auditCRAVulnerabilities(url);
+    res.json(report);
+  } catch (err) {
+    console.error('Error during CRA Vuln audit:', err);
     res.status(500).json({ error: err.message });
   }
 });

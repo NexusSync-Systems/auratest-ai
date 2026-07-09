@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { auditNIS2AndPQC, auditCRA_SBOM, auditAccessibility } from '../agent.js';
+import { auditNIS2AndPQC, auditCRA_SBOM, auditAccessibility, auditAIAct, auditStrictCookies, auditCRAVulnerabilities } from '../agent.js';
 
 const args = process.argv.slice(2);
 const urlIndex = args.indexOf('--url');
@@ -8,7 +8,7 @@ const auditIndex = args.indexOf('--audit');
 
 if (urlIndex === -1 || urlIndex + 1 >= args.length) {
   console.error('Chyba: Musíte zadat cílové URL pomocí parametru --url');
-  console.error('Použití: auraguard --url <https://vase-aplikace.cz> --audit <nis2|cra|eaa|all>');
+  console.error('Použití: auraguard --url <https://vase-aplikace.cz> --audit <nis2|cra|cve|eaa|ai|gdpr|all>');
   process.exit(1);
 }
 
@@ -60,6 +60,45 @@ async function runCLI() {
         hasErrors = true;
       } else {
         console.log('✅ PASS: EAA Compliance (Základní A11y)\n');
+      }
+    }
+
+    if (['ai', 'all'].includes(auditType)) {
+      console.log('Spouštím: EU AI Act Scanner...');
+      const aiReport = await auditAIAct(url);
+      
+      if (!aiReport.aiAct.isCompliant) {
+        console.error('❌ SELHÁNÍ: AI Act Violation! Detekováno LLM API bez transparentního upozornění.');
+        aiReport.aiAct.apisDetected.forEach(api => console.error(`   - Voláno API: ${api}`));
+        hasErrors = true;
+      } else {
+        console.log('✅ PASS: AI Act Compliance\n');
+      }
+    }
+
+    if (['gdpr', 'all'].includes(auditType)) {
+      console.log('Spouštím: Striktní GDPR Cookie Auditor...');
+      const cookieReport = await auditStrictCookies(url);
+      
+      if (!cookieReport.gdpr.isCompliant) {
+        console.error('❌ SELHÁNÍ: GDPR ePrivacy Violation! Detekovány trackery před udělením souhlasu.');
+        cookieReport.gdpr.suspiciousItems.forEach(item => console.error(`   - Tracker: ${item}`));
+        hasErrors = true;
+      } else {
+        console.log('✅ PASS: GDPR Cookie Compliance (No implicit trackers)\n');
+      }
+    }
+
+    if (['cve', 'all'].includes(auditType)) {
+      console.log('Spouštím: CRA Vulnerability Scanner (OSV.dev)...');
+      const vulnReport = await auditCRAVulnerabilities(url);
+      
+      if (!vulnReport.cra.isCompliant) {
+        console.error(`❌ SELHÁNÍ: CRA Violation! Nalezeno ${vulnReport.cra.vulnerabilities.length} zranitelností (CVE).`);
+        vulnReport.cra.vulnerabilities.forEach(v => console.error(`   - ${v.cve} (${v.severity}): ${v.library} ${v.version}`));
+        hasErrors = true;
+      } else {
+        console.log('✅ PASS: Cyber Resilience Act (0 CVE found)\n');
       }
     }
 

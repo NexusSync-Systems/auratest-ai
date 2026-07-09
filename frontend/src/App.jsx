@@ -26,7 +26,11 @@ import {
   ExternalLink,
   Shield,
   Zap,
-  Server
+  Server,
+  Printer,
+  Eye,
+  Cookie,
+  Cpu
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
@@ -166,6 +170,19 @@ export default function App() {
 
   // Grid-Aware State
   const [gridStatus, setGridStatus] = useState(null);
+
+  // New Audits State (Phase 3)
+  const [aiActLoading, setAiActLoading] = useState(false);
+  const [aiActResult, setAiActResult] = useState(null);
+  const [aiActModalOpen, setAiActModalOpen] = useState(false);
+
+  const [cookieLoading, setCookieLoading] = useState(false);
+  const [cookieResult, setCookieResult] = useState(null);
+  const [cookieModalOpen, setCookieModalOpen] = useState(false);
+
+  const [craVulnLoading, setCraVulnLoading] = useState(false);
+  const [craVulnResult, setCraVulnResult] = useState(null);
+  const [craVulnModalOpen, setCraVulnModalOpen] = useState(false);
 
   // Monitor Form State
   const [monitorName, setMonitorName] = useState('');
@@ -366,6 +383,45 @@ export default function App() {
     } finally {
       setChaosLoading(false);
     }
+  };
+
+  const handleRunAiActAudit = async () => {
+    if (!agentUrl) { alert('Zadejte URL pro AI Act audit.'); return; }
+    setAiActLoading(true); setAiActModalOpen(true);
+    try {
+      const response = await fetch('/api/auraguard/ai-act-audit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` }, body: JSON.stringify({ url: agentUrl })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setAiActResult(data);
+    } catch (err) { alert('Chyba AI Act testu: ' + err.message); setAiActModalOpen(false); } finally { setAiActLoading(false); }
+  };
+
+  const handleRunCookieAudit = async () => {
+    if (!agentUrl) { alert('Zadejte URL pro GDPR Cookie audit.'); return; }
+    setCookieLoading(true); setCookieModalOpen(true);
+    try {
+      const response = await fetch('/api/auraguard/cookie-audit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` }, body: JSON.stringify({ url: agentUrl })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setCookieResult(data);
+    } catch (err) { alert('Chyba Cookie testu: ' + err.message); setCookieModalOpen(false); } finally { setCookieLoading(false); }
+  };
+
+  const handleRunCraVulnAudit = async () => {
+    if (!agentUrl) { alert('Zadejte URL pro CRA Vuln audit.'); return; }
+    setCraVulnLoading(true); setCraVulnModalOpen(true);
+    try {
+      const response = await fetch('/api/auraguard/cra-vuln-audit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` }, body: JSON.stringify({ url: agentUrl })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setCraVulnResult(data);
+    } catch (err) { alert('Chyba CRA Vuln testu: ' + err.message); setCraVulnModalOpen(false); } finally { setCraVulnLoading(false); }
   };
 
   const handleAutoHeal = async (event) => {
@@ -1001,6 +1057,26 @@ export default function App() {
                       </button>
                       <button className="btn" type="button" onClick={handleRunChaosTest} style={{ backgroundColor: '#f43f5e', color: 'white', borderColor: '#f43f5e' }}>
                         DORA Chaos <Activity size={16} />
+                      </button>
+                    </div>
+                    
+                    {/* Fáze 3 Buttons */}
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>
+                      <button className="btn" type="button" onClick={handleRunAiActAudit} style={{ backgroundColor: '#8b5cf6', color: 'white', borderColor: '#8b5cf6', flex: 1 }}>
+                        AI Act Scanner <Cpu size={16} />
+                      </button>
+                      <button className="btn" type="button" onClick={handleRunCookieAudit} style={{ backgroundColor: '#10b981', color: 'white', borderColor: '#10b981', flex: 1 }}>
+                        GDPR Striktní Cookies <Cookie size={16} />
+                      </button>
+                      <button className="btn" type="button" onClick={handleRunCraVulnAudit} style={{ backgroundColor: '#ef4444', color: 'white', borderColor: '#ef4444', flex: 1 }}>
+                        CRA Zranitelnosti (CVE) <AlertTriangle size={16} />
+                      </button>
+                    </div>
+                    
+                    {/* Tisk reportu */}
+                    <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'center' }}>
+                      <button className="btn" type="button" onClick={() => window.print()} style={{ backgroundColor: '#3b82f6', color: 'white', borderColor: '#3b82f6', width: '100%', padding: '12px', fontSize: '1.1rem' }}>
+                        <Printer size={20} style={{ marginRight: '8px' }} /> Generovat Executive PDF Report
                       </button>
                     </div>
                   </form>
@@ -2459,6 +2535,117 @@ export default function App() {
               ) : (
                 <p>Nepodařilo se načíst výsledky DORA testu.</p>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* FÁZE 3 MODALS */}
+      {/* AI Act Modal */}
+      {aiActModalOpen && (
+        <div className="no-print" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card printable" style={{ width: '100%', maxWidth: '700px', backgroundColor: '#1e1e1e', border: '1px solid #8b5cf6' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#8b5cf6' }}>
+                <Cpu size={24} /> EU AI Act Scanner
+              </h2>
+              <button onClick={() => setAiActModalOpen(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}>&times;</button>
+            </div>
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6', maxHeight: '70vh', overflowY: 'auto' }}>
+              {aiActLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}><div className="spinner" style={{ marginBottom: '16px', borderColor: '#8b5cf6', borderTopColor: 'transparent' }}></div><p>Detekuji AI endpointy a hledám AI disclaimer...</p></div>
+              ) : aiActResult ? (
+                <div>
+                  <div style={{ padding: '16px', borderRadius: '8px', background: aiActResult.aiAct.isCompliant ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)', border: `1px solid ${aiActResult.aiAct.isCompliant ? '#10b981' : '#ef4444'}`, marginBottom: '20px' }}>
+                    <h3 style={{ margin: '0 0 8px 0', color: aiActResult.aiAct.isCompliant ? '#10b981' : '#ef4444' }}>{aiActResult.aiAct.rating}</h3>
+                    <p style={{ margin: 0, fontSize: '0.9rem' }}>Umělá inteligence podléhá novému nařízení EU (AI Act) a uživatel musí být o jejím využití prokazatelně informován.</p>
+                  </div>
+                  <h4>Zjištění:</h4>
+                  <ul>
+                    <li><strong>Detekováno LLM volání:</strong> {aiActResult.aiAct.apisDetected.length > 0 ? 'ANO' : 'NE'}</li>
+                    {aiActResult.aiAct.apisDetected.length > 0 && (
+                      <ul style={{ color: '#f59e0b' }}>
+                        {aiActResult.aiAct.apisDetected.map((u, i) => <li key={i}>{u}</li>)}
+                      </ul>
+                    )}
+                    <li><strong>Viditelný AI Disclaimer:</strong> {aiActResult.aiAct.hasDisclaimer ? <span style={{color:'#10b981'}}>NALEZENO</span> : <span style={{color:'#ef4444'}}>NENALEZENO</span>}</li>
+                  </ul>
+                </div>
+              ) : <p>Chyba načítání</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cookie Modal */}
+      {cookieModalOpen && (
+        <div className="no-print" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card printable" style={{ width: '100%', maxWidth: '700px', backgroundColor: '#1e1e1e', border: '1px solid #10b981' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#10b981' }}>
+                <Cookie size={24} /> Striktní GDPR Cookie Auditor
+              </h2>
+              <button onClick={() => setCookieModalOpen(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}>&times;</button>
+            </div>
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6', maxHeight: '70vh', overflowY: 'auto' }}>
+              {cookieLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}><div className="spinner" style={{ marginBottom: '16px', borderColor: '#10b981', borderTopColor: 'transparent' }}></div><p>Simuluji návštěvu bez udělení souhlasu (5s timeout)...</p></div>
+              ) : cookieResult ? (
+                <div>
+                  <div style={{ padding: '16px', borderRadius: '8px', background: cookieResult.gdpr.isCompliant ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)', border: `1px solid ${cookieResult.gdpr.isCompliant ? '#10b981' : '#ef4444'}`, marginBottom: '20px' }}>
+                    <h3 style={{ margin: '0 0 8px 0', color: cookieResult.gdpr.isCompliant ? '#10b981' : '#ef4444' }}>{cookieResult.gdpr.rating}</h3>
+                    <p style={{ margin: 0, fontSize: '0.9rem' }}>Aplikace nesmí ukládat cookies ani data do localStorage dříve, než s tím uživatel souhlasí v cookie liště.</p>
+                  </div>
+                  {cookieResult.gdpr.suspiciousItems.length > 0 ? (
+                    <div>
+                      <h4 style={{ color: '#ef4444' }}>Nalezeny tyto trackery před souhlasem:</h4>
+                      <ul style={{ background: '#2d2d2d', padding: '12px 12px 12px 30px', borderRadius: '4px' }}>
+                        {cookieResult.gdpr.suspiciousItems.map((item, i) => <li key={i}><code>{item}</code></li>)}
+                      </ul>
+                    </div>
+                  ) : <p style={{ color: '#10b981' }}>Žádné trackery nebyly odhaleny.</p>}
+                </div>
+              ) : <p>Chyba načítání</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CRA Vuln Modal */}
+      {craVulnModalOpen && (
+        <div className="no-print" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card printable" style={{ width: '100%', maxWidth: '800px', backgroundColor: '#1e1e1e', border: '1px solid #ef4444' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#ef4444' }}>
+                <AlertTriangle size={24} /> CRA Zranitelnosti (CVE OSV Scan)
+              </h2>
+              <button onClick={() => setCraVulnModalOpen(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}>&times;</button>
+            </div>
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6', maxHeight: '70vh', overflowY: 'auto' }}>
+              {craVulnLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}><div className="spinner" style={{ marginBottom: '16px', borderColor: '#ef4444', borderTopColor: 'transparent' }}></div><p>Skenuji SBOM vůči Google OSV databázi (CVE)...</p></div>
+              ) : craVulnResult ? (
+                <div>
+                  <div style={{ padding: '16px', borderRadius: '8px', background: craVulnResult.cra.isCompliant ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)', border: `1px solid ${craVulnResult.cra.isCompliant ? '#10b981' : '#ef4444'}`, marginBottom: '20px' }}>
+                    <h3 style={{ margin: '0 0 8px 0', color: craVulnResult.cra.isCompliant ? '#10b981' : '#ef4444' }}>{craVulnResult.cra.rating}</h3>
+                    <p style={{ margin: 0, fontSize: '0.9rem' }}>Cyber Resilience Act vyžaduje absolutní absenci známých zranitelností u internetových produktů.</p>
+                  </div>
+                  {craVulnResult.cra.vulnerabilities.length > 0 ? (
+                    <div>
+                      <h4 style={{ color: '#ef4444' }}>Nalezené Zranitelnosti (CVE):</h4>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {craVulnResult.cra.vulnerabilities.map((v, i) => (
+                          <div key={i} style={{ padding: '12px', background: '#2a1a1a', borderLeft: '4px solid #ef4444', borderRadius: '4px' }}>
+                            <div style={{ fontWeight: 'bold', color: '#ef4444' }}>{v.cve} ({v.severity})</div>
+                            <div><strong>Zasažená knihovna:</strong> {v.library} {v.version}</div>
+                            <div style={{ fontSize: '0.85rem', marginTop: '4px', opacity: 0.8 }}>{v.details}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : <p style={{ color: '#10b981' }}>Databáze OSV nenašla na odhaleném klientském SBOM (React, Next.js apod.) žádné zranitelnosti.</p>}
+                </div>
+              ) : <p>Chyba načítání</p>}
             </div>
           </div>
         </div>
