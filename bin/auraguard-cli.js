@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { auditNIS2AndPQC, auditCRA_SBOM, auditAccessibility, auditAIAct, auditStrictCookies, auditCRAVulnerabilities } from '../agent.js';
+import { auditNIS2AndPQC, auditCRA_SBOM, auditAccessibility, auditAIAct, auditStrictCookies, auditCRAVulnerabilities, runAutonomousTest } from '../agent.js';
 import { sendSlackNotification } from '../slack-notifier.js';
 import dotenv from 'dotenv';
 dotenv.config();
@@ -11,7 +11,7 @@ const auditIndex = args.indexOf('--audit');
 
 if (urlIndex === -1 || urlIndex + 1 >= args.length) {
   console.error('Chyba: Musíte zadat cílové URL pomocí parametru --url');
-  console.error('Použití: auraguard --url <https://vase-aplikace.cz> --audit <nis2|cra|cve|eaa|ai|gdpr|all>');
+  console.error('Použití: auraguard --url <https://vase-aplikace.cz> --audit <nis2|cra|cve|eaa|ai|gdpr|ai-agent|all>');
   process.exit(1);
 }
 
@@ -109,6 +109,22 @@ async function runCLI() {
         failedAudits.push(`*CRA Zranitelnosti*: Nalezeno CVE (${cves})`);
       } else {
         console.log('✅ PASS: Cyber Resilience Act (0 CVE found)\n');
+      }
+    }
+
+    if (['ai-agent', 'all'].includes(auditType)) {
+      console.log('Spouštím: Autonomní AI Agent Test (Playwright + LLM)...');
+      // Použijeme jednoduchý headless smoke test s 5 kroky
+      const llmConfig = { provider: 'ollama', model: 'llama3', host: 'http://localhost:11434', headless: true, maxSteps: 5, mode: 'smoke_test' };
+      const aiAgentReport = await runAutonomousTest(url, 'Najdi všechny logické nebo javascriptové chyby na webu.', llmConfig, () => {});
+      
+      if (!aiAgentReport.success && aiAgentReport.bugs && aiAgentReport.bugs.length > 0) {
+        console.error(`❌ SELHÁNÍ: AI Agent objevil na webu ${aiAgentReport.bugs.length} chyb!`);
+        aiAgentReport.bugs.forEach(bug => console.error(`   - ${bug}`));
+        hasErrors = true;
+        failedAudits.push(`*AI Agent*: Byly nalezeny funkční chyby (${aiAgentReport.bugs.length} chyb)`);
+      } else {
+        console.log('✅ PASS: AI Agent Test (Žádné viditelné chyby na webu)\n');
       }
     }
 

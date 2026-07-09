@@ -217,6 +217,22 @@ app.post('/api/run-test', authenticateToken, async (req, res) => {
             generatedScript: result.generatedScript,
             videoUrl: result.videoUrl
           });
+
+          // Odeslat do Slacku, pokud test najde chyby (zapojení AI do Slacku)
+          if (!result.success && result.bugs && result.bugs.length > 0) {
+            const channel = process.env.SLACK_CHANNEL || '#general';
+            const blocks = [
+              { type: 'section', text: { type: 'mrkdwn', text: `*Zpráva agenta:*\n${result.summary}` } },
+              {
+                type: 'actions',
+                elements: [
+                  { type: 'button', text: { type: 'plain_text', text: 'Spustit znovu', emoji: true }, style: 'primary', value: url, action_id: 'run_audit_again' },
+                  { type: 'button', text: { type: 'plain_text', text: 'Ignorovat upozornění', emoji: true }, style: 'danger', value: 'ignore', action_id: 'ignore_alert' }
+                ]
+              }
+            ];
+            await sendSlackNotification(channel, 'AuraGuard AI: Nalezena funkční chyba na webu', `URL: *${url}*\nTestováno: _${sessionData.goal}_\nBugs: ${result.bugs.length}`, true, blocks);
+          }
         }
       } catch (err) {
         sessionData.status = 'failed';
@@ -643,6 +659,18 @@ app.post('/api/auraguard/monitor-page', authenticateToken, async (req, res) => {
     const { target } = req.body;
     if (!target || !target.url) return res.status(400).json({ error: 'Cíl monitoringu (url) je povinný.' });
     const result = await checkPage(target);
+    
+    // Slack notifikace při výpadku
+    if (!result.ok) {
+      const channel = process.env.SLACK_CHANNEL || '#general';
+      const blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: `*Detail chyby:*\n${result.error || 'Neznámá chyba'}` } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: `Odezva: ${result.responseTime}ms` }] },
+        { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Zkontrolovat znovu', emoji: true }, style: 'primary', value: target.url, action_id: 'run_audit_again' }] }
+      ];
+      await sendSlackNotification(channel, 'AuraGuard: VÝPADEK WEBU', `Stránka *${target.url}* neodpovídá správně!`, true, blocks);
+    }
+    
     res.json(result);
   } catch (error) {
     console.error('Monitor Page error:', error);
@@ -655,6 +683,17 @@ app.post('/api/auraguard/monitor-form', authenticateToken, async (req, res) => {
     const { target } = req.body;
     if (!target || !target.url) return res.status(400).json({ error: 'Cíl formuláře (url) je povinný.' });
     const result = await checkForm(target);
+
+    // Slack notifikace při chybě formuláře
+    if (!result.ok) {
+      const channel = process.env.SLACK_CHANNEL || '#general';
+      const blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: `*Detail chyby:*\n${result.error || 'Formulář nešel odeslat'}` } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: `Odezva: ${result.responseTime}ms` }] }
+      ];
+      await sendSlackNotification(channel, 'AuraGuard: CHYBA FORMULÁŘE', `Formulář na *${target.url}* selhal v odeslání.`, true, blocks);
+    }
+    
     res.json(result);
   } catch (error) {
     console.error('Monitor Form error:', error);
