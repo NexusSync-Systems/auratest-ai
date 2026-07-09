@@ -7,6 +7,7 @@ import fs from 'fs';
 import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM, runChaosTest, getGridEnergyStatus, auditAIAct, auditStrictCookies, auditCRAVulnerabilities, checkPage, checkForm } from './agent.js';
 import { fetchTranslations } from './db-connector.js';
 import { authenticateToken } from './auth.js';
+import { sendSlackNotification } from './slack-notifier.js';
 import * as db from './db.js';
 import { redactEventData } from './pii-redactor.js';
 
@@ -658,6 +659,52 @@ app.post('/api/auraguard/monitor-form', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Monitor Form error:', error);
     res.status(500).json({ error: error.message || 'Monitor Form selhal' });
+  }
+});
+
+// --- Slack Interactivity Endpoint ---
+// Přijímá události typu "kliknutí na tlačítko" ze Slack zpráv
+app.post('/api/slack/events', async (req, res) => {
+  try {
+    // Slack posílá payload jako form-urlencoded string pod klíčem 'payload'
+    if (!req.body || !req.body.payload) {
+      return res.status(400).send('Chybí payload');
+    }
+    
+    const payload = JSON.parse(req.body.payload);
+    
+    // Rychlá odpověď Slacku, že jsme request přijali
+    res.status(200).send();
+    
+    if (payload.type === 'block_actions') {
+      const action = payload.actions[0];
+      const channelId = payload.channel.id;
+      
+      console.log(`Slack uživatel ${payload.user.username} kliknul na tlačítko: ${action.action_id} s hodnotou: ${action.value}`);
+      
+      if (action.action_id === 'run_audit_again') {
+        const urlToTest = action.value;
+        // Zašleme potvrzení do vlákna (nebo do kanálu)
+        await sendSlackNotification(
+          channelId,
+          'Test znovu spuštěn',
+          `Spouštím nový on-demand test pro URL: ${urlToTest} na žádost uživatele @${payload.user.username}...`,
+          false
+        );
+        // Zde by normálně následovalo asynchronní volání agent.js (runAutonomousTest nebo podobně)
+        // ...
+      } else if (action.action_id === 'ignore_alert') {
+        await sendSlackNotification(
+          channelId,
+          'Upozornění ignorováno',
+          `Uživatel @${payload.user.username} označil tento alert jako vyřešený.`,
+          false
+        );
+      }
+    }
+  } catch (err) {
+    console.error('Chyba při zpracování Slack události:', err);
+    if (!res.headersSent) res.status(500).send('Interní chyba serveru');
   }
 });
 

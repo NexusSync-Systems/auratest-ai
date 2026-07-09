@@ -121,8 +121,9 @@ async function runCLI() {
     console.error(`\n🚨 ZÁVĚR: CI/CD Pipeline byla zastavena, protože aplikace nesplňuje Evropské směrnice. Opravte výše uvedené chyby před nasazením.`);
     
     // Slack Notification
-    if (process.env.SLACK_WEBHOOK_URL) {
-      console.log('Odesílám upozornění do Slacku...');
+    if (process.env.SLACK_BOT_TOKEN) {
+      const channel = process.env.SLACK_CHANNEL || '#general';
+      console.log(`Odesílám upozornění do Slacku (kanál: ${channel})...`);
       const blocks = [
         {
           type: 'section',
@@ -134,10 +135,37 @@ async function runCLI() {
         {
           type: 'context',
           elements: [{ type: 'mrkdwn', text: `URL: ${url} | Spuštěno AuraGuard CLI` }]
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: {
+                type: 'plain_text',
+                text: 'Spustit znovu',
+                emoji: true
+              },
+              style: 'primary',
+              value: url,
+              action_id: 'run_audit_again'
+            },
+            {
+              type: 'button',
+              text: {
+                type: 'plain_text',
+                text: 'Ignorovat upozornění',
+                emoji: true
+              },
+              style: 'danger',
+              value: 'ignore',
+              action_id: 'ignore_alert'
+            }
+          ]
         }
       ];
       await sendSlackNotification(
-        process.env.SLACK_WEBHOOK_URL,
+        channel,
         'AuraGuard: Nasazení zablokováno (Porušení compliance)',
         `Cílová adresa *${url}* neprošla povinnými audity.`,
         true,

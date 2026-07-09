@@ -3,15 +3,16 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 async function runTest() {
-  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  const token = process.env.SLACK_BOT_TOKEN;
+  const channel = process.env.SLACK_CHANNEL || '#general';
   
-  if (!webhookUrl) {
-    console.error('❌ CHYBA: Nemáte definovanou proměnnou SLACK_WEBHOOK_URL v souboru .env');
-    console.error('Vytvořte v této složce soubor .env s obsahem: SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...');
+  if (!token) {
+    console.error('❌ CHYBA: Nemáte definovanou proměnnou SLACK_BOT_TOKEN v souboru .env');
+    console.error('Vytvořte v této složce soubor .env s obsahem: SLACK_BOT_TOKEN=xoxb-... (a volitelně SLACK_CHANNEL=#vas-kanal)');
     process.exit(1);
   }
 
-  console.log('Odesílám testovací zprávu na Slack...');
+  console.log(`Odesílám testovací zprávu na Slack (do kanálu ${channel})...`);
   
   const blocks = [
     {
@@ -24,8 +25,8 @@ async function runTest() {
   ];
 
   const success = await sendSlackNotification(
-    webhookUrl,
-    'AuraGuard: Úspěšný test integrace',
+    channel,
+    'AuraGuard: Úspěšný test integrace (Bot API)',
     'Integrace Slacku proběhla v pořádku.',
     false, // false = green color (info), true = red (error)
     blocks
