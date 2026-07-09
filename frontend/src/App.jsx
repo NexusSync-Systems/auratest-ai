@@ -24,7 +24,9 @@ import {
   Copy,
   Plus,
   ExternalLink,
-  Shield
+  Shield,
+  Zap,
+  Server
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
@@ -157,6 +159,14 @@ export default function App() {
   const [autoHealPatch, setAutoHealPatch] = useState(null);
   const [autoHealModalOpen, setAutoHealModalOpen] = useState(false);
 
+  // DORA Chaos State
+  const [chaosLoading, setChaosLoading] = useState(false);
+  const [chaosResult, setChaosResult] = useState(null);
+  const [chaosModalOpen, setChaosModalOpen] = useState(false);
+
+  // Grid-Aware State
+  const [gridStatus, setGridStatus] = useState(null);
+
   // Monitor Form State
   const [monitorName, setMonitorName] = useState('');
   const [monitorUrl, setMonitorUrl] = useState('https://news.ycombinator.com');
@@ -186,13 +196,7 @@ export default function App() {
       const res = await fetch('/api/sessions');
       if (res.ok) {
         const data = await res.json();
-        // ⚡ Bolt: Prevent unnecessary re-renders when data is identical
-        setSessions(prev => {
-          if (JSON.stringify(prev) === JSON.stringify(data)) {
-            return prev; // Return exact same reference to skip render
-          }
-          return data;
-        });
+        setSessions(prev => (JSON.stringify(prev) === JSON.stringify(data)) ? prev : data);
       }
     } catch (e) {
       console.error('Nepodařilo se stáhnout relace:', e);
@@ -207,6 +211,27 @@ export default function App() {
       console.error('Chyba stahování monitorů:', e);
     }
   };
+
+  // Fetch Grid Status on load
+  useEffect(() => {
+    if (!user) return;
+    const fetchGrid = async () => {
+      try {
+        const response = await fetch('/api/auraguard/grid-status', {
+          headers: { 'Authorization': `Bearer ${await user.getIdToken()}` }
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setGridStatus(data);
+        }
+      } catch (err) {
+        console.error('Grid fetch error:', err);
+      }
+    };
+    fetchGrid();
+    const interval = setInterval(fetchGrid, 60000); // Každou minutu
+    return () => clearInterval(interval);
+  }, [user]);
 
   const handleRunA11yAudit = async () => {
     if (!agentUrl) {
@@ -316,6 +341,33 @@ export default function App() {
     }
   };
 
+  const handleRunChaosTest = async () => {
+    if (!agentUrl) {
+      alert('Zadejte URL pro DORA Chaos test.');
+      return;
+    }
+    setChaosLoading(true);
+    setChaosModalOpen(true);
+    try {
+      const response = await fetch('/api/auraguard/chaos-test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ url: agentUrl })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setChaosResult(data);
+    } catch (err) {
+      alert('Chyba Chaos testu: ' + err.message);
+      setChaosModalOpen(false);
+    } finally {
+      setChaosLoading(false);
+    }
+  };
+
   const handleAutoHeal = async (event) => {
     setAutoHealLoading(prev => ({ ...prev, [event.id]: true }));
     try {
@@ -325,7 +377,7 @@ export default function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${user.token}`
         },
-        body: JSON.stringify({ eventData: event, llmConfig: { provider: llmProvider, model: selectedModel, host: getHost() } })
+        body: JSON.stringify({ eventData: event, llmConfig: { provider: aiProvider, model: ollamaModel, host: ollamaHost } })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
@@ -421,7 +473,7 @@ export default function App() {
         fetchSessions();
         fetchMonitors();
         fetchAuraGuardEvents();
-        fetchProjects();
+        // fetchProjects(); // Placeholder
 
         // Connect to global WS for real-time updates
         const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -433,7 +485,6 @@ export default function App() {
           if (msg.type === 'monitors_updated') {
             setMonitors(msg.monitors);
           } else if (msg.type === 'auraguard_live_event') {
-            // Při novém eventu přidáme count: 1, pokud tam není
             const newEvent = { ...msg.event, count: msg.event.count || 1 };
             setAuraGuardEvents((prev) => [newEvent, ...prev].slice(0, 500));
           } else if (msg.type === 'event_deduplicated') {
@@ -836,9 +887,20 @@ export default function App() {
             </p>
           </div>
 
-          <div className="status-badge">
-            <span className={`status-dot ${isRunning ? 'active' : 'idle'}`} />
-            <span>{isRunning ? 'Agent běží...' : 'Připraven'}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+            {/* Grid-Aware Status Widget */}
+            {gridStatus && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '20px', background: gridStatus.status === 'LOW_CARBON' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)', border: `1px solid ${gridStatus.status === 'LOW_CARBON' ? '#10b981' : '#f59e0b'}` }} title={gridStatus.recommendation}>
+                <Zap size={16} color={gridStatus.status === 'LOW_CARBON' ? '#10b981' : '#f59e0b'} />
+                <span style={{ fontSize: '0.85rem', color: gridStatus.status === 'LOW_CARBON' ? '#10b981' : '#f59e0b', fontWeight: 'bold' }}>
+                  EU Grid: {gridStatus.renewablePercentage}% Zelené (Eco {gridStatus.status === 'LOW_CARBON' ? 'ON' : 'OFF'})
+                </span>
+              </div>
+            )}
+            <div className="status-badge">
+              <span className={`status-dot ${isRunning ? 'active' : 'idle'}`} />
+              <span>{isRunning ? 'Agent běží...' : 'Připraven'}</span>
+            </div>
           </div>
         </header>
 
@@ -936,6 +998,9 @@ export default function App() {
                       </button>
                       <button className="btn" type="button" onClick={handleRunCraAudit} style={{ backgroundColor: '#4f46e5', color: 'white', borderColor: '#4f46e5' }}>
                         CRA SBOM <Shield size={16} />
+                      </button>
+                      <button className="btn" type="button" onClick={handleRunChaosTest} style={{ backgroundColor: '#f43f5e', color: 'white', borderColor: '#f43f5e' }}>
+                        DORA Chaos <Activity size={16} />
                       </button>
                     </div>
                   </form>
@@ -2335,6 +2400,65 @@ export default function App() {
               <button className="btn btn-secondary" onClick={() => setAutoHealModalOpen(false)}>
                 Zavřít
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DORA Chaos Modal */}
+      {chaosModalOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card" style={{ width: '100%', maxWidth: '700px', backgroundColor: '#1e1e1e', border: '1px solid #f43f5e' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#f43f5e' }}>
+                <Activity size={24} /> DORA Chaos Engineering
+              </h2>
+              <button onClick={() => setChaosModalOpen(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}>&times;</button>
+            </div>
+            
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6' }}>
+              {chaosLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}>
+                  <div className="spinner" style={{ marginBottom: '16px', borderColor: '#f43f5e', borderTopColor: 'transparent' }}></div>
+                  <p>Simuluji výpadky sítě, masivní latenci a zahazování paketů...</p>
+                </div>
+              ) : chaosResult ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                  <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                    Agent otestoval aplikaci v nasimulovaných kritických podmínkách (výpadky 10% spojení, 3s latence u 20% spojení) podle metodiky směrnice DORA.
+                  </p>
+                  
+                  <div style={{ display: 'flex', gap: '20px' }}>
+                    <div style={{ flex: 1, padding: '16px', borderRadius: '8px', background: 'rgba(255,255,255,0.05)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#f43f5e' }}>{chaosResult.chaos.abortedRequests}</div>
+                      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Zahozených API/zdrojů</div>
+                    </div>
+                    <div style={{ flex: 1, padding: '16px', borderRadius: '8px', background: 'rgba(255,255,255,0.05)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#f59e0b' }}>{chaosResult.chaos.delayedRequests}</div>
+                      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Zpožděných (lag)</div>
+                    </div>
+                    <div style={{ flex: 1, padding: '16px', borderRadius: '8px', background: 'rgba(255,255,255,0.05)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '2rem', fontWeight: 'bold', color: chaosResult.chaos.pageCrashed ? '#ef4444' : '#10b981' }}>
+                        {chaosResult.chaos.pageCrashed ? 'ANO' : 'NE'}
+                      </div>
+                      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Kolaps aplikace</div>
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '16px', borderRadius: '8px', background: chaosResult.chaos.rating.includes('DORA Compliant') ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)', border: `1px solid ${chaosResult.chaos.rating.includes('DORA Compliant') ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}` }}>
+                    <h3 style={{ margin: '0 0 8px 0', color: chaosResult.chaos.rating.includes('DORA Compliant') ? '#10b981' : '#ef4444' }}>
+                      Hodnocení: {chaosResult.chaos.rating}
+                    </h3>
+                    <p style={{ margin: 0, fontSize: '0.9rem' }}>
+                      {chaosResult.chaos.rating.includes('DORA Compliant') 
+                        ? 'Aplikace zvládla výpadky plynule (elegant degradation). Během testu vygenerovala pouze ' + chaosResult.chaos.consoleErrors + ' JS chyb a nespadla.'
+                        : 'Aplikace není odolná. Během simulovaného výpadku backendu havarovala nebo začala chrlit neošetřené výjimky (' + chaosResult.chaos.consoleErrors + ' chyb).'}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p>Nepodařilo se načíst výsledky DORA testu.</p>
+              )}
             </div>
           </div>
         </div>

@@ -2,7 +2,7 @@ import { chromium } from 'playwright';
 import { diffWords } from 'diff';
 import path from 'path';
 import fs from 'fs';
-import { injectAxe, checkA11y } from '@axe-core/playwright';
+import AxeBuilder from '@axe-core/playwright';
 import geoip from 'geoip-lite';
 
 
@@ -1166,13 +1166,9 @@ export async function auditAccessibility(url) {
     const page = await context.newPage();
     
     await page.goto(url, { waitUntil: 'networkidle' });
-    await injectAxe(page);
     
-    // Získání raw reportu z axe
-    const results = await page.evaluate(async () => {
-      // Potřebujeme zavolat window.axe.run přímo pro lepší kontrolu nad výstupem
-      return await window.axe.run();
-    });
+    // Získání reportu z axe pomocí AxeBuilder
+    const results = await new AxeBuilder({ page }).analyze();
     
     return {
       success: true,
@@ -1239,16 +1235,17 @@ export async function auditNIS2AndPQC(url) {
     // Zpracování PQC / TLS 
     const pqc = {
       secure: !!securityDetails,
-      protocol: securityDetails ? securityDetails.protocol() : 'None',
-      subjectName: securityDetails ? securityDetails.subjectName() : 'None',
-      issuer: securityDetails ? securityDetails.issuer() : 'None',
+      protocol: securityDetails ? securityDetails.protocol : 'None',
+      subjectName: securityDetails ? securityDetails.subjectName : 'None',
+      issuer: securityDetails ? securityDetails.issuer : 'None',
       isQuantumSafe: false, // Zatím je ML-KEM/Kyber vzácné
       recommendation: ''
     };
 
-    if (pqc.protocol.includes('TLS 1.3') || pqc.protocol.includes('QUIC')) {
+    const protocol = pqc.protocol || '';
+    if (protocol.includes('TLS 1.3') || protocol.includes('QUIC')) {
       pqc.recommendation = "TLS 1.3 je vynikající základ. Doporučujeme sledovat implementaci ML-KEM (Kyber) na straně poskytovatele certifikátů pro plnou PQC odolnost.";
-    } else if (pqc.protocol.includes('TLS 1.2')) {
+    } else if (protocol.includes('TLS 1.2')) {
       pqc.recommendation = "TLS 1.2 je přijatelné, ale pro budoucí PQC odolnost zvažte přechod na TLS 1.3.";
     } else {
       pqc.recommendation = "Zastaralý protokol! Okamžitě aktualizujte konfiguraci serveru kvůli zranitelnosti.";
@@ -1439,4 +1436,91 @@ export async function auditCRA_SBOM(url) {
       await browser.close();
     }
   }
+}
+
+export async function runChaosTest(url) {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    const page = await context.newPage();
+
+    let abortedRequests = 0;
+    let delayedRequests = 0;
+    
+    // Zapnutí request interception
+    await page.route('**/*', async (route) => {
+      const request = route.request();
+      const resourceType = request.resourceType();
+      
+      // Simulace výpadků pro skripty, API (fetch/xhr) a obrázky
+      if (['script', 'fetch', 'xhr', 'image'].includes(resourceType)) {
+        const random = Math.random();
+        if (random < 0.1) {
+          // 10% šance na zahození paketu (výpadek)
+          abortedRequests++;
+          return route.abort('failed');
+        } else if (random < 0.3) {
+          // 20% šance na simulaci obrovské latence (lag 3 sekundy)
+          delayedRequests++;
+          await new Promise(r => setTimeout(r, 3000));
+          return route.continue();
+        }
+      }
+      return route.continue();
+    });
+
+    let pageCrashed = false;
+    let consoleErrors = 0;
+    
+    page.on('console', msg => {
+      if (msg.type() === 'error') consoleErrors++;
+    });
+    
+    page.on('pageerror', () => {
+      pageCrashed = true;
+    });
+
+    // Timeout nastavíme delší kvůli simulaci latence
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {
+      pageCrashed = true;
+    });
+
+    const isResilient = !pageCrashed && consoleErrors < 10; // Primitivní heuristika
+
+    return {
+      success: true,
+      url,
+      chaos: {
+        abortedRequests,
+        delayedRequests,
+        consoleErrors,
+        pageCrashed,
+        rating: isResilient ? 'DORA Compliant (Resilient)' : 'Failed (Fragile)'
+      }
+    };
+  } catch (err) {
+    console.error('Chyba při DORA Chaos auditu:', err);
+    throw err;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
+export function getGridEnergyStatus() {
+  // Simulátor (Mock) pro energetický status sítě.
+  // V reálné produkci by toto volalo API jako ENTSO-E nebo národní operátory sítě.
+  const hour = new Date().getHours();
+  // Simulujeme, že v noci a odpoledne je více "šedé" energie, přes den (soláry) více "zelené"
+  const isHighCarbon = (hour < 8 || hour > 18);
+  
+  return {
+    status: isHighCarbon ? 'HIGH_CARBON' : 'LOW_CARBON',
+    renewablePercentage: isHighCarbon ? Math.floor(Math.random() * 20) + 10 : Math.floor(Math.random() * 40) + 50, // 10-30% vs 50-90%
+    recommendation: isHighCarbon 
+      ? 'Doporučujeme odložit náročné výpočetní úlohy (ML, zálohování) na dobu s vyšším podílem zelené energie v síti.' 
+      : 'Síť má dostatek obnovitelné energie. Ideální čas pro spuštění náročných batch jobů.'
+  };
 }

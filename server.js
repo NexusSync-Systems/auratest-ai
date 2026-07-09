@@ -4,7 +4,7 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
-import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM } from './agent.js';
+import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM, runChaosTest, getGridEnergyStatus } from './agent.js';
 import { fetchTranslations } from './db-connector.js';
 import { authenticateToken } from './auth.js';
 import * as db from './db.js';
@@ -574,6 +574,29 @@ app.post('/api/auraguard/auto-heal', authenticateToken, async (req, res) => {
     res.json({ patch: result.text || result.response || result });
   } catch (err) {
     console.error('Error during Auto-Heal:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auraguard/chaos-test', authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'Chybí URL pro DORA Chaos test' });
+    
+    const report = await runChaosTest(url);
+    res.json(report);
+  } catch (err) {
+    console.error('Error during DORA Chaos test:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/auraguard/grid-status', authenticateToken, (req, res) => {
+  try {
+    const status = getGridEnergyStatus();
+    res.json(status);
+  } catch (err) {
+    console.error('Error getting grid status:', err);
     res.status(500).json({ error: err.message });
   }
 });
