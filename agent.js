@@ -158,7 +158,12 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+      const htmlCollection = document.getElementsByTagName('*');
+      const elementsLenArray = htmlCollection.length;
+      const elements = new Array(elementsLenArray);
+      for (let i = 0; i < elementsLenArray; i++) {
+        elements[i] = htmlCollection[i];
+      }
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -348,7 +353,13 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      const aTags = document.getElementsByTagName('a');
+      const len = aTags.length;
+      const links = new Array(len);
+      for (let i = 0; i < len; i++) {
+        links[i] = aTags[i].href;
+      }
+      return links;
     });
     
     // Filter internal links and deduplicate
@@ -740,7 +751,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
             loadTimeMs: timing.loadEventEnd ? Math.round(timing.loadEventEnd - timing.startTime) : null,
             domInteractiveMs: timing.domInteractive ? Math.round(timing.domInteractive - timing.startTime) : null,
             title: document.title,
-            h1Count: document.querySelectorAll('h1').length
+            h1Count: document.getElementsByTagName('h1').length
           };
         });
       } catch (e) {
