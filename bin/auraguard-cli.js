@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { auditNIS2AndPQC, auditCRA_SBOM, auditAccessibility, auditAIAct, auditStrictCookies, auditCRAVulnerabilities } from '../agent.js';
+import { sendSlackNotification } from '../slack-notifier.js';
+import dotenv from 'dotenv';
+dotenv.config();
 
 const args = process.argv.slice(2);
 const urlIndex = args.indexOf('--url');
@@ -21,6 +24,7 @@ console.log(`Spouštím audit: ${auditType.toUpperCase()}\n`);
 
 async function runCLI() {
   let hasErrors = false;
+  let failedAudits = [];
 
   try {
     if (['nis2', 'all'].includes(auditType)) {
@@ -32,6 +36,7 @@ async function runCLI() {
         const missing = nis2Report.nis2.missingHeaders || [];
         missing.forEach(h => console.error(`   - Chybí hlavička: ${h}`));
         hasErrors = true;
+        failedAudits.push(`*NIS2 & PQC*: Chybí hlavičky (${missing.join(', ')})`);
       } else {
         console.log('✅ PASS: NIS2 Compliance');
       }
@@ -58,6 +63,7 @@ async function runCLI() {
       if (eaaReport.violations.length > 0) {
         console.error(`❌ SELHÁNÍ: Nalezeno ${eaaReport.violations.length} porušení přístupnosti (Evropský akt o přístupnosti)!`);
         hasErrors = true;
+        failedAudits.push(`*EAA Přístupnost*: ${eaaReport.violations.length} porušení`);
       } else {
         console.log('✅ PASS: EAA Compliance (Základní A11y)\n');
       }
@@ -71,6 +77,7 @@ async function runCLI() {
         console.error('❌ SELHÁNÍ: AI Act Violation! Detekováno LLM API bez transparentního upozornění.');
         aiReport.aiAct.apisDetected.forEach(api => console.error(`   - Voláno API: ${api}`));
         hasErrors = true;
+        failedAudits.push(`*AI Act*: Chybí disclaimery pro volání AI (${aiReport.aiAct.apisDetected.join(', ')})`);
       } else {
         console.log('✅ PASS: AI Act Compliance\n');
       }
@@ -84,6 +91,7 @@ async function runCLI() {
         console.error('❌ SELHÁNÍ: GDPR ePrivacy Violation! Detekovány trackery před udělením souhlasu.');
         cookieReport.gdpr.suspiciousItems.forEach(item => console.error(`   - Tracker: ${item}`));
         hasErrors = true;
+        failedAudits.push(`*GDPR Cookies*: Nalezeny nelegální trackery (${cookieReport.gdpr.suspiciousItems.join(', ')})`);
       } else {
         console.log('✅ PASS: GDPR Cookie Compliance (No implicit trackers)\n');
       }
@@ -97,6 +105,8 @@ async function runCLI() {
         console.error(`❌ SELHÁNÍ: CRA Violation! Nalezeno ${vulnReport.cra.vulnerabilities.length} zranitelností (CVE).`);
         vulnReport.cra.vulnerabilities.forEach(v => console.error(`   - ${v.cve} (${v.severity}): ${v.library} ${v.version}`));
         hasErrors = true;
+        const cves = vulnReport.cra.vulnerabilities.map(v => v.cve).join(', ');
+        failedAudits.push(`*CRA Zranitelnosti*: Nalezeno CVE (${cves})`);
       } else {
         console.log('✅ PASS: Cyber Resilience Act (0 CVE found)\n');
       }
@@ -109,6 +119,32 @@ async function runCLI() {
 
   if (hasErrors) {
     console.error(`\n🚨 ZÁVĚR: CI/CD Pipeline byla zastavena, protože aplikace nesplňuje Evropské směrnice. Opravte výše uvedené chyby před nasazením.`);
+    
+    // Slack Notification
+    if (process.env.SLACK_WEBHOOK_URL) {
+      console.log('Odesílám upozornění do Slacku...');
+      const blocks = [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*Detaily selhání (CI/CD):*\n${failedAudits.map(f => `• ${f}`).join('\n')}`
+          }
+        },
+        {
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: `URL: ${url} | Spuštěno AuraGuard CLI` }]
+        }
+      ];
+      await sendSlackNotification(
+        process.env.SLACK_WEBHOOK_URL,
+        'AuraGuard: Nasazení zablokováno (Porušení compliance)',
+        `Cílová adresa *${url}* neprošla povinnými audity.`,
+        true,
+        blocks
+      );
+    }
+
     process.exit(1);
   } else {
     console.log(`\n🎉 ZÁVĚR: Aplikace prošla všemi EU audity. Nasazení povoleno!`);
