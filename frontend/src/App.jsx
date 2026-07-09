@@ -30,7 +30,9 @@ import {
   Printer,
   Eye,
   Cookie,
-  Cpu
+  Cpu,
+  Globe,
+  MessageSquare
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
@@ -183,6 +185,15 @@ export default function App() {
   const [craVulnLoading, setCraVulnLoading] = useState(false);
   const [craVulnResult, setCraVulnResult] = useState(null);
   const [craVulnModalOpen, setCraVulnModalOpen] = useState(false);
+
+  // New Monitors State (Phase 4)
+  const [monitorPageLoading, setMonitorPageLoading] = useState(false);
+  const [monitorPageResult, setMonitorPageResult] = useState(null);
+  const [monitorPageModalOpen, setMonitorPageModalOpen] = useState(false);
+
+  const [monitorFormLoading, setMonitorFormLoading] = useState(false);
+  const [monitorFormResult, setMonitorFormResult] = useState(null);
+  const [monitorFormModalOpen, setMonitorFormModalOpen] = useState(false);
 
   // Monitor Form State
   const [monitorName, setMonitorName] = useState('');
@@ -422,6 +433,33 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setCraVulnResult(data);
     } catch (err) { alert('Chyba CRA Vuln testu: ' + err.message); setCraVulnModalOpen(false); } finally { setCraVulnLoading(false); }
+  };
+
+  const handleRunMonitorPage = async () => {
+    if (!agentUrl) { alert('Zadejte URL pro test dostupnosti.'); return; }
+    setMonitorPageLoading(true); setMonitorPageModalOpen(true);
+    try {
+      const response = await fetch('/api/auraguard/monitor-page', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` }, body: JSON.stringify({ target: { url: agentUrl, name: 'On-Demand Page Check' } })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setMonitorPageResult(data);
+    } catch (err) { alert('Chyba Monitor Page testu: ' + err.message); setMonitorPageModalOpen(false); } finally { setMonitorPageLoading(false); }
+  };
+
+  const handleRunMonitorForm = async () => {
+    if (!agentUrl) { alert('Zadejte cílové URL (action) formuláře.'); return; }
+    setMonitorFormLoading(true); setMonitorFormModalOpen(true);
+    try {
+      // V reálném nasazení bychom zde měli další inputy pro jména políček. Pro on-demand demo posíláme prázdný formulář.
+      const response = await fetch('/api/auraguard/monitor-form', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` }, body: JSON.stringify({ target: { url: agentUrl, name: 'On-Demand Form Check', method: 'POST', fields: { test: '1' } } })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setMonitorFormResult(data);
+    } catch (err) { alert('Chyba Monitor Form testu: ' + err.message); setMonitorFormModalOpen(false); } finally { setMonitorFormLoading(false); }
   };
 
   const handleAutoHeal = async (event) => {
@@ -1070,6 +1108,16 @@ export default function App() {
                       </button>
                       <button className="btn" type="button" onClick={handleRunCraVulnAudit} style={{ backgroundColor: '#ef4444', color: 'white', borderColor: '#ef4444', flex: 1 }}>
                         CRA Zranitelnosti (CVE) <AlertTriangle size={16} />
+                      </button>
+                    </div>
+                    
+                    {/* Fáze 4 Buttons */}
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>
+                      <button className="btn" type="button" onClick={handleRunMonitorPage} style={{ backgroundColor: '#2563eb', color: 'white', borderColor: '#2563eb', flex: 1 }}>
+                        Test Dostupnosti (HTTP) <Globe size={16} />
+                      </button>
+                      <button className="btn" type="button" onClick={handleRunMonitorForm} style={{ backgroundColor: '#059669', color: 'white', borderColor: '#059669', flex: 1 }}>
+                        Test Formuláře (HTTP) <MessageSquare size={16} />
                       </button>
                     </div>
                     
@@ -2644,6 +2692,71 @@ export default function App() {
                       </div>
                     </div>
                   ) : <p style={{ color: '#10b981' }}>Databáze OSV nenašla na odhaleném klientském SBOM (React, Next.js apod.) žádné zranitelnosti.</p>}
+                </div>
+              ) : <p>Chyba načítání</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* FÁZE 4 MODALS */}
+      {/* Monitor Page Modal */}
+      {monitorPageModalOpen && (
+        <div className="no-print" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card printable" style={{ width: '100%', maxWidth: '700px', backgroundColor: '#1e1e1e', border: '1px solid #2563eb' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#2563eb' }}>
+                <Globe size={24} /> Test Dostupnosti (HTTP)
+              </h2>
+              <button onClick={() => setMonitorPageModalOpen(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}>&times;</button>
+            </div>
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6', maxHeight: '70vh', overflowY: 'auto' }}>
+              {monitorPageLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}><div className="spinner" style={{ marginBottom: '16px', borderColor: '#2563eb', borderTopColor: 'transparent' }}></div><p>Odesílám HTTP GET požadavek...</p></div>
+              ) : monitorPageResult ? (
+                <div>
+                  <div style={{ padding: '16px', borderRadius: '8px', background: monitorPageResult.ok ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)', border: `1px solid ${monitorPageResult.ok ? '#10b981' : '#ef4444'}`, marginBottom: '20px' }}>
+                    <h3 style={{ margin: '0 0 8px 0', color: monitorPageResult.ok ? '#10b981' : '#ef4444' }}>{monitorPageResult.ok ? '✅ Uptime OK' : '❌ Výpadek Zaznamenán'}</h3>
+                    <p style={{ margin: 0, fontSize: '0.9rem' }}>Výsledek lehkého HTTP dotazu (bez spuštění Playwrightu).</p>
+                  </div>
+                  <ul>
+                    <li><strong>URL:</strong> {monitorPageResult.url}</li>
+                    <li><strong>Doba odezvy:</strong> {monitorPageResult.durationMs} ms</li>
+                    <li><strong>HTTP Status kód:</strong> {monitorPageResult.status}</li>
+                    {!monitorPageResult.ok && <li style={{color: '#ef4444'}}><strong>Chyba:</strong> {monitorPageResult.error}</li>}
+                  </ul>
+                </div>
+              ) : <p>Chyba načítání</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Monitor Form Modal */}
+      {monitorFormModalOpen && (
+        <div className="no-print" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card printable" style={{ width: '100%', maxWidth: '700px', backgroundColor: '#1e1e1e', border: '1px solid #059669' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: '#059669' }}>
+                <MessageSquare size={24} /> Test Formuláře (HTTP)
+              </h2>
+              <button onClick={() => setMonitorFormModalOpen(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem' }}>&times;</button>
+            </div>
+            <div style={{ color: 'var(--text-light)', lineHeight: '1.6', maxHeight: '70vh', overflowY: 'auto' }}>
+              {monitorFormLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 0' }}><div className="spinner" style={{ marginBottom: '16px', borderColor: '#059669', borderTopColor: 'transparent' }}></div><p>Simuluji odeslání HTML formuláře...</p></div>
+              ) : monitorFormResult ? (
+                <div>
+                  <div style={{ padding: '16px', borderRadius: '8px', background: monitorFormResult.ok ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)', border: `1px solid ${monitorFormResult.ok ? '#10b981' : '#ef4444'}`, marginBottom: '20px' }}>
+                    <h3 style={{ margin: '0 0 8px 0', color: monitorFormResult.ok ? '#10b981' : '#ef4444' }}>{monitorFormResult.ok ? '✅ Formulář prošel' : '❌ Formulář zamítnut'}</h3>
+                    <p style={{ margin: 0, fontSize: '0.9rem' }}>Výsledek HTTP POST/GET požadavku směřujícího přímo na formulářový action endpoint.</p>
+                  </div>
+                  <ul>
+                    <li><strong>Odesláno na:</strong> {monitorFormResult.url}</li>
+                    <li><strong>Doba odezvy:</strong> {monitorFormResult.durationMs} ms</li>
+                    <li><strong>HTTP Status kód:</strong> {monitorFormResult.status}</li>
+                    {!monitorFormResult.ok && <li style={{color: '#ef4444'}}><strong>Chyba:</strong> {monitorFormResult.error}</li>}
+                  </ul>
                 </div>
               ) : <p>Chyba načítání</p>}
             </div>

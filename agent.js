@@ -1691,3 +1691,111 @@ export async function auditCRAVulnerabilities(url) {
     }
   };
 }
+
+/**
+ * FÁZE 4: UPTIME & FORM MONITORING (Bez Playwrightu)
+ */
+
+export async function checkPage(target) {
+  const start = Date.now();
+  const result = {
+    type: 'page',
+    name: target.name || 'Neznámá stránka',
+    url: target.url,
+    timestamp: new Date().toISOString(),
+    ok: false,
+    status: null,
+    durationMs: null,
+    error: null,
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), target.timeoutMs || 10000);
+
+  try {
+    const res = await fetch(target.url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'auraguard-monitor/1.0' },
+    });
+    const body = await res.text();
+
+    result.status = res.status;
+    result.durationMs = Date.now() - start;
+
+    const statusOk = res.status >= 200 && res.status < 400;
+    const contentOk = target.expectedText ? body.includes(target.expectedText) : true;
+
+    result.ok = statusOk && contentOk;
+    if (!statusOk) {
+      result.error = `Neočekávaný status ${res.status}`;
+    } else if (!contentOk) {
+      result.error = `Očekávaný text "${target.expectedText}" nebyl na stránce nalezen`;
+    }
+  } catch (err) {
+    result.durationMs = Date.now() - start;
+    result.error = err.name === 'AbortError' ? 'Timeout' : err.message;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  return result;
+}
+
+export async function checkForm(target) {
+  const start = Date.now();
+  const result = {
+    type: 'form',
+    name: target.name || 'Neznámý formulář',
+    url: target.url,
+    timestamp: new Date().toISOString(),
+    ok: false,
+    status: null,
+    durationMs: null,
+    error: null,
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), target.timeoutMs || 10000);
+
+  try {
+    const method = (target.method || 'POST').toUpperCase();
+    const body = method === 'GET' ? undefined : new URLSearchParams(target.fields || {});
+
+    const res = await fetch(target.url, {
+      method,
+      signal: controller.signal,
+      redirect: 'manual',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'auraguard-monitor/1.0',
+      },
+      body,
+    });
+
+    const isRedirect = res.status >= 300 && res.status < 400;
+    const responseText = isRedirect ? '' : await res.text();
+
+    result.status = res.status;
+    result.durationMs = Date.now() - start;
+
+    const statusOk = target.expectedStatus
+      ? res.status === target.expectedStatus
+      : res.status < 400;
+    const contentOk = target.expectedText ? responseText.includes(target.expectedText) : true;
+
+    result.ok = statusOk && contentOk;
+    if (!statusOk) {
+      result.error = `Neočekávaný status ${res.status}`;
+    } else if (!contentOk) {
+      result.error = `Očekávaný text "${target.expectedText}" nebyl v odpovědi nalezen`;
+    }
+  } catch (err) {
+    result.durationMs = Date.now() - start;
+    result.error = err.name === 'AbortError' ? 'Timeout' : err.message;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  return result;
+}

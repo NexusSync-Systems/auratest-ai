@@ -4,7 +4,7 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
-import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM, runChaosTest, getGridEnergyStatus, auditAIAct, auditStrictCookies, auditCRAVulnerabilities } from './agent.js';
+import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM, runChaosTest, getGridEnergyStatus, auditAIAct, auditStrictCookies, auditCRAVulnerabilities, checkPage, checkForm } from './agent.js';
 import { fetchTranslations } from './db-connector.js';
 import { authenticateToken } from './auth.js';
 import * as db from './db.js';
@@ -628,12 +628,36 @@ app.post('/api/auraguard/cookie-audit', authenticateToken, async (req, res) => {
 app.post('/api/auraguard/cra-vuln-audit', authenticateToken, async (req, res) => {
   try {
     const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'Chybí URL' });
-    const report = await auditCRAVulnerabilities(url);
-    res.json(report);
-  } catch (err) {
-    console.error('Error during CRA Vuln audit:', err);
-    res.status(500).json({ error: err.message });
+    if (!url) return res.status(400).json({ error: 'URL je povinné.' });
+    const result = await auditCRAVulnerabilities(url);
+    res.json(result);
+  } catch (error) {
+    console.error('CRA Vuln Audit error:', error);
+    res.status(500).json({ error: error.message || 'CRA Vuln selhal' });
+  }
+});
+
+app.post('/api/auraguard/monitor-page', authenticateToken, async (req, res) => {
+  try {
+    const { target } = req.body;
+    if (!target || !target.url) return res.status(400).json({ error: 'Cíl monitoringu (url) je povinný.' });
+    const result = await checkPage(target);
+    res.json(result);
+  } catch (error) {
+    console.error('Monitor Page error:', error);
+    res.status(500).json({ error: error.message || 'Monitor Page selhal' });
+  }
+});
+
+app.post('/api/auraguard/monitor-form', authenticateToken, async (req, res) => {
+  try {
+    const { target } = req.body;
+    if (!target || !target.url) return res.status(400).json({ error: 'Cíl formuláře (url) je povinný.' });
+    const result = await checkForm(target);
+    res.json(result);
+  } catch (error) {
+    console.error('Monitor Form error:', error);
+    res.status(500).json({ error: error.message || 'Monitor Form selhal' });
   }
 });
 
