@@ -40,6 +40,12 @@ if (!fs.existsSync(videosDir)) {
 }
 app.use('/api/videos', express.static(videosDir));
 
+const sdkDir = path.join(__dirname, 'public/sdk');
+if (!fs.existsSync(sdkDir)) {
+  fs.mkdirSync(sdkDir, { recursive: true });
+}
+app.use('/sdk', express.static(sdkDir));
+
 const PORT = process.env.PORT || 3001;
 
 // In-memory sessions store

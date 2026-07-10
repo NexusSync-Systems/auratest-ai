@@ -2028,8 +2028,8 @@ export default function App() {
                   <div style={{ position: 'relative' }}>
                     <pre style={{ margin: 0, background: 'black', color: '#a9b7c6', padding: '12px', borderRadius: 'var(--radius-sm)', fontSize: '0.7rem', overflowX: 'auto', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
 {`<script 
-  src="${window.location.protocol}//${window.location.host}/api/auraguard/sdk.js" 
-  data-project="${selectedProjectId}" 
+  src="${window.location.protocol}//${window.location.host}/sdk/auraguard.js" 
+  data-project-id="${selectedProjectId}" 
   data-track-errors="${sdkErrors}" 
   data-track-perf="${sdkPerf}" 
   data-gdpr-sentinel="${gdprSentinel}"
@@ -2043,7 +2043,7 @@ export default function App() {
                           alert('Nejprve vyberte nebo vytvořte projekt!');
                           return;
                         }
-                        const code = `<script \n  src="${window.location.protocol}//${window.location.host}/api/auraguard/sdk.js" \n  data-project="${selectedProjectId}" \n  data-track-errors="${sdkErrors}" \n  data-track-perf="${sdkPerf}" \n  data-slow-api-threshold="${sdkSlowThreshold}">\n</script>`;
+                        const code = `<script \n  src="${window.location.protocol}//${window.location.host}/sdk/auraguard.js" \n  data-project-id="${selectedProjectId}" \n  data-track-errors="${sdkErrors}" \n  data-track-perf="${sdkPerf}" \n  data-slow-api-threshold="${sdkSlowThreshold}">\n</script>`;
                         navigator.clipboard.writeText(code);
                         alert('Kód SDK byl zkopírován do schránky!');
                       }}
