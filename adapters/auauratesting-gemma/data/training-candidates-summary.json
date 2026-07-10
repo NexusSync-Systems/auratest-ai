@@ -1,0 +1,19 @@
+{
+  "total": 119,
+  "byFailureMode": {
+    "fallback_or_guardrail_step": 37,
+    "vague_repetitive_reasoning": 30,
+    "loop_repeated_action_target": 36,
+    "reasoning_copied_to_detected_bugs": 1,
+    "generated_invalid_numeric_navigate": 12,
+    "generated_relative_navigate": 3
+  },
+  "bySeverity": {
+    "medium": 70,
+    "high": 49
+  },
+  "byKind": {
+    "session-step": 104,
+    "generated-script": 15
+  }
+}

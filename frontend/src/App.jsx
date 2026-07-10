@@ -30,8 +30,6 @@ import {
   Printer,
   Eye,
   Cookie,
-  Cpu,
-  Globe,
   MessageSquare
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
@@ -77,7 +75,7 @@ export default function App() {
   const [projectName, setProjectName] = useState('');
   const [projectOrigins, setProjectOrigins] = useState('');
 
-  const [activeTab, setActiveTab] = useState('agent'); // 'agent', 'compare', 'audit', 'settings'
+  const [activeTab, setActiveTab] = useState('auraguard'); // 'agent', 'compare', 'audit', 'settings'
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const [activeSession, setActiveSession] = useState(null);
@@ -814,63 +812,60 @@ export default function App() {
   const activeScreenshot = activeStep ? activeStep.screenshot : null;
   const activeLogs = activeStep && activeStep.logs ? activeStep.logs : [];
   const activeBugs = activeStep && activeStep.bugs ? activeStep.bugs : (activeSession?.bugs || []);
+  const renderLogin = () => (
+    <div className="login-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', minHeight: '400px', background: 'transparent' }}>
+      <form onSubmit={handleAuthSubmit} className="card" style={{ width: '380px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid rgba(255,255,255,0.1)', padding: '24px', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-md)' }}>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: 0, fontSize: '1.5rem', color: 'white', fontWeight: 'bold' }}>
+          <Layers color="var(--accent)" size={24} /> Přihlášení
+        </h2>
+        <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
+          {authMode === 'login' ? 'Tato sekce vyžaduje přihlášení.' : 'Zaregistrujte si nový účet.'}
+        </p>
 
-  if (!user) {
-    return (
-      <div className="login-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg-dark)' }}>
-        <form onSubmit={handleAuthSubmit} className="card" style={{ width: '380px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid rgba(255,255,255,0.1)', padding: '24px', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-md)' }}>
-          <h2 style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: 0, fontSize: '1.5rem', color: 'white', fontWeight: 'bold' }}>
-            <Layers color="var(--accent)" size={24} /> AuraTest AI
-          </h2>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
-            {authMode === 'login' ? 'Přihlaste se ke svému QA účtu' : 'Zaregistrujte si nový QA účet'}
-          </p>
+        {authError && (
+          <div style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', padding: '10px', borderRadius: 'var(--radius-sm)', fontSize: '0.8rem', border: '1px solid rgba(239,68,68,0.2)' }}>
+            {authError}
+          </div>
+        )}
 
-          {authError && (
-            <div style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', padding: '10px', borderRadius: 'var(--radius-sm)', fontSize: '0.8rem', border: '1px solid rgba(239,68,68,0.2)' }}>
-              {authError}
-            </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>E-mailová adresa</label>
+          <input 
+            type="email" 
+            value={authEmail} 
+            onChange={(e) => setAuthEmail(e.target.value)} 
+            placeholder="name@example.com" 
+            required 
+            style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 'var(--radius-sm)', color: 'white', fontSize: '0.9rem' }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Heslo</label>
+          <input 
+            type="password" 
+            value={authPassword} 
+            onChange={(e) => setAuthPassword(e.target.value)} 
+            placeholder="••••••••" 
+            required 
+            style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 'var(--radius-sm)', color: 'white', fontSize: '0.9rem' }}
+          />
+        </div>
+
+        <button type="submit" className="btn btn-primary" style={{ padding: '10px', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          {authMode === 'login' ? 'Přihlásit se' : 'Zaregistrovat se'}
+        </button>
+
+        <div style={{ textAlign: 'center', fontSize: '0.8rem', marginTop: '8px' }}>
+          {authMode === 'login' ? (
+            <span>Nemáte účet? <a href="#" onClick={(e) => { e.preventDefault(); setAuthMode('register'); setAuthError(''); }} style={{ color: 'var(--accent)', fontWeight: 'bold', textDecoration: 'none' }}>Zaregistrujte se</a></span>
+          ) : (
+            <span>Již máte účet? <a href="#" onClick={(e) => { e.preventDefault(); setAuthMode('login'); setAuthError(''); }} style={{ color: 'var(--accent)', fontWeight: 'bold', textDecoration: 'none' }}>Přihlaste se</a></span>
           )}
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>E-mailová adresa</label>
-            <input 
-              type="email" 
-              value={authEmail} 
-              onChange={(e) => setAuthEmail(e.target.value)} 
-              placeholder="name@example.com" 
-              required 
-              style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 'var(--radius-sm)', color: 'white', fontSize: '0.9rem' }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Heslo</label>
-            <input 
-              type="password" 
-              value={authPassword} 
-              onChange={(e) => setAuthPassword(e.target.value)} 
-              placeholder="••••••••" 
-              required 
-              style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 'var(--radius-sm)', color: 'white', fontSize: '0.9rem' }}
-            />
-          </div>
-
-          <button type="submit" className="btn btn-primary" style={{ padding: '10px', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-            {authMode === 'login' ? 'Přihlásit se' : 'Zaregistrovat se'}
-          </button>
-
-          <div style={{ textAlign: 'center', fontSize: '0.8rem', marginTop: '8px' }}>
-            {authMode === 'login' ? (
-              <span>Nemáte účet? <a href="#" onClick={(e) => { e.preventDefault(); setAuthMode('register'); setAuthError(''); }} style={{ color: 'var(--accent)', fontWeight: 'bold', textDecoration: 'none' }}>Zaregistrujte se</a></span>
-            ) : (
-              <span>Již máte účet? <a href="#" onClick={(e) => { e.preventDefault(); setAuthMode('login'); setAuthError(''); }} style={{ color: 'var(--accent)', fontWeight: 'bold', textDecoration: 'none' }}>Přihlaste se</a></span>
-            )}
-          </div>
-        </form>
-      </div>
-    );
-  }
+        </div>
+      </form>
+    </div>
+  );
 
   return (
     <div className="app-container">
@@ -948,16 +943,28 @@ export default function App() {
         </div>
 
         <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', marginTop: 'auto' }}>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }} title={user.email}>
-            Účet: <strong>{user.email}</strong>
-          </div>
-          <button 
-            className="btn btn-secondary" 
-            onClick={() => signOut(firebaseAuth)}
-            style={{ width: '100%', padding: '6px', fontSize: '0.75rem', color: '#ef4444', background: 'rgba(239,68,68,0.1)', border: 'none', cursor: 'pointer', borderRadius: 'var(--radius-sm)' }}
-          >
-            Odhlásit se
-          </button>
+          {user ? (
+            <>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }} title={user.email}>
+                Účet: <strong>{user.email}</strong>
+              </div>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => signOut(firebaseAuth)}
+                style={{ width: '100%', padding: '6px', fontSize: '0.75rem', color: '#ef4444', background: 'rgba(239,68,68,0.1)', border: 'none', cursor: 'pointer', borderRadius: 'var(--radius-sm)' }}
+              >
+                Odhlásit se
+              </button>
+            </>
+          ) : (
+            <button 
+              className="btn btn-primary" 
+              onClick={() => setActiveTab('agent')}
+              style={{ width: '100%', padding: '8px', fontSize: '0.85rem', fontWeight: 'bold', border: 'none', cursor: 'pointer', borderRadius: 'var(--radius-sm)' }}
+            >
+              Přihlásit se
+            </button>
+          )}
         </div>
       </aside>
 
@@ -1000,8 +1007,10 @@ export default function App() {
 
         {/* Tab panels */}
         <div className="tab-content">
+          {(!user && activeTab !== 'auraguard') && renderLogin()}
+
           {/* Tab 1: QA Agent Runner */}
-          {activeTab === 'agent' && (
+          {user && activeTab === 'agent' && (
             <div className="runner-layout">
               {/* Left Column: Form and Logs */}
               <div className="runner-left">
@@ -1323,7 +1332,7 @@ export default function App() {
           )}
 
           {/* Tab 2: Compare Tool */}
-          {activeTab === 'compare' && (
+          {user && activeTab === 'compare' && (
             <div className="diff-layout">
               <form className="card" onSubmit={handleCompare}>
                 <h3 className="card-title"><RefreshCw size={16} /> Porovnat dvě verze stránek</h3>
@@ -1430,7 +1439,7 @@ export default function App() {
           )}
 
           {/* Tab 3: Translation Auditor */}
-          {activeTab === 'audit' && (
+          {user && activeTab === 'audit' && (
             <div className="diff-layout">
               <form className="card" onSubmit={handleAuditTranslations}>
                 <h3 className="card-title"><Globe size={16} /> Audit překladů</h3>
@@ -1604,7 +1613,7 @@ export default function App() {
           )}
 
           {/* Tab 4: Settings */}
-          {activeTab === 'settings' && (
+          {user && activeTab === 'settings' && (
             <div className="card">
               <h3 className="card-title"><SettingsIcon size={16} /> Globální konfigurace</h3>
               
@@ -1692,13 +1701,15 @@ export default function App() {
                     <h3 className="card-title" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <Activity size={16} color="var(--accent)" /> Syntetický monitoring
                     </h3>
-                    <button 
-                      className="btn btn-secondary" 
-                      onClick={() => setIsAddingMonitor(!isAddingMonitor)}
-                      style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.8rem' }}
-                    >
-                      <Plus size={14} /> Přidat monitor
-                    </button>
+                    {user && (
+                      <button 
+                        className="btn btn-secondary" 
+                        onClick={() => setIsAddingMonitor(!isAddingMonitor)}
+                        style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.8rem' }}
+                      >
+                        <Plus size={14} /> Přidat monitor
+                      </button>
+                    )}
                   </div>
 
                   {isAddingMonitor && (
@@ -1851,6 +1862,7 @@ export default function App() {
                                   <Trash2 size={12} />
                                 </button>
                               </div>
+                            </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', marginTop: '4px' }}>
                               <span>Interval: <strong>{mon.interval}</strong></span>
                               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -2036,15 +2048,6 @@ export default function App() {
                         alert('Kód SDK byl zkopírován do schránky!');
                       }}
                       style={{ position: 'absolute', top: '8px', right: '8px', padding: '3px 6px', fontSize: '0.7rem', background: 'rgba(255,255,255,0.1)', cursor: 'pointer' }}
-                    >
-                      <Copy size={12} /> Kopírovat
-                    </button>
-                  </div>
-                </div>-slow-api-threshold="\${sdkSlowThreshold}">\n</script>`;
-                        navigator.clipboard.writeText(code);
-                        alert('Kód SDK byl zkopírován do schránky!');
-                      }}
-                      style={{ position: 'absolute', top: '8px', right: '8px', padding: '3px 6px', fontSize: '0.7rem', background: 'rgba(255,255,255,0.1)' }}
                     >
                       <Copy size={12} /> Kopírovat
                     </button>
@@ -2282,19 +2285,19 @@ export default function App() {
                     <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Směrnice NIS2 vyžaduje zabezpečenou infrastrukturu. Kontrolujeme přítomnost základních HTTP hlaviček proti útokům jako Clickjacking, XSS a downgrade útokům.</p>
                     
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '16px' }}>
-                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: \`4px solid \${nis2Result.nis2.hsts ? '#10b981' : '#ef4444'}\` }}>
+                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: `4px solid ${nis2Result.nis2.hsts ? '#10b981' : '#ef4444'}` }}>
                         <div style={{ fontWeight: 'bold' }}>Strict-Transport-Security (HSTS)</div>
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Vynucuje HTTPS spojení.</div>
                       </div>
-                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: \`4px solid \${nis2Result.nis2.csp ? '#10b981' : '#ef4444'}\` }}>
+                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: `4px solid ${nis2Result.nis2.csp ? '#10b981' : '#ef4444'}` }}>
                         <div style={{ fontWeight: 'bold' }}>Content-Security-Policy (CSP)</div>
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Zabraňuje XSS útokům.</div>
                       </div>
-                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: \`4px solid \${nis2Result.nis2.xFrameOptions ? '#10b981' : '#ef4444'}\` }}>
+                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: `4px solid ${nis2Result.nis2.xFrameOptions ? '#10b981' : '#ef4444'}` }}>
                         <div style={{ fontWeight: 'bold' }}>X-Frame-Options</div>
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Zabraňuje Clickjackingu.</div>
                       </div>
-                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: \`4px solid \${nis2Result.nis2.xContentTypeOptions ? '#10b981' : '#ef4444'}\` }}>
+                      <div style={{ padding: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', borderLeft: `4px solid ${nis2Result.nis2.xContentTypeOptions ? '#10b981' : '#ef4444'}` }}>
                         <div style={{ fontWeight: 'bold' }}>X-Content-Type-Options</div>
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Zabraňuje MIME-sniffingu.</div>
                       </div>

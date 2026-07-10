@@ -16,7 +16,22 @@
     "setup": "npm run install:all && npx playwright install",
     "dev": "npx concurrently \"npm run dev:server\" \"npm run frontend:dev\"",
     "test": "jest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "eval:llm": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --run-model",
+    "eval:llm:capture": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --run-model --model auauratesting-gemma --tag quality --timeout-ms 30000 --verbose --write-failures adapters/auauratesting-gemma/model-failures.jsonl",
+    "eval:llm:offline": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl",
+    "dataset:sft": "node tools/llm-eval/export-sft.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --output adapters/auauratesting-gemma/data/auratest-gemma-sft.jsonl",
+    "dataset:preferences": "node tools/llm-eval/export-preferences.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --failures adapters/auauratesting-gemma/model-failures.jsonl --output adapters/auauratesting-gemma/data/auratest-gemma-preferences.jsonl",
+    "dataset:failures:normalize": "node tools/llm-eval/normalize-failures.js --input adapters/auauratesting-gemma/model-failures.jsonl",
+    "dataset:failures:report": "node tools/llm-eval/report-failures.js --failures adapters/auauratesting-gemma/model-failures.jsonl --output adapters/auauratesting-gemma/data/failure-report.md",
+    "dataset:sanitizer:coverage": "node tools/llm-eval/report-sanitizer-coverage.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --failures adapters/auauratesting-gemma/model-failures.jsonl --output adapters/auauratesting-gemma/data/sanitizer-coverage.md",
+    "dataset:candidates": "node tools/llm-eval/extract-training-candidates.js --output adapters/auauratesting-gemma/data/training-candidates.jsonl --summary adapters/auauratesting-gemma/data/training-candidates-summary.json",
+    "finetune:mlx:prepare": "node tools/llm-eval/export-mlx-sft.js --input adapters/auauratesting-gemma/data/auratest-gemma-sft.jsonl --output-dir adapters/auauratesting-gemma/finetune/mlx-data",
+    "finetune:mlx:setup": "bash adapters/auauratesting-gemma/finetune/setup-mlx-venv.sh",
+    "finetune:mlx:train:lowram": "bash adapters/auauratesting-gemma/finetune/train-lowram.sh",
+    "eval:mlx:generate": "adapters/auauratesting-gemma/finetune/.venv/bin/python tools/llm-eval/run-mlx-eval.py --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --adapter-path adapters/auauratesting-gemma/finetune/output/lowram-lora --output adapters/auauratesting-gemma/finetune/mlx-responses.jsonl",
+    "eval:mlx:score": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --responses adapters/auauratesting-gemma/finetune/mlx-responses.jsonl",
+    "adapter:gemma:create": "ollama create auauratesting-gemma -f adapters/auauratesting-gemma/Modelfile"
   },
   "dependencies": {
     "@axe-core/playwright": "^4.12.1",

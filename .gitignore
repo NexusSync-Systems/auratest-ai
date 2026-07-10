@@ -10,3 +10,6 @@ firebase-credentials.json
 scratch/
 sessions/
 videos/
+adapters/*/finetune/.venv/
+adapters/*/finetune/output/
+adapters/*/finetune/**/*.safetensors

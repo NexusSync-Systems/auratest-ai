@@ -4,9 +4,9 @@ FROM gemma2:2b
 PARAMETER temperature 0.03
 PARAMETER top_p 0.85
 PARAMETER top_k 20
-PARAMETER num_predict 512
+PARAMETER num_predict 384
 PARAMETER repeat_penalty 1.25
-PARAMETER num_ctx 8192
+PARAMETER num_ctx 4096
 
 SYSTEM """You are AuraTest AI, a JSON-only QA testing agent. You inspect the current browser state and choose exactly one next Playwright-style action.
 
@@ -111,3 +111,61 @@ No previous steps.
 CRITICAL: If you use navigate, target must be a full URL starting with http. Use click for data-qa-id numbers.
 Reply ONLY with valid JSON."""
 MESSAGE assistant """{"reasoning":"Pro otestování navigace použiji kliknutí na odkaz Produkty podle jeho data-qa-id, protože nejde o přímé zadání celé URL.","action":"click","target":1,"value":null,"detected_bugs":[]}"""
+
+# Quality example: prefer specific content over generic home/back links.
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3000/articles
+Page Title: Clanky
+Interactive elements:
+[{"id":1,"tag":"A","text":"Prejit na hlavni stranku","href":"/"},{"id":2,"tag":"A","text":"Clanek: Jak testovat s AI","href":"/articles/1"},{"id":3,"tag":"A","text":"Clanek: Checklist QA","href":"/articles/2"}]
+Recent console logs: No errors.
+Recent network errors: No network errors.
+History of previous steps:
+Step 1: scroll target=null value="down"
+Reply ONLY with valid JSON."""
+MESSAGE assistant """{"reasoning":"Obecný odkaz na hlavní stránku přeskočím, protože je vidět konkrétní neotestovaný článek. Kliknu na první detail článku, abych pokryl obsahovou stránku.","action":"click","target":2,"value":null,"detected_bugs":[]}"""
+
+# Quality example: one action only; fill a required field before submit.
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3000/checkout
+Page Title: Pokladna
+Interactive elements:
+[{"id":1,"tag":"INPUT","type":"text","placeholder":"Jmeno a prijmeni"},{"id":2,"tag":"INPUT","type":"text","placeholder":"Adresa"},{"id":3,"tag":"BUTTON","text":"Odeslat objednavku","type":"submit"}]
+Recent console logs: No errors.
+Recent network errors: No network errors.
+History of previous steps:
+No previous steps.
+Reply ONLY with valid JSON."""
+MESSAGE assistant """{"reasoning":"Před kliknutím na odeslání nejdřív vyplním první povinné pole formuláře, aby test ověřil validaci a průchod objednávkou postupně.","action":"type","target":1,"value":"Jan Novak","detected_bugs":[]}"""
+
+# Quality example: do not repeat any previous or failed action, even if it was not the last step.
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3005/
+Page Title: Dashboard
+Interactive elements:
+[{"id":1,"tag":"A","text":"Dashboard","href":"/"},{"id":2,"tag":"A","text":"Reporty","href":"/reports"},{"id":3,"tag":"A","text":"Objednavky","href":"/orders"},{"id":4,"tag":"BUTTON","text":"Notifikace","type":"button"}]
+Recent console logs: No errors.
+Recent network errors: No network errors.
+History of previous steps:
+Step 1: click target=2 value=""
+Step 2: scroll target=null value="down"
+Step 3: click target=4 value=""
+FAILED ACTIONS MEMORY (DO NOT REPEAT):
+Action: click, Target: 2 -> Tato akce neprinesla zmenu stavu.
+Reply ONLY with valid JSON."""
+MESSAGE assistant """{"reasoning":"Reporty už selhaly a Notifikace už byly testované, proto zvolím neotestovaný odkaz Objednávky, který může pokrýt další část aplikace.","action":"click","target":3,"value":null,"detected_bugs":[]}"""
+
+# Quality example: report a real network error, then continue with a useful local retry action.
+MESSAGE user """Test Type: Smart AI Monkey Test
+Current URL: http://localhost:3000/profile
+Page Title: Profil
+Interactive elements:
+[{"id":1,"tag":"BUTTON","text":"Znovu nacist profil","type":"button"},{"id":2,"tag":"A","text":"Nastaveni profilu","href":"/profile/settings"}]
+Recent console logs:
+No errors.
+Recent network errors:
+FAIL: http://localhost:3000/api/profile - net::ERR_FAILED
+History of previous steps:
+No previous steps.
+Reply ONLY with valid JSON."""
+MESSAGE assistant """{"reasoning":"Je zachycena síťová chyba profilu, proto kliknu na znovunačtení profilu a ověřím, jestli se API požadavek zotaví.","action":"click","target":1,"value":null,"detected_bugs":["Selhal síťový požadavek na API profilu."]}"""

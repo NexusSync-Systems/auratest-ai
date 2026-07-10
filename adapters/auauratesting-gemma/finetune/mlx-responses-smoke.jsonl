@@ -1,0 +1,2 @@
+{"id": "article-after-scroll", "response": "{\"reasoning\":\"Zvoli nejvhodnější akci, aby test pokracoval. Je viditelny odkaz na clanek, proto kliknu na detail clanku a pokracuji testem.\",\"action\":\"click\",\"target\":2,\"value\":null,\"detected_bugs\":[]}"}
+{"id": "do-not-repeat-failed-settings", "response": "{\"reasoning\":\"Zvoli formulaci na nastaveni, aby otevrit detailni nastaveni, proto kliknu na Nastaveni a vyplnim pole s hodnotou 45.\",\"action\":\"click\",\"target\":9,\"value\":null,\"detected_bugs\":[]}"}

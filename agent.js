@@ -227,6 +227,376 @@ async function extractInteractiveElements(page) {
   }
 }
 
+const AGENT_ACTIONS = new Set(['click', 'type', 'scroll', 'navigate', 'wait', 'finish']);
+const TEXT_INPUT_TYPES = new Set(['', 'text', 'email', 'password', 'search', 'tel', 'url', 'number']);
+
+function normalizeTargetValue(target) {
+  if (target === null || target === undefined) return null;
+  if (typeof target === 'number') return target;
+  if (typeof target === 'string' && /^\d+$/.test(target.trim())) return Number(target.trim());
+  return target;
+}
+
+function actionTargetKey(action, target) {
+  return `${action}:${target === null || target === undefined ? 'null' : String(target)}`;
+}
+
+function hasRuntimeSignals(consoleLogs, networkErrors) {
+  const hasConsoleError = (consoleLogs || []).some((log) => log?.type === 'error' || /\berror\b/i.test(log?.text || ''));
+  return hasConsoleError || (networkErrors || []).length > 0;
+}
+
+function summarizeRuntimeSignal(consoleLogs, networkErrors) {
+  const consoleError = (consoleLogs || []).find((log) => log?.type === 'error' || /\berror\b|ReferenceError|TypeError/i.test(log?.text || ''));
+  if (consoleError) {
+    return `V konzoli je chyba: ${String(consoleError.text || consoleError.message || 'neznámá chyba').slice(0, 160)}`;
+  }
+  const networkError = (networkErrors || [])[0];
+  if (networkError) {
+    return `Selhal síťový požadavek: ${String(networkError.url || networkError.error || networkError.message || networkError).slice(0, 160)}`;
+  }
+  return null;
+}
+
+function cleanDetectedBugs(detectedBugs, reasoning, consoleLogs, networkErrors) {
+  if (!hasRuntimeSignals(consoleLogs, networkErrors)) return [];
+  if (!Array.isArray(detectedBugs) || detectedBugs.length === 0) {
+    const summary = summarizeRuntimeSignal(consoleLogs, networkErrors);
+    return summary ? [summary] : [];
+  }
+
+  const normalizedReasoning = String(reasoning || '').trim().replace(/\s+/g, ' ');
+  const cleaned = [...new Set(detectedBugs
+    .filter((bug) => typeof bug === 'string')
+    .map((bug) => bug.trim())
+    .filter(Boolean)
+    .filter((bug) => bug.replace(/\s+/g, ' ') !== normalizedReasoning)
+  )];
+  if (cleaned.length > 0) return cleaned;
+  const summary = summarizeRuntimeSignal(consoleLogs, networkErrors);
+  return summary ? [summary] : [];
+}
+
+function isTextInputElement(el) {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName !== 'INPUT') return false;
+  return TEXT_INPUT_TYPES.has(String(el.type || '').toLowerCase());
+}
+
+function isFileInputElement(el) {
+  return el?.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'file';
+}
+
+function isCheckboxElement(el) {
+  return el?.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'checkbox';
+}
+
+function hasElementValue(el) {
+  return el?.value !== undefined && el.value !== null && String(el.value).trim() !== '';
+}
+
+function isSubmitLikeElement(el) {
+  if (!el) return false;
+  const text = `${el.text || ''} ${el.type || ''} ${el.role || ''}`.toLowerCase();
+  return el.tagName === 'BUTTON' && /submit|odeslat|přihlásit|prihlasit|uložit|ulozit|importovat|import|send|save|login|order/.test(text);
+}
+
+function isRetryLikeElement(el) {
+  if (!el) return false;
+  const text = `${el.text || ''} ${el.type || ''} ${el.role || ''}`.toLowerCase();
+  return el.tagName === 'BUTTON' && /znovu|obnovit|načíst|nacist|retry|reload|refresh|zkusit/.test(text);
+}
+
+function wasActionTargetUsed(steps, action, target) {
+  const key = actionTargetKey(action, target);
+  return (steps || []).some((step) => actionTargetKey(step.action, step.target) === key);
+}
+
+function wasInputTyped(steps, id) {
+  return (steps || []).some((step) => step.action === 'type' && Number(step.target) === Number(id));
+}
+
+function wasClicked(steps, id) {
+  return (steps || []).some((step) => step.action === 'click' && Number(step.target) === Number(id));
+}
+
+function testValueForElement(el) {
+  const haystack = `${el.name || ''} ${el.placeholder || ''} ${el.text || ''}`.toLowerCase();
+  const type = String(el.type || '').toLowerCase();
+  if (type === 'file') return 'fixtures/import-valid.csv';
+  if (type === 'email' || haystack.includes('email') || haystack.includes('e-mail')) return 'neplatny-email@';
+  if (type === 'password' || haystack.includes('heslo') || haystack.includes('password')) return 'TestPassword123!';
+  if (type === 'number' || haystack.includes('psč') || haystack.includes('psc')) return '12345';
+  if (haystack.includes('jméno') || haystack.includes('jmeno') || haystack.includes('name')) return 'Jan Novak';
+  return 'TestValue123';
+}
+
+function isGenericHomeLink(el) {
+  if (!el || el.tagName !== 'A') return false;
+  const text = String(el.text || '').toLowerCase();
+  const href = String(el.href || '').trim();
+  return href === '/' || /home|dashboard|hlavn[ií]|zp[eě]t|back/.test(text);
+}
+
+function isSpecificContentLink(el) {
+  if (!el || el.tagName !== 'A') return false;
+  if (isGenericHomeLink(el)) return false;
+  const text = String(el.text || '').trim();
+  return text.length > 0 || String(el.href || '').length > 1;
+}
+
+function isCompletionContext({ currentUrl, title, goal }) {
+  const haystack = `${currentUrl || ''} ${title || ''} ${goal || ''}`.toLowerCase();
+  return /success|complete|completed|thank|thanks|done|hotovo|dokon[cč]en|odesl[aá]n|potvrzen/.test(haystack);
+}
+
+function chooseFallbackAction(interactiveElements, steps, runtimeSignals = false) {
+  if (runtimeSignals) {
+    const retryControl = interactiveElements
+      .filter(isRetryLikeElement)
+      .find((el) => !wasActionTargetUsed(steps, 'click', el.id));
+    if (retryControl) {
+      return {
+        reasoning: `Je zachycen runtime problém, proto nejdřív použiji ovládací prvek "${retryControl.text || retryControl.id}" pro ověření zotavení.`,
+        action: 'click',
+        target: retryControl.id,
+        value: null,
+        detected_bugs: []
+      };
+    }
+  }
+
+  const unusedInputs = interactiveElements
+    .filter(isTextInputElement)
+    .filter((el) => !hasElementValue(el))
+    .filter((el) => !wasInputTyped(steps, el.id));
+  if (unusedInputs.length > 0) {
+    const el = unusedInputs[0];
+    return {
+      reasoning: `Vybírám neotestované vstupní pole "${el.placeholder || el.name || el.text || el.id}", protože formuláře mají přednost před opakováním akcí.`,
+      action: 'type',
+      target: el.id,
+      value: testValueForElement(el),
+      detected_bugs: []
+    };
+  }
+
+  const unusedFileInput = interactiveElements
+    .filter(isFileInputElement)
+    .find((el) => !wasInputTyped(steps, el.id));
+  if (unusedFileInput) {
+    return {
+      reasoning: `Vybírám neotestovaný souborový input "${unusedFileInput.placeholder || unusedFileInput.name || unusedFileInput.text || unusedFileInput.id}", aby import měl před odesláním data.`,
+      action: 'type',
+      target: unusedFileInput.id,
+      value: testValueForElement(unusedFileInput),
+      detected_bugs: []
+    };
+  }
+
+  const uncheckedBox = interactiveElements
+    .filter(isCheckboxElement)
+    .find((el) => !hasElementValue(el) && !wasClicked(steps, el.id));
+  if (uncheckedBox) {
+    return {
+      reasoning: `Vybírám neotestovaný checkbox "${uncheckedBox.text || uncheckedBox.name || uncheckedBox.id}", protože může být povinný před odesláním formuláře.`,
+      action: 'click',
+      target: uncheckedBox.id,
+      value: null,
+      detected_bugs: []
+    };
+  }
+
+  const unusedLinks = interactiveElements
+    .filter(isSpecificContentLink)
+    .filter((el) => !wasActionTargetUsed(steps, 'click', el.id));
+  if (unusedLinks.length > 0) {
+    const el = unusedLinks[0];
+    return {
+      reasoning: `Vybírám neotestovaný konkrétní odkaz "${el.text || el.href}", aby test pokryl další část aplikace.`,
+      action: 'click',
+      target: el.id,
+      value: null,
+      detected_bugs: []
+    };
+  }
+
+  const unusedControls = interactiveElements
+    .filter((el) => !isTextInputElement(el))
+    .filter((el) => !isFileInputElement(el))
+    .filter((el) => !isCheckboxElement(el))
+    .filter((el) => !isGenericHomeLink(el))
+    .filter((el) => !wasActionTargetUsed(steps, 'click', el.id));
+  if (unusedControls.length > 0) {
+    const el = unusedControls[0];
+    return {
+      reasoning: `Vybírám další neotestovaný prvek "${el.text || el.placeholder || el.tagName}", aby test nepokračoval ve smyčce.`,
+      action: 'click',
+      target: el.id,
+      value: null,
+      detected_bugs: []
+    };
+  }
+
+  const lastScroll = [...(steps || [])].reverse().find((step) => step.action === 'scroll');
+  return {
+    reasoning: 'Nevidím další vhodný neotestovaný prvek, proto posouvám stránku pro načtení dalšího obsahu.',
+    action: 'scroll',
+    target: null,
+    value: lastScroll?.value === 'down' ? 'up' : 'down',
+    detected_bugs: []
+  };
+}
+
+function withSanitizedBugs(step, actionResponse, reasoning, consoleLogs, networkErrors) {
+  return {
+    ...step,
+    detected_bugs: cleanDetectedBugs(actionResponse?.detected_bugs, reasoning || step.reasoning, consoleLogs, networkErrors)
+  };
+}
+
+export function sanitizeActionResponse(actionResponse, context) {
+  const { currentUrl, title, goal, interactiveElements, consoleLogs, networkErrors, steps } = context;
+  const validIds = new Set(interactiveElements.map((el) => el.id));
+  const byId = new Map(interactiveElements.map((el) => [el.id, el]));
+  let action = actionResponse?.action;
+  let target = normalizeTargetValue(actionResponse?.target);
+  let value = actionResponse?.value ?? null;
+  let reasoning = typeof actionResponse?.reasoning === 'string' && actionResponse.reasoning.trim()
+    ? actionResponse.reasoning.trim()
+    : 'Model nevrátil použitelnou úvahu, proto volím bezpečný průzkumný krok.';
+
+  if (!AGENT_ACTIONS.has(action)) {
+    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+  }
+
+  if ((action === 'click' || action === 'type') && typeof target !== 'number') {
+    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+  }
+
+  if ((action === 'click' || action === 'type') && !validIds.has(target)) {
+    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+  }
+
+  if (action === 'navigate') {
+    if (typeof target !== 'string') {
+      return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+    }
+
+    const matchingHref = interactiveElements.find((el) => el.href && el.href === target);
+    if (matchingHref) {
+      action = 'click';
+      target = matchingHref.id;
+      value = null;
+      reasoning = `Navigaci na relativní odkaz provádím kliknutím na odpovídající prvek "${matchingHref.text || matchingHref.href}".`;
+    } else if (!/^https?:\/\//i.test(target)) {
+      try {
+        const absolute = new URL(target, currentUrl).href;
+        if (/^https?:\/\//i.test(absolute)) {
+          target = absolute;
+        } else {
+          return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+        }
+      } catch (e) {
+        return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+      }
+    }
+    value = null;
+  }
+
+  if (action === 'scroll') {
+    target = null;
+    value = value === 'up' ? 'up' : 'down';
+  }
+
+  if (action === 'wait' || action === 'finish') {
+    target = null;
+    value = action === 'wait' ? String(parseInt(value, 10) || 2000) : null;
+  }
+
+  let selected = byId.get(target);
+  if (action === 'click' && hasRuntimeSignals(consoleLogs, networkErrors) && !isRetryLikeElement(selected)) {
+    const retryControl = interactiveElements
+      .filter(isRetryLikeElement)
+      .find((el) => !wasActionTargetUsed(steps, 'click', el.id));
+    if (retryControl) {
+      action = 'click';
+      target = retryControl.id;
+      selected = retryControl;
+      value = null;
+      reasoning = `Je zachycen runtime problém, proto místo další navigace použiji "${retryControl.text || retryControl.id}" pro ověření zotavení.`;
+    }
+  }
+
+  if (action === 'click' && isCompletionContext({ currentUrl, title, goal }) && !hasRuntimeSignals(consoleLogs, networkErrors)) {
+    action = 'finish';
+    target = null;
+    value = null;
+    reasoning = 'Cíl testu je splněný na potvrzovací stránce a nejsou vidět chyby, proto test bezpečně ukončím.';
+  }
+
+  if (action === 'click' && isSubmitLikeElement(selected)) {
+    const untypedInput = interactiveElements.find((el) => isTextInputElement(el) && !hasElementValue(el) && !wasInputTyped(steps, el.id));
+    if (untypedInput) {
+      action = 'type';
+      target = untypedInput.id;
+      value = testValueForElement(untypedInput);
+      reasoning = `Před odesláním formuláře nejdřív vyplním neotestované pole "${untypedInput.placeholder || untypedInput.name || untypedInput.text || untypedInput.id}".`;
+    } else {
+      const untypedFileInput = interactiveElements.find((el) => isFileInputElement(el) && !wasInputTyped(steps, el.id));
+      if (untypedFileInput) {
+        action = 'type';
+        target = untypedFileInput.id;
+        value = testValueForElement(untypedFileInput);
+        reasoning = `Před importem nejdřív nastavím testovací soubor v poli "${untypedFileInput.placeholder || untypedFileInput.name || untypedFileInput.text || untypedFileInput.id}".`;
+      } else {
+        const uncheckedBox = interactiveElements.find((el) => isCheckboxElement(el) && !hasElementValue(el) && !wasClicked(steps, el.id));
+        if (uncheckedBox) {
+          action = 'click';
+          target = uncheckedBox.id;
+          value = null;
+          reasoning = `Před odesláním formuláře nejdřív zaškrtnu povinný checkbox "${uncheckedBox.text || uncheckedBox.name || uncheckedBox.id}".`;
+        }
+      }
+    }
+  }
+
+  if (action === 'click' && (isTextInputElement(selected) || isFileInputElement(selected))) {
+    action = 'type';
+    value = testValueForElement(selected);
+    reasoning = `Prvek "${selected.placeholder || selected.name || selected.text || selected.id}" je vstupní pole, proto ho vyplním místo kliknutí.`;
+  }
+
+  if (action === 'click' && isGenericHomeLink(selected)) {
+    const betterLink = interactiveElements
+      .filter(isSpecificContentLink)
+      .find((el) => !wasActionTargetUsed(steps, 'click', el.id));
+    if (betterLink) {
+      action = 'click';
+      target = betterLink.id;
+      value = null;
+      reasoning = `Místo obecného návratu zvolím konkrétní neotestovaný odkaz "${betterLink.text || betterLink.href}".`;
+    } else {
+      return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+    }
+  }
+
+  if (wasActionTargetUsed(steps, action, target)) {
+    const fallback = chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors));
+    fallback.reasoning = `(Ochrana proti smyčce) ${fallback.reasoning}`;
+    return withSanitizedBugs(fallback, actionResponse, reasoning, consoleLogs, networkErrors);
+  }
+
+  return {
+    reasoning,
+    action,
+    target,
+    value: value === undefined ? null : value,
+    detected_bugs: cleanDetectedBugs(actionResponse?.detected_bugs, reasoning, consoleLogs, networkErrors)
+  };
+}
+
 /**
  * Extracts all visible text nodes from the page, along with their CSS selector.
  * Useful for translation audits and page diffs.
@@ -541,29 +911,15 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
     }
   }
 
-  // Hard Anti-Loop Protection
-  if (steps.length >= 2 && llmConfig.mode !== 'monkey') {
-    const isLooping = (actionResponse.action === steps[steps.length - 1].action && actionResponse.target === steps[steps.length - 1].target) ||
-                      (actionResponse.action === steps[steps.length - 2].action && actionResponse.target === steps[steps.length - 2].target);
-    if (isLooping) {
-       console.warn('AI se zaseklo ve smyčce, vynucuji náhodný krok...');
-       const available = interactiveElements.filter(el => el.id !== actionResponse.target && el.id !== steps[steps.length-1].target);
-       if (available.length > 0) {
-         const randomEl = available[Math.floor(Math.random() * available.length)];
-         actionResponse.reasoning = `(Ochrana proti smyčce) Model narazil na překážku a zacyklil se. Skript vynucuje náhodný průzkum prvku: <${randomEl.tagName}>.`;
-         actionResponse.action = 'click';
-         actionResponse.target = randomEl.id;
-         actionResponse.value = null;
-       } else {
-         actionResponse.reasoning = `(Ochrana proti smyčce) Žádné další dostupné prvky, posouvám stránku dolů.`;
-         actionResponse.action = 'scroll';
-         actionResponse.target = null;
-         actionResponse.value = 'down';
-       }
-    }
-  }
-
-  return actionResponse;
+  return sanitizeActionResponse(actionResponse, {
+    currentUrl,
+    title,
+    goal,
+    interactiveElements,
+    consoleLogs,
+    networkErrors,
+    steps
+  });
 }
 
 export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, sessionId = 'session_default') {

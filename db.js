@@ -1,24 +1,25 @@
-import admin from 'firebase-admin';
-import fs from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import path from 'path';
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 
 const __dirname = path.resolve();
 const credentialsPath = path.join(__dirname, 'firebase-credentials.json');
 
-const firebaseAdmin = admin?.initializeApp ? admin : admin.default;
-
-if (fs.existsSync(credentialsPath)) {
-  const serviceAccount = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
-  firebaseAdmin.initializeApp({
-    credential: firebaseAdmin.credential.cert(serviceAccount)
+let firebaseApp;
+if (existsSync(credentialsPath)) {
+  const serviceAccount = JSON.parse(readFileSync(credentialsPath, 'utf8'));
+  firebaseApp = initializeApp({
+    credential: cert(serviceAccount)
   });
 } else {
   // Fallback to Application Default Credentials
-  firebaseAdmin.initializeApp();
+  firebaseApp = initializeApp();
 }
 
-const firestore = firebaseAdmin.firestore();
-const auth = firebaseAdmin.auth();
+const firestore = getFirestore(firebaseApp);
+const auth = getAuth(firebaseApp);
 
 export { firestore, auth };
 
