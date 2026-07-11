@@ -158,7 +158,13 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+      // ⚡ Bolt: Optimize DOM element collection using getElementsByTagName instead of querySelectorAll
+      const rawElements = document.getElementsByTagName('*');
+      const elementsLen = rawElements.length;
+      const elements = new Array(elementsLen);
+      for (let i = 0; i < elementsLen; i++) {
+        elements[i] = rawElements[i];
+      }
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -166,7 +172,6 @@ async function extractInteractiveElements(page) {
       const elementsToMutate = [];
 
       // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
-      const elementsLen = elements.length;
       for (let i = 0; i < elementsLen; i++) {
         const el = elements[i];
         const tagName = el.tagName;
@@ -348,7 +353,14 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      // ⚡ Bolt: Optimize link collection using getElementsByTagName and pre-allocated array
+      const links = document.getElementsByTagName('a');
+      const linksLen = links.length;
+      const hrefsList = new Array(linksLen);
+      for (let i = 0; i < linksLen; i++) {
+        hrefsList[i] = links[i].href;
+      }
+      return hrefsList;
     });
     
     // Filter internal links and deduplicate
@@ -740,7 +752,8 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
             loadTimeMs: timing.loadEventEnd ? Math.round(timing.loadEventEnd - timing.startTime) : null,
             domInteractiveMs: timing.domInteractive ? Math.round(timing.domInteractive - timing.startTime) : null,
             title: document.title,
-            h1Count: document.querySelectorAll('h1').length
+            // ⚡ Bolt: Optimize DOM counting using getElementsByTagName
+            h1Count: document.getElementsByTagName('h1').length
           };
         });
       } catch (e) {
