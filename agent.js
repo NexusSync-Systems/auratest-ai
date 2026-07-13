@@ -158,7 +158,16 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+
+      // ⚡ Bolt: Fast DOM scraping using getElementsByTagName and pre-allocated array
+      // instead of Array.from(querySelectorAll('*')) avoiding CSS parsing overhead.
+      const htmlCollection = document.getElementsByTagName('*');
+      const len = htmlCollection.length;
+      const elements = new Array(len);
+      for (let i = 0; i < len; i++) {
+        elements[i] = htmlCollection[i];
+      }
+
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -348,7 +357,14 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      // ⚡ Bolt: Use getElementsByTagName with pre-allocated fast loop over slow Array.from(querySelectorAll)
+      const aTags = document.getElementsByTagName('a');
+      const len = aTags.length;
+      const result = new Array(len);
+      for (let i = 0; i < len; i++) {
+        result[i] = aTags[i].href;
+      }
+      return result;
     });
     
     // Filter internal links and deduplicate
