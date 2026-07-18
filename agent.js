@@ -158,7 +158,15 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+
+      // ⚡ Bolt: Nahrazeno pomalé querySelectorAll a Array.from rychlejším getElementsByTagName a pre-alokovaným polem
+      const htmlCollection = document.getElementsByTagName('*');
+      const elementsLen = htmlCollection.length;
+      const elements = new Array(elementsLen);
+      for (let i = 0; i < elementsLen; i++) {
+        elements[i] = htmlCollection[i];
+      }
+
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -166,7 +174,6 @@ async function extractInteractiveElements(page) {
       const elementsToMutate = [];
 
       // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
-      const elementsLen = elements.length;
       for (let i = 0; i < elementsLen; i++) {
         const el = elements[i];
         const tagName = el.tagName;
@@ -348,7 +355,14 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      // ⚡ Bolt: Nahrazeno pomalé querySelectorAll('a') a Array.from rychlejším getElementsByTagName
+      const anchorCollection = document.getElementsByTagName('a');
+      const len = anchorCollection.length;
+      const urls = new Array(len);
+      for (let i = 0; i < len; i++) {
+        urls[i] = anchorCollection[i].href;
+      }
+      return urls;
     });
     
     // Filter internal links and deduplicate
