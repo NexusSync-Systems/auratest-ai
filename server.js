@@ -7,6 +7,8 @@ import fs from 'fs';
 import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM, runChaosTest, getGridEnergyStatus, auditAIAct, auditStrictCookies, auditCRAVulnerabilities, checkPage, checkForm } from './agent.js';
 import { fetchTranslations } from './db-connector.js';
 import { authenticateToken } from './auth.js';
+import { assertPublicHttpUrl } from './ssrf-guard.js';
+import { verifySlackRequest, parseSlackPayload } from './slack-verify.js';
 import { sendSlackNotification } from './slack-notifier.js';
 import * as db from './db.js';
 import { redactEventData } from './pii-redactor.js';
@@ -24,7 +26,29 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
-app.use(cors());
+// CORS: veřejné SDK/telemetrické cesty mají otevřené CORS (volají je weby
+// zákazníků), zbytek API je omezen na povolené originy z ALLOWED_ORIGINS.
+// V dev (bez ALLOWED_ORIGINS) se povolí lokální vývojové originy.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:3000')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+const publicCors = cors(); // permisivní — pro veřejné SDK endpointy
+const restrictedCors = cors({
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // server-to-server / curl / stejný původ
+    return cb(null, allowedOrigins.includes(origin));
+  },
+  credentials: true,
+});
+
+app.use((req, res, next) => {
+  const isPublicSdk =
+    req.path.startsWith('/sdk') ||
+    req.path === '/api/auraguard/report' ||
+    req.path === '/api/auraguard/sdk.js';
+  return (isPublicSdk ? publicCors : restrictedCors)(req, res, next);
+});
+
 app.use(express.json({ limit: '10mb' }));
 
 const __dirname = path.resolve();
@@ -264,9 +288,32 @@ app.post('/api/run-test', authenticateToken, async (req, res) => {
 });
 
 // 1.5 Trigger Autonomous Test (CI/CD integration - Synchronous)
-app.post('/api/trigger-test', async (req, res) => {
+// Strojová autentizace pro CI/CD trigger — vyžaduje sdílený bearer secret.
+// Fail-closed: pokud TRIGGER_TEST_SECRET není nastaven, endpoint je zakázán.
+function requireTriggerSecret(req, res, next) {
+  const secret = process.env.TRIGGER_TEST_SECRET;
+  if (!secret) {
+    return res.status(503).json({ error: 'Endpoint je zakázán: chybí TRIGGER_TEST_SECRET v konfiguraci serveru.' });
+  }
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token || token !== secret) {
+    return res.status(401).json({ error: 'Neplatný nebo chybějící trigger token.' });
+  }
+  next();
+}
+
+app.post('/api/trigger-test', requireTriggerSecret, async (req, res) => {
   const { url, goal, mode, headless, maxSteps, testLogin, testPassword } = req.body;
   if (!url) return res.status(400).json({ error: 'Chybí URL pro test.' });
+
+  // SSRF ochrana: povol jen veřejné http(s) cíle (blokuj interní/metadata IP).
+  let safeUrl;
+  try {
+    safeUrl = await assertPublicHttpUrl(url);
+  } catch (err) {
+    return res.status(400).json({ error: `Nepovolená cílová URL: ${err.message}` });
+  }
 
   const llmConfig = {
     provider: 'ollama',
@@ -280,7 +327,7 @@ app.post('/api/trigger-test', async (req, res) => {
   };
 
   try {
-    const result = await runAutonomousTest(url, goal || 'Automatický CI/CD test', llmConfig, () => {});
+    const result = await runAutonomousTest(safeUrl, goal || 'Automatický CI/CD test', llmConfig, () => {});
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -709,15 +756,23 @@ app.post('/api/auraguard/monitor-form', authenticateToken, async (req, res) => {
 
 // --- Slack Interactivity Endpoint ---
 // Přijímá události typu "kliknutí na tlačítko" ze Slack zpráv
-app.post('/api/slack/events', async (req, res) => {
+// Slack route zachytává RAW tělo (express.raw), aby šlo ověřit podpis.
+app.post('/api/slack/events', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
   try {
-    // Slack posílá payload jako form-urlencoded string pod klíčem 'payload'
-    if (!req.body || !req.body.payload) {
-      return res.status(400).send('Chybí payload');
+    const rawBody = req.body; // Buffer (díky express.raw)
+
+    // Ověření pravosti požadavku podle Slack podpisu (v0).
+    const verdict = verifySlackRequest(rawBody, req.headers);
+    if (!verdict.ok) {
+      console.warn('[Slack] Odmítnut neověřený požadavek:', verdict.reason);
+      return res.status(401).send('Neplatný podpis');
     }
-    
-    const payload = JSON.parse(req.body.payload);
-    
+
+    const payload = parseSlackPayload(rawBody);
+    if (!payload) {
+      return res.status(400).send('Chybí nebo neplatný payload');
+    }
+
     // Rychlá odpověď Slacku, že jsme request přijali
     res.status(200).send();
     
@@ -920,15 +975,24 @@ app.get('/api/auraguard/sdk.js', (req, res) => {
 });
 
 // 2. Compare Pages (Prod vs Preview Diff)
-app.post('/api/compare', async (req, res) => {
+app.post('/api/compare', authenticateToken, async (req, res) => {
   const { url1, url2 } = req.body;
 
   if (!url1 || !url2) {
     return res.status(400).json({ error: 'Chybí URL1 nebo URL2 pro srovnání.' });
   }
 
+  // SSRF ochrana pro obě cílové URL.
+  let safeUrl1, safeUrl2;
   try {
-    const diffResult = await comparePages(url1, url2);
+    safeUrl1 = await assertPublicHttpUrl(url1);
+    safeUrl2 = await assertPublicHttpUrl(url2);
+  } catch (err) {
+    return res.status(400).json({ error: `Nepovolená cílová URL: ${err.message}` });
+  }
+
+  try {
+    const diffResult = await comparePages(safeUrl1, safeUrl2);
     res.json(diffResult);
   } catch (err) {
     res.status(500).json({ error: `Chyba při porovnávání stránek: ${err.message}` });
@@ -936,11 +1000,19 @@ app.post('/api/compare', async (req, res) => {
 });
 
 // 3. Audit Translations
-app.post('/api/audit-translations', async (req, res) => {
+app.post('/api/audit-translations', authenticateToken, async (req, res) => {
   const { url, translationSource, model, host, provider } = req.body;
 
   if (!url || !translationSource) {
     return res.status(400).json({ error: 'Chybí URL nebo specifikace zdroje překladů.' });
+  }
+
+  // SSRF ochrana pro auditovanou URL.
+  let safeUrl;
+  try {
+    safeUrl = await assertPublicHttpUrl(url);
+  } catch (err) {
+    return res.status(400).json({ error: `Nepovolená cílová URL: ${err.message}` });
   }
 
   try {
@@ -964,7 +1036,7 @@ app.post('/api/audit-translations', async (req, res) => {
       host: host || 'http://localhost:11434'
     };
 
-    const auditResult = await auditTranslations(url, dictionary, llmConfig);
+    const auditResult = await auditTranslations(safeUrl, dictionary, llmConfig);
     res.json({
       success: true,
       dictionarySize: Object.keys(dictionary).length,

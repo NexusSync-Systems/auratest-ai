@@ -1,8 +1,50 @@
 rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AuraTest — Firestore bezpečnostní pravidla
+//
+// Pozn.: Backend (server.js / db.js) přistupuje přes Firebase Admin SDK, který
+// tato pravidla OBCHÁZÍ. Pravidla proto slouží jako obrana do hloubky pro
+// případný přímý přístup z klienta — omezují data na vlastníka (userId).
+// Primární kontrola přístupu je v API (authenticateToken + filtrace dle userId).
+// ─────────────────────────────────────────────────────────────────────────────
+
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function isOwner(res) {
+      return request.auth != null && res.data.userId == request.auth.uid;
+    }
+    function isOwnerNew() {
+      return request.auth != null && request.resource.data.userId == request.auth.uid;
+    }
+
+    // Projekty, monitory a session — vlastněné přes pole userId.
+    match /projects/{id} {
+      allow read, delete: if isOwner(resource);
+      allow create: if isOwnerNew();
+      allow update: if isOwner(resource) && isOwnerNew();
+    }
+    match /monitors/{id} {
+      allow read, delete: if isOwner(resource);
+      allow create: if isOwnerNew();
+      allow update: if isOwner(resource) && isOwnerNew();
+    }
+    match /sessions/{id} {
+      allow read, delete: if isOwner(resource);
+      allow create: if isOwnerNew();
+      allow update: if isOwner(resource) && isOwnerNew();
+    }
+
+    // Telemetrie (auraguard_events) — zapisuje/čte výhradně server přes Admin SDK.
+    // Přímý klientský přístup zakázán.
+    match /auraguard_events/{id} {
+      allow read, write: if false;
+    }
+
+    // Default deny — vše ostatní zakázáno.
     match /{document=**} {
-      allow read, write: if request.auth != null;
+      allow read, write: if false;
     }
   }
 }
