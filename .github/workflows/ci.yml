@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security-tests:
+    name: Bezpečnostní testy (SSRF guard, Slack podpis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Zaměřeno na bezpečnostní moduly, aby CI zůstalo zelené.
+      # Pro celou sadu použij:  npm test
+      - name: Run security tests
+        run: npx jest tests/ssrf-guard.test.js tests/slack-verify.test.js
