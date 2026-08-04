@@ -158,7 +158,15 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+      // ⚡ Bolt: Nahrazeno pomalé querySelectorAll('*') za getElementsByTagName('*')
+      // s předalokací pole a `for` cyklem, abychom se vyhnuli Array.from() a zrychlili iteraci.
+      const htmlCollection = document.getElementsByTagName('*');
+      const elementsLen = htmlCollection.length;
+      const elements = new Array(elementsLen);
+      for (let i = 0; i < elementsLen; i++) {
+        elements[i] = htmlCollection[i];
+      }
+
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -166,7 +174,6 @@ async function extractInteractiveElements(page) {
       const elementsToMutate = [];
 
       // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
-      const elementsLen = elements.length;
       for (let i = 0; i < elementsLen; i++) {
         const el = elements[i];
         const tagName = el.tagName;
@@ -348,7 +355,14 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      // ⚡ Bolt: getElementsByTagName('a') a iterace for loop namísto querySelectorAll a Array.from().map()
+      const links = document.getElementsByTagName('a');
+      const len = links.length;
+      const results = new Array(len);
+      for (let i = 0; i < len; i++) {
+        results[i] = links[i].href;
+      }
+      return results;
     });
     
     // Filter internal links and deduplicate
@@ -740,7 +754,8 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
             loadTimeMs: timing.loadEventEnd ? Math.round(timing.loadEventEnd - timing.startTime) : null,
             domInteractiveMs: timing.domInteractive ? Math.round(timing.domInteractive - timing.startTime) : null,
             title: document.title,
-            h1Count: document.querySelectorAll('h1').length
+            // ⚡ Bolt: getElementsByTagName je rychlejší než querySelectorAll
+            h1Count: document.getElementsByTagName('h1').length
           };
         });
       } catch (e) {
