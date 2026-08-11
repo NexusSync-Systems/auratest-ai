@@ -158,7 +158,12 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+      const liveElements = document.getElementsByTagName('*');
+      const elementsLen = liveElements.length;
+      const elements = new Array(elementsLen);
+      for (let i = 0; i < elementsLen; i++) {
+        elements[i] = liveElements[i];
+      }
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -166,7 +171,6 @@ async function extractInteractiveElements(page) {
       const elementsToMutate = [];
 
       // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
-      const elementsLen = elements.length;
       for (let i = 0; i < elementsLen; i++) {
         const el = elements[i];
         const tagName = el.tagName;
@@ -348,7 +352,13 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      const links = document.getElementsByTagName('a');
+      const len = links.length;
+      const hrefs = new Array(len);
+      for (let i = 0; i < len; i++) {
+        hrefs[i] = links[i].href;
+      }
+      return hrefs;
     });
     
     // Filter internal links and deduplicate
