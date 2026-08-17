@@ -158,7 +158,14 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+      // ⚡ Bolt: Nahrazení querySelectorAll za getElementsByTagName pro maximální výkon bez overheadu parsování CSS selektorů a realokace pole
+      const htmlCollection = document.getElementsByTagName('*');
+      const len = htmlCollection.length;
+      const elements = new Array(len);
+      for (let i = 0; i < len; i++) {
+        elements[i] = htmlCollection[i];
+      }
+
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -348,7 +355,14 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      // ⚡ Bolt: Rychlejší získání odkazů přes getElementsByTagName a cyklus for namísto map/Array.from
+      const links = document.getElementsByTagName('a');
+      const len = links.length;
+      const result = new Array(len);
+      for (let i = 0; i < len; i++) {
+        result[i] = links[i].href;
+      }
+      return result;
     });
     
     // Filter internal links and deduplicate
@@ -740,7 +754,8 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
             loadTimeMs: timing.loadEventEnd ? Math.round(timing.loadEventEnd - timing.startTime) : null,
             domInteractiveMs: timing.domInteractive ? Math.round(timing.domInteractive - timing.startTime) : null,
             title: document.title,
-            h1Count: document.querySelectorAll('h1').length
+            // ⚡ Bolt: Rychlejší zjištění počtu elementů přes getElementsByTagName
+            h1Count: document.getElementsByTagName('h1').length
           };
         });
       } catch (e) {
