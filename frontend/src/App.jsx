@@ -26,7 +26,7 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, on
 import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
-import { complianceColor, complianceLabel } from './lib/compliance.js';
+import { complianceColor, complianceLabel, obligationColor, obligationLabel } from './lib/compliance.js';
 const PrintReport = lazy(() => import('./components/print/PrintReport.jsx'));
 import {
   TEST_TYPES, IMPACT_COLORS, IMPACT_TRANSLATIONS, RULE_TRANSLATIONS,
@@ -1655,17 +1655,66 @@ export default function App() {
                      {/* AI Act */}
                      {aiActResult && (
                        <div>
-                         <h3 style={{ color: 'var(--accent)', marginTop: 0 }}>EU AI Act (Transparentnost)</h3>
+                         <h3 style={{ color: 'var(--accent)', marginTop: 0 }}>EU AI Act — článek 50 (Transparentnost)</h3>
+
                          <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', borderLeft: `4px solid ${complianceColor(aiActResult.aiAct.isCompliant)}`, marginBottom: '16px' }}>
                            <strong style={{ color: complianceColor(aiActResult.aiAct.isCompliant) }}>
                              {`[${complianceLabel(aiActResult.aiAct.isCompliant)}] `}
                              {aiActResult.aiAct.rating}
                            </strong>
                          </div>
+
+                         {/* Článek 50 obsahuje ČTYŘI samostatné povinnosti. Dřív se
+                             slučovaly do jednoho výsledku, takže report tvrdil víc,
+                             než uměl doložit. */}
+                         {Array.isArray(aiActResult.aiAct.obligations) && (
+                           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
+                             {aiActResult.aiAct.obligations.map((ob) => (
+                               <div
+                                 key={ob.id}
+                                 style={{
+                                   padding: '12px',
+                                   background: 'rgba(0,0,0,0.15)',
+                                   borderRadius: '6px',
+                                   borderLeft: `3px solid ${obligationColor(ob.status)}`,
+                                 }}
+                               >
+                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                   <span style={{
+                                     fontSize: '0.65rem',
+                                     fontWeight: 'bold',
+                                     padding: '2px 6px',
+                                     borderRadius: '4px',
+                                     color: obligationColor(ob.status),
+                                     border: `1px solid ${obligationColor(ob.status)}`,
+                                   }}>
+                                     {obligationLabel(ob.status)}
+                                   </span>
+                                   <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{ob.id}</span>
+                                   <strong style={{ fontSize: '0.85rem', color: 'var(--text-main)' }}>{ob.title}</strong>
+                                   {ob.outOfScope && (
+                                     <span style={{ fontSize: '0.65rem', color: '#94a3b8', fontStyle: 'italic' }}>
+                                       mimo dosah skeneru
+                                     </span>
+                                   )}
+                                 </div>
+                                 <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '6px' }}>
+                                   {ob.rationale}
+                                 </div>
+                               </div>
+                             ))}
+                           </div>
+                         )}
+
                          {aiActResult.aiAct.apisDetected.length > 0 && (
-                           <ul style={{ color: 'var(--text-secondary)', paddingLeft: '20px' }}>
-                             {aiActResult.aiAct.apisDetected.map((api, i) => <li key={i}>{api}</li>)}
-                           </ul>
+                           <>
+                             <h4 style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0 0 4px' }}>
+                               Zachycená volání AI API
+                             </h4>
+                             <ul style={{ color: 'var(--text-secondary)', paddingLeft: '20px', fontSize: '0.78rem' }}>
+                               {aiActResult.aiAct.apisDetected.map((api, i) => <li key={i}>{api}</li>)}
+                             </ul>
+                           </>
                          )}
                        </div>
                      )}

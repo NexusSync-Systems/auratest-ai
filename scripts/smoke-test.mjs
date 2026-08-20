@@ -192,16 +192,34 @@ console.log('\n3) AI Act');
 try {
   const ai = await auditAIAct(TARGET);
   check('status je jedna ze tří hodnot', ['pass', 'fail', 'inconclusive'].includes(ai.aiAct.status), ai.aiAct.status);
+
+  // Článek 50 má čtyři samostatné povinnosti. Dřív se slučovaly do jednoho
+  // výsledku, takže report tvrdil víc, než uměl doložit.
+  const obligations = ai.aiAct.obligations || [];
+  check('vrací všechny čtyři povinnosti čl. 50', obligations.length === 4,
+    obligations.map((o) => o.id).join(', '));
+  check('každá povinnost má stav i odůvodnění',
+    obligations.every((o) => o.status && o.rationale),
+    `${obligations.filter((o) => o.rationale).length}/${obligations.length}`);
+  check('povinnosti 3 a 4 jsou označené jako mimo dosah skeneru',
+    obligations.filter((o) => o.outOfScope).length === 2);
+  check('souhrn nikdy netvrdí splněno, když je něco neprůkazné',
+    !(ai.aiAct.isCompliant === true && ai.aiAct.counts?.inconclusive > 0),
+    `isCompliant=${ai.aiAct.isCompliant}, neprůkazných=${ai.aiAct.counts?.inconclusive}`);
+
+  for (const ob of obligations) {
+    const mark = { pass: 'splněno', fail: 'NESPLNĚNO', inconclusive: 'neprůkazné', not_applicable: 'netýká se' }[ob.status];
+    info(`${ob.id}: ${mark} — ${ob.title}`);
+    if (ob.status === 'fail') finding('fail', 'AI Act', `${ob.id}: ${ob.rationale}`);
+  }
   check(
     'bez detekovaného AI API je výsledek neprůkazný, ne PASS',
     ai.aiAct.apisDetected.length > 0 || ai.aiAct.isCompliant === null,
     `apisDetected=${ai.aiAct.apisDetected.length}, isCompliant=${ai.aiAct.isCompliant}`
   );
   info(ai.aiAct.rating.slice(0, 90));
-  if (ai.aiAct.isCompliant === false) {
-    finding('fail', 'AI Act', 'aplikace volá AI API bez upozornění uživatele');
-  } else if (ai.aiAct.isCompliant === null) {
-    finding('review', 'AI Act', 'server-side AI integrace nelze z prohlížeče vyloučit — posuďte ručně');
+  if (ai.aiAct.isCompliant === null) {
+    finding('review', 'AI Act', `${ai.aiAct.counts?.inconclusive ?? '?'} ze 4 povinností čl. 50 nelze externím skenem posoudit`);
   }
 } catch (err) {
   check('auditAIAct doběhl', false, err.message);

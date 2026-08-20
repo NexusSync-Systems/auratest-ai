@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { IMPACT_TRANSLATIONS, RULE_TRANSLATIONS, TEST_TYPES } from '../../constants/testTypes.js';
-import { complianceBadgeClass, complianceLabel } from '../../lib/compliance.js';
+import { complianceBadgeClass, complianceLabel, obligationLabel } from '../../lib/compliance.js';
 
 /**
  * Tiskový report (Executive Summary) pro export do PDF přes Print CSS.
@@ -109,11 +109,32 @@ export default function PrintReport({
       {/* AI Act */}
       {aiActResult && (
         <div className="print-section">
-          <h3>EU AI Act (Transparentnost)</h3>
+          <h3>EU AI Act — článek 50 (Transparentnost)</h3>
           <div className={`print-badge ${complianceBadgeClass(aiActResult.aiAct.isCompliant)}`}>
             {`[${complianceLabel(aiActResult.aiAct.isCompliant)}] `}
             {aiActResult.aiAct.rating}
           </div>
+
+          {/* Čtyři povinnosti čl. 50 zvlášť — v auditním spisu musí být vidět
+              i to, co skener posoudit nedokáže. */}
+          {Array.isArray(aiActResult.aiAct.obligations) && (
+            <table className="print-table" style={{ marginTop: '15px' }}>
+              <tbody>
+                {aiActResult.aiAct.obligations.map((ob) => (
+                  <tr key={ob.id}>
+                    <td style={{ whiteSpace: 'nowrap', fontWeight: 'bold' }}>{ob.id}</td>
+                    <td>
+                      {ob.title}
+                      {ob.outOfScope ? ' (mimo dosah skeneru)' : ''}
+                      <div style={{ fontSize: '0.85em', color: '#475569' }}>{ob.rationale}</div>
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{obligationLabel(ob.status)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
           {aiActResult.aiAct.apisDetected.length > 0 && (
             <div style={{ marginTop: '15px' }}>
               <strong>Detekované AI služby:</strong>

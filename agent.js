@@ -6,6 +6,18 @@ import AxeBuilder from '@axe-core/playwright';
 import geoip from 'geoip-lite';
 import { assertPublicHttpUrl } from './ssrf-guard.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, GENERATED_SCRIPTS_DIR, ensureDir, safeFileToken } from './paths.js';
+import {
+  AI_DISCLAIMER_PATTERN,
+  isAiApiUrl,
+  isChatWidgetUrl,
+  evaluateInteractionObligation,
+  evaluateSyntheticMarkingObligation,
+  evaluateOutOfScopeObligations,
+  summarizeObligations,
+} from './ai-act.js';
+
+// Kolik obrázků maximálně prověřit na C2PA označení. Stahuje se jen hlavička.
+const MAX_C2PA_SAMPLES = parseInt(process.env.MAX_C2PA_SAMPLES, 10) || 8;
 
 // Bez timeoutu drželo zaseknuté spojení celou testovací session — a s 12
 // opakováními po 5 s to mohlo běžet prakticky neomezeně.
@@ -2366,79 +2378,67 @@ export function getGridEnergyStatus() {
   };
 }
 
-// Volání AI API viditelná z prohlížeče. Seznam je nutně neúplný — server-side
-// integrace se tudy zachytit nedají, viz `status: 'inconclusive'` níž.
-const AI_API_HOST_PATTERNS = [
-  'api.openai.com', 'anthropic.com', 'generativelanguage.googleapis',
-  'huggingface.co', 'openai.azure.com', 'api.cohere', 'api.mistral.ai',
-  'api.replicate.com', 'bedrock-runtime', 'aiplatform.googleapis',
-  'api.perplexity.ai', 'api.together.xyz', 'api.groq.com',
-];
-
-// Slovní hranice + diakritika. `\b` v JS nefunguje spolehlivě u neanglických
-// znaků, proto u českých výrazů ohraničujeme mezerou/interpunkcí.
-const AI_DISCLAIMER_PATTERN = new RegExp(
-  [
-    '\\bAI\\b',
-    '\\bA\\.I\\.',
-    'umělou?\\s+inteligenc',
-    'umělá\\s+inteligence',
-    'generativní',
-    'vygenerováno\\s+(AI|umělou)',
-    'generated\\s+by\\s+AI',
-    'AI[- ]asistent',
-    'chatbot',
-  ].join('|'),
-  'i'
-);
-
 export async function auditAIAct(url) {
   let browser;
   try {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext();
     const page = await context.newPage();
-    
-    let aiApisDetected = [];
-    
-    page.on('request', request => {
-      const reqUrl = request.url().toLowerCase();
-      if (AI_API_HOST_PATTERNS.some((pattern) => reqUrl.includes(pattern))) {
-        aiApisDetected.push(request.url());
+
+    const aiApiCalls = [];
+    const chatWidgets = new Set();
+
+    page.on('request', (request) => {
+      const reqUrl = request.url();
+      if (isAiApiUrl(reqUrl)) aiApiCalls.push(reqUrl);
+      if (isChatWidgetUrl(reqUrl)) {
+        try {
+          chatWidgets.add(new URL(reqUrl).hostname);
+        } catch {
+          // neparsovatelná URL — ignorujeme
+        }
       }
     });
 
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
-    
-    const pageText = await page.evaluate(() => document.body.innerText);
+    // Chat widgety se často načítají opožděně, po `networkidle`.
+    await page.waitForTimeout(3000);
 
-    // Dřív se testovalo pageText.includes('ai') — 'ai' je podřetězec slov
-    // email, detail, main, mail, fair, retail… takže prakticky každá stránka
-    // prošla jako compliant a skener nikdy nic nenašel. Teď slovní hranice.
+    const dom = await collectAiActDomSignals(page);
+    const pageText = await page.evaluate(() => document.body?.innerText || '');
     const hasDisclaimer = AI_DISCLAIMER_PATTERN.test(pageText);
 
-    const usesAi = aiApisDetected.length > 0;
-    // Detekce vidí jen volání z prohlížeče — většina AI integrací běží
-    // server-side, kde tenhle skener nic nezachytí. Když nic nenajdeme,
-    // nesmíme tvrdit "splňuje AI Act"; správný výsledek je "neprůkazné".
-    const status = usesAi ? (hasDisclaimer ? 'pass' : 'fail') : 'inconclusive';
-
-    const RATINGS = {
-      pass: 'PASS: Detekováno využití AI a zároveň nalezeno upozornění pro uživatele.',
-      fail: 'FAIL: Aplikace volá AI API, ale upozornění pro uživatele nebylo nalezeno (AI Transparency Violation).',
-      inconclusive: 'NEPRŮKAZNÉ: Z prohlížeče nebylo zachyceno volání AI API. Server-side integrace tímto testem nelze vyloučit — posuďte ručně.',
+    const signals = {
+      aiApiCalls,
+      chatWidgets: [...chatWidgets],
+      dom,
+      hasDisclaimer,
     };
+
+    const obligations = [
+      evaluateInteractionObligation(signals),
+      evaluateSyntheticMarkingObligation(signals),
+      ...evaluateOutOfScopeObligations(signals),
+    ];
+    const summary = summarizeObligations(obligations);
 
     return {
       success: true,
       url,
       aiAct: {
-        apisDetected: aiApisDetected,
+        // Čtyři povinnosti čl. 50 zvlášť. Dřív se slučovaly do jednoho
+        // výsledku, takže report tvrdil víc, než uměl doložit.
+        obligations,
+        counts: summary.counts,
+        isCompliant: summary.isCompliant,
+        rating: summary.rating,
+
+        // Zpětná kompatibilita se starším tvarem odpovědi.
+        apisDetected: aiApiCalls,
         hasDisclaimer,
-        status,
-        // null = neprůkazné; UI nesmí neprůkazný výsledek zobrazit jako splněno
-        isCompliant: status === 'inconclusive' ? null : status === 'pass',
-        rating: RATINGS[status]
+        status: summary.isCompliant === false
+          ? 'fail'
+          : (summary.isCompliant === true ? 'pass' : 'inconclusive'),
       }
     };
   } catch (err) {
@@ -2447,6 +2447,135 @@ export async function auditAIAct(url) {
   } finally {
     if (browser) await browser.close();
   }
+}
+
+/**
+ * Signály z DOM pro AI Act.
+ *
+ * Dřív skener vycházel jen ze síťových volání, takže server-side AI zůstalo
+ * neviditelné a drtivá většina výsledků skončila jako „neprůkazné". Konverzační
+ * UI je přitom ze stránky poznat — a i když nedokazuje AI, posouvá výsledek
+ * z „nic jsme nenašli" na „něco tu je, posuďte to".
+ */
+async function collectAiActDomSignals(page) {
+  try {
+    const domSignals = await page.evaluate(() => {
+      const indicators = new Set();
+
+      // 1. Přímé ARIA/role vzory konverzačního rozhraní
+      if (document.querySelector('[role="log"]')) indicators.add('role="log"');
+      if (document.querySelector('[aria-live="polite"] , [aria-live="assertive"]')) {
+        // aria-live sám o sobě nestačí — musí být u něj vstupní pole
+        if (document.querySelector('textarea, input[type="text"]')) {
+          indicators.add('aria-live + vstupní pole');
+        }
+      }
+
+      // 2. Známé identifikátory chatovacích widgetů v DOM
+      const widgetSelectors = [
+        '#intercom-container', '.intercom-launcher',
+        '#drift-widget', '.drift-frame-controller',
+        '#tidio-chat', '#crisp-chatbox',
+        '#launcher[title*="essaging" i]',
+        '#hubspot-messages-iframe-container',
+        '#fc_frame', '#tawkchat-container',
+        '#smartsupp-widget-container', '.chatra',
+        '[id*="chatbot" i]', '[class*="chatbot" i]',
+        '[data-testid*="chat" i]',
+      ];
+      for (const sel of widgetSelectors) {
+        try {
+          if (document.querySelector(sel)) indicators.add(sel);
+        } catch {
+          // neplatný selektor v tomto prohlížeči — přeskoč
+        }
+      }
+
+      // 3. iframe s chatovacím původem
+      for (const frame of document.querySelectorAll('iframe[src]')) {
+        const src = (frame.getAttribute('src') || '').toLowerCase();
+        if (/chat|messenger|intercom|drift|tidio|crisp|tawk|freshchat/.test(src)) {
+          indicators.add(`iframe: ${src.slice(0, 60)}`);
+        }
+      }
+
+      // 4. Prvky, které se tváří jako odeslání zprávy
+      const sendLike = [...document.querySelectorAll('button, [role="button"]')]
+        .filter((el) => /odeslat zprávu|send message|zeptejte se|ask (me|ai)/i.test(el.innerText || ''));
+      if (sendLike.length) indicators.add('tlačítko pro odeslání zprávy');
+
+      // 5. Náznaky biometrie / rozpoznávání emocí (pro povinnost 3)
+      const biometricHints = [];
+      if (document.querySelector('video[autoplay]') && /emo|face|obličej|biometr/i.test(document.body.innerHTML)) {
+        biometricHints.push('video + zmínka o rozpoznávání');
+      }
+      if (/rozpoznávání\s+(obličej|emoc)|face\s+recognition|emotion\s+(detection|recognition)/i.test(document.body.innerText || '')) {
+        biometricHints.push('text zmiňuje rozpoznávání obličeje nebo emocí');
+      }
+
+      // 6. Obrázky — kandidáti na kontrolu označení syntetického obsahu
+      const imageUrls = [...document.querySelectorAll('img[src]')]
+        .map((img) => img.src)
+        .filter((src) => /^https?:/i.test(src));
+
+      return {
+        chatIndicators: [...indicators],
+        biometricHints,
+        imageUrls: imageUrls.slice(0, 20),
+        imagesTotal: imageUrls.length,
+      };
+    });
+
+    const images = await inspectImagesForC2pa(page, domSignals.imageUrls || []);
+
+    return {
+      chatIndicators: domSignals.chatIndicators || [],
+      biometricHints: domSignals.biometricHints || [],
+      images: {
+        total: domSignals.imagesTotal || 0,
+        sampled: images.sampled,
+        withC2pa: images.withC2pa,
+      },
+    };
+  } catch (err) {
+    console.warn('Detekce AI Act signálů z DOM selhala:', err.message);
+    return { chatIndicators: [], biometricHints: [], images: { total: 0, sampled: 0, withC2pa: 0 } };
+  }
+}
+
+/**
+ * Hledá v obrázcích C2PA manifest (Content Credentials) — nejrozšířenější
+ * kandidát na strojově čitelné označení podle čl. 50 odst. 2.
+ *
+ * Nestahuje celé soubory: C2PA manifest je v JPEG uložený v APP11 segmentu
+ * a v PNG v `caBX` chunku, obojí poblíž začátku. Stačí prvních 64 kB.
+ */
+async function inspectImagesForC2pa(page, imageUrls) {
+  const sample = imageUrls.slice(0, MAX_C2PA_SAMPLES);
+  let withC2pa = 0;
+  let sampled = 0;
+
+  for (const imageUrl of sample) {
+    try {
+      const found = await page.evaluate(async (src) => {
+        const res = await fetch(src, { headers: { Range: 'bytes=0-65535' } });
+        if (!res.ok && res.status !== 206) return null;
+        const buf = new Uint8Array(await res.arrayBuffer());
+
+        // Hledáme značky 'c2pa' / 'jumb' / 'caBX' v hlavičce souboru.
+        const text = new TextDecoder('latin1').decode(buf);
+        return /c2pa|jumbf|caBX|contentauth/i.test(text);
+      }, imageUrl);
+
+      if (found === null) continue;
+      sampled += 1;
+      if (found) withC2pa += 1;
+    } catch {
+      // obrázek nešel načíst (CORS, 404) — do vzorku ho nepočítáme
+    }
+  }
+
+  return { sampled, withC2pa };
 }
 
 // Prefixy názvů trackovacích cookies. Dřív byly jen tři (_ga, _fbp, _hj).

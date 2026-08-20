@@ -39,6 +39,28 @@ export function complianceBadgeClass(isCompliant) {
   }
 }
 
+/**
+ * Stav jednotlivé povinnosti AI Actu (`pass` / `fail` / `inconclusive` /
+ * `not_applicable`) na tříhodnotový model výš.
+ */
+export function obligationToCompliance(status) {
+  if (status === 'pass') return true;
+  if (status === 'fail') return false;
+  return null; // inconclusive i not_applicable
+}
+
+/** Popisek stavu povinnosti — `not_applicable` má vlastní znění. */
+export function obligationLabel(status) {
+  if (status === 'not_applicable') return 'Netýká se';
+  return complianceLabel(obligationToCompliance(status));
+}
+
+/** Barva stavu povinnosti; `not_applicable` je neutrální šedá. */
+export function obligationColor(status) {
+  if (status === 'not_applicable') return '#94a3b8';
+  return complianceColor(obligationToCompliance(status));
+}
+
 /** Krátký textový štítek — informace nesmí být nesena jen barvou. */
 export function complianceLabel(isCompliant) {
   switch (complianceState(isCompliant)) {
