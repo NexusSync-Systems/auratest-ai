@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  security-tests:
-    name: Bezpečnostní testy (SSRF guard, Slack podpis)
+  lint:
+    name: ESLint
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -26,7 +26,78 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Zaměřeno na bezpečnostní moduly, aby CI zůstalo zelené.
-      # Pro celou sadu použij:  npm test
-      - name: Run security tests
-        run: npx jest tests/ssrf-guard.test.js tests/slack-verify.test.js
+      # Blokující: `no-undef` chyby už jednou shodily přihlašovací obrazovku
+      # (handleAuthSubmit, fetchProjects). Warningy neblokují.
+      - name: Lint
+        run: npx eslint .
+
+  tests:
+    name: Testy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Dřív CI pouštělo jen 2 ze 7 souborů s poznámkou "aby CI zůstalo
+      # zelené". Sada je zelená celá, takže není důvod nic vynechávat.
+      - name: Run all tests
+        run: npm test
+
+  audit:
+    name: Zranitelnosti závislostí
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Ironie, kterou tenhle projekt měl: skenuje CVE v knihovnách cizích
+      # webů (/api/auraguard/cra-vuln-audit), ale vlastní závislosti
+      # nekontroloval. Verze problémových tranzitivních balíčků drží
+      # `overrides` v package.json.
+      - name: npm audit
+        run: npm audit --omit=dev --audit-level=high
+
+  frontend:
+    name: Frontend (testy + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm run install:all
+
+      # Vitest + Testing Library. Chytá i regrese přístupnosti — nástroj
+      # audituje WCAG u cizích webů, takže by je měl dodržovat i sám.
+      - name: Test
+        run: npm run frontend:test
+
+      - name: Build
+        run: npm run build

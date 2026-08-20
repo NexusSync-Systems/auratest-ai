@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node server.js",
     "dev:server": "node --watch server.js",
+    "build": "cd frontend && npm run build",
     "frontend:install": "cd frontend && npm install",
     "frontend:dev": "cd frontend && npm run dev",
     "install:all": "npm install && npm run frontend:install",
@@ -22,6 +23,16 @@
     "eval:llm:offline": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl",
     "dataset:sft": "node tools/llm-eval/export-sft.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --output adapters/auauratesting-gemma/data/auratest-gemma-sft.jsonl",
     "dataset:preferences": "node tools/llm-eval/export-preferences.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --failures adapters/auauratesting-gemma/model-failures.jsonl --output adapters/auauratesting-gemma/data/auratest-gemma-preferences.jsonl",
+    "dataset:preferences:v3": "node tools/llm-eval/export-preferences.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --failures adapters/auauratesting-gemma/model-failures-v3.jsonl --output adapters/auauratesting-gemma/data/auratest-gemma-preferences-v3.jsonl",
+    "dataset:failures:v3": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --responses adapters/auauratesting-gemma/finetune/mlx-responses-v3.jsonl --verbose --write-failures adapters/auauratesting-gemma/model-failures-v3.jsonl --model-label mlx-lowram-lora-v3",
+    "dataset:sft:v3-repair": "node tools/llm-eval/export-repair-sft.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --failures adapters/auauratesting-gemma/model-failures-v3.jsonl --output adapters/auauratesting-gemma/data/auratest-gemma-sft-v3-repair.jsonl --repeat 2 --include-all",
+    "finetune:mlx:prepare:v3-repair": "node tools/llm-eval/export-mlx-sft.js --input adapters/auauratesting-gemma/data/auratest-gemma-sft-v3-repair.jsonl --output-dir adapters/auauratesting-gemma/finetune/mlx-data-v3-repair --train-ratio 0.85 --valid-ratio 0.1",
+    "finetune:mlx:train:v4-repair": "DATA_DIR=adapters/auauratesting-gemma/finetune/mlx-data-v3-repair OUTPUT_DIR=adapters/auauratesting-gemma/finetune/output/lowram-lora-v4 RESUME_ADAPTER_FILE=adapters/auauratesting-gemma/finetune/output/lowram-lora-v3/adapters.safetensors ITERS=30 LEARNING_RATE=2e-6 LORA_LAYERS=8 bash adapters/auauratesting-gemma/finetune/train-lowram.sh",
+    "finetune:mlx:train:v4-safe": "DATA_DIR=adapters/auauratesting-gemma/finetune/mlx-data-v3-repair OUTPUT_DIR=adapters/auauratesting-gemma/finetune/output/lowram-lora-v4-safe RESUME_ADAPTER_FILE=adapters/auauratesting-gemma/finetune/output/lowram-lora-v3/adapters.safetensors ITERS=15 LEARNING_RATE=1e-6 LORA_LAYERS=4 SAVE_EVERY=5 STEPS_PER_EVAL=15 VAL_BATCHES=4 MAX_SEQ_LENGTH=1536 bash adapters/auauratesting-gemma/finetune/train-lowram.sh",
+    "eval:mlx:generate:v4": "adapters/auauratesting-gemma/finetune/.venv/bin/python tools/llm-eval/run-mlx-eval.py --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --adapter-path adapters/auauratesting-gemma/finetune/output/lowram-lora-v4 --output adapters/auauratesting-gemma/finetune/mlx-responses-v4.jsonl",
+    "eval:mlx:score:v4": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --responses adapters/auauratesting-gemma/finetune/mlx-responses-v4.jsonl",
+    "eval:mlx:generate:v4-safe": "adapters/auauratesting-gemma/finetune/.venv/bin/python tools/llm-eval/run-mlx-eval.py --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --adapter-path adapters/auauratesting-gemma/finetune/output/lowram-lora-v4-safe --output adapters/auauratesting-gemma/finetune/mlx-responses-v4-safe.jsonl",
+    "eval:mlx:score:v4-safe": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --responses adapters/auauratesting-gemma/finetune/mlx-responses-v4-safe.jsonl",
     "dataset:failures:normalize": "node tools/llm-eval/normalize-failures.js --input adapters/auauratesting-gemma/model-failures.jsonl",
     "dataset:failures:report": "node tools/llm-eval/report-failures.js --failures adapters/auauratesting-gemma/model-failures.jsonl --output adapters/auauratesting-gemma/data/failure-report.md",
     "dataset:sanitizer:coverage": "node tools/llm-eval/report-sanitizer-coverage.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --failures adapters/auauratesting-gemma/model-failures.jsonl --output adapters/auauratesting-gemma/data/sanitizer-coverage.md",
@@ -31,7 +42,8 @@
     "finetune:mlx:train:lowram": "bash adapters/auauratesting-gemma/finetune/train-lowram.sh",
     "eval:mlx:generate": "adapters/auauratesting-gemma/finetune/.venv/bin/python tools/llm-eval/run-mlx-eval.py --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --adapter-path adapters/auauratesting-gemma/finetune/output/lowram-lora --output adapters/auauratesting-gemma/finetune/mlx-responses.jsonl",
     "eval:mlx:score": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --responses adapters/auauratesting-gemma/finetune/mlx-responses.jsonl",
-    "adapter:gemma:create": "ollama create auauratesting-gemma -f adapters/auauratesting-gemma/Modelfile"
+    "adapter:gemma:create": "ollama create auauratesting-gemma -f adapters/auauratesting-gemma/Modelfile",
+    "adapter:gemma:install": "ollama pull gemma2:2b && npm run adapter:gemma:create"
   },
   "dependencies": {
     "@axe-core/playwright": "^4.12.1",

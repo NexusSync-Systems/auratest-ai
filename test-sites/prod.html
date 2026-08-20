@@ -2,25 +2,36 @@
 <html lang="cs">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline';">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
   <title>Produkční Verze</title>
   <style>
     body { font-family: sans-serif; padding: 20px; background: #fafafa; }
-    .card { background: white; border: 1px solid #ccc; padding: 20px; border-radius: 8px; max-width: 400px; }
+    .card { background: white; border: 1px solid #ccc; padding: 20px; border-radius: 8px; max-width: 400px; margin: 0 auto; }
     h1 { color: #333; }
     .btn { background: #0066cc; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; }
+    .btn:hover { background: #005bb5; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1 id="main-title">Moje Produkční Aplikace</h1>
-    <p id="welcome-text">Vítejte v naší produkční verzi systému. Tato stránka obsahuje oficiální texty a stabilní rozhraní.</p>
+  <main class="card">
+    <header>
+      <h1 id="main-title">Moje Produkční Aplikace</h1>
+      <p id="welcome-text">Vítejte v naší produkční verzi systému. Tato stránka obsahuje oficiální texty a stabilní rozhraní.</p>
+    </header>
     
-    <div style="margin: 20px 0;">
-      <label for="name">Jméno:</label>
-      <input type="text" id="name" placeholder="Zadejte jméno">
-    </div>
+    <section>
+      <form action="/api/submit" method="POST">
+        <input type="hidden" name="csrf_token" value="dummy-token-for-nis2-compliance">
+        <div style="margin: 20px 0;">
+          <label for="name">Jméno:</label>
+          <input type="text" id="name" name="name" placeholder="Zadejte jméno" required aria-required="true">
+        </div>
 
-    <button id="submit-btn" class="btn">Odeslat data</button>
-  </div>
+        <button type="submit" id="submit-btn" class="btn" aria-label="Odeslat data">Odeslat data</button>
+      </form>
+    </section>
+  </main>
 </body>
 </html>

@@ -365,6 +365,112 @@ describe('Utility Functions Unit Tests', () => {
       expect(result.action).toBe('click');
       expect(result.target).toBe(1);
     });
+
+    it('po vybraném souboru klikne na submit místo odkazu na šablonu', () => {
+      const result = sanitizeActionResponse(
+        { reasoning: 'Vyberu CSV soubor znovu', action: 'type', target: 1, value: 'fixtures/import-valid.csv', detected_bugs: [] },
+        {
+          ...baseContext,
+          interactiveElements: [
+            { id: 1, tagName: 'INPUT', type: 'file', placeholder: 'Vyberte CSV', value: 'fixtures/import-valid.csv' },
+            { id: 2, tagName: 'BUTTON', type: 'submit', text: 'Importovat' },
+            { id: 3, tagName: 'A', text: 'Stáhnout šablonu', href: '/template.csv' }
+          ],
+          steps: [{ step: 1, action: 'type', target: 1, value: 'fixtures/import-valid.csv' }]
+        }
+      );
+
+      expect(result.action).toBe('click');
+      expect(result.target).toBe(2);
+    });
+
+    it('při runtime chybě nechá konkrétní obsahový odkaz a doplní bug', () => {
+      const result = sanitizeActionResponse(
+        { reasoning: 'Otevřu zákazníka ACME', action: 'click', target: 1, value: null, detected_bugs: [] },
+        {
+          ...baseContext,
+          consoleLogs: [{ type: 'error', text: 'TypeError: customer.name is undefined' }],
+          interactiveElements: [
+            { id: 1, tagName: 'A', text: 'Zákazník: ACME', href: '/customers/acme' },
+            { id: 2, tagName: 'BUTTON', type: 'button', text: 'Obnovit seznam' }
+          ]
+        }
+      );
+
+      expect(result.action).toBe('click');
+      expect(result.target).toBe(1);
+      expect(result.detected_bugs.length).toBeGreaterThan(0);
+    });
+
+    it('při ukládání a spinneru vrátí wait místo odchodu', () => {
+      const result = sanitizeActionResponse(
+        { reasoning: 'Kliknu zpět', action: 'click', target: 2, value: null, detected_bugs: [] },
+        {
+          ...baseContext,
+          currentUrl: 'http://localhost:3000/profile/save',
+          title: 'Ukládání profilu',
+          visibleState: 'Saving spinner is visible and save button is disabled.',
+          interactiveElements: [
+            { id: 1, tagName: 'BUTTON', type: 'submit', text: 'Uložit profil', disabled: true },
+            { id: 2, tagName: 'A', text: 'Zpět na profil', href: '/profile' }
+          ]
+        }
+      );
+
+      expect(result.action).toBe('wait');
+      expect(result.target).toBeNull();
+    });
+
+    it('na uložené success stránce ukončí test', () => {
+      const result = sanitizeActionResponse(
+        { reasoning: 'Kliknu na nastavení', action: 'click', target: 2, value: null, detected_bugs: [] },
+        {
+          ...baseContext,
+          currentUrl: 'http://localhost:3000/profile/saved',
+          title: 'Profil uložen',
+          goal: 'Verify profile save flow',
+          interactiveElements: [
+            { id: 1, tagName: 'A', text: 'Zpět na profil', href: '/profile' },
+            { id: 2, tagName: 'A', text: 'Nastavení', href: '/profile/settings' }
+          ]
+        }
+      );
+
+      expect(result.action).toBe('finish');
+      expect(result.target).toBeNull();
+    });
+
+    it('bez interaktivních prvků převede navigate na scroll', () => {
+      const result = sanitizeActionResponse(
+        { reasoning: 'Přejdu domů', action: 'navigate', target: 'http://localhost:3000/', value: null, detected_bugs: [] },
+        {
+          ...baseContext,
+          interactiveElements: [],
+          steps: []
+        }
+      );
+
+      expect(result.action).toBe('scroll');
+      expect(result.target).toBeNull();
+    });
+
+    it('po opakovaném refreshi použije suggested full URL', () => {
+      const result = sanitizeActionResponse(
+        { reasoning: 'Zkusím znovu obnovit', action: 'click', target: 1, value: null, detected_bugs: [] },
+        {
+          ...baseContext,
+          currentUrl: 'http://localhost:3000/admin',
+          suggestedUrl: 'http://localhost:3000/admin/audit',
+          interactiveElements: [
+            { id: 1, tagName: 'BUTTON', type: 'button', text: 'Obnovit stav' }
+          ],
+          steps: [{ step: 1, action: 'click', target: 1 }]
+        }
+      );
+
+      expect(result.action).toBe('navigate');
+      expect(result.target).toBe('http://localhost:3000/admin/audit');
+    });
   });
 });
 

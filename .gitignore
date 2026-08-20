@@ -1,4 +1,5 @@
 node_modules/
+frontend/dist/
 .env
 .DS_Store
 *.sqlite
@@ -13,3 +14,6 @@ videos/
 adapters/*/finetune/.venv/
 adapters/*/finetune/output/
 adapters/*/finetune/**/*.safetensors
+adapters/*/finetune/mlx-responses*.jsonl
+__pycache__/
+*.pyc

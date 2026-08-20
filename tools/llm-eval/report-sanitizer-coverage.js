@@ -68,6 +68,14 @@ function parseGoal(prompt) {
   return prompt.match(/Test goal:\s*([^\n]+)/i)?.[1]?.trim() || '';
 }
 
+function parseVisibleState(prompt) {
+  return prompt.match(/Visible state:\s*([^\n]+)/i)?.[1]?.trim() || '';
+}
+
+function parseSuggestedUrl(prompt) {
+  return prompt.match(/Suggested next URL:\s*(https?:\/\/[^\s]+)/i)?.[1]?.trim() || '';
+}
+
 function extractSection(prompt, startLabel, endLabels) {
   const start = prompt.search(new RegExp(`${startLabel}:`, 'i'));
   if (start < 0) return '';
@@ -132,6 +140,8 @@ function contextFromCase(testCase) {
     currentUrl: parseCurrentUrl(testCase.prompt),
     title: parsePageTitle(testCase.prompt),
     goal: parseGoal(testCase.prompt),
+    visibleState: parseVisibleState(testCase.prompt),
+    suggestedUrl: parseSuggestedUrl(testCase.prompt),
     interactiveElements: parseInteractiveElements(testCase.prompt),
     consoleLogs: parseConsoleLogs(testCase.prompt),
     networkErrors: parseNetworkErrors(testCase.prompt),

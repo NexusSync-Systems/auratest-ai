@@ -12,6 +12,7 @@ function parseArgs(argv) {
     host: process.env.OLLAMA_HOST || 'http://localhost:11434',
     model: process.env.OLLAMA_MODEL || 'auratest-gemma2',
     runModel: false,
+    modelLabel: null,
     strict: false,
     verbose: false,
     tag: null,
@@ -34,6 +35,7 @@ function parseArgs(argv) {
     else if (arg === '--responses') args.responses = argv[++i];
     else if (arg === '--host') args.host = argv[++i];
     else if (arg === '--model') args.model = argv[++i];
+    else if (arg === '--model-label') args.modelLabel = argv[++i];
     else if (arg === '--help') {
       printHelp();
       process.exit(0);
@@ -53,6 +55,8 @@ Options:
   --run-model       Query Ollama. Without this flag, expected outputs are validated.
   --model NAME      Ollama model name. Default: auratest-gemma2
   --host URL        Ollama host. Default: http://localhost:11434
+  --model-label NAME
+                    Label stored in failure records. Useful with --responses.
   --cases PATH      JSONL case file. Default: tools/llm-eval/eval-cases.jsonl
   --tag TAG         Run only cases containing this tag.
   --system-file PATH
@@ -430,10 +434,18 @@ function loadExistingFailureKeys(filePath) {
   return keys;
 }
 
+function failureModelLabel(args) {
+  if (args.modelLabel) return args.modelLabel;
+  if (args.runModel) return args.model;
+  if (args.responses) return `responses:${path.basename(args.responses)}`;
+  return 'offline-expected';
+}
+
 function appendFailureRecords(results, cases, responsesById, args) {
-  if (!args.writeFailures || !args.runModel) return 0;
+  if (!args.writeFailures || (!args.runModel && !args.responses)) return 0;
   const caseById = new Map(cases.map((testCase) => [testCase.id, testCase]));
   const existing = loadExistingFailureKeys(args.writeFailures);
+  const model = failureModelLabel(args);
   const records = [];
 
   for (const result of results) {
@@ -448,7 +460,7 @@ function appendFailureRecords(results, cases, responsesById, args) {
     const failureMode = inferFailureMode(result);
     const record = {
       caseId: result.id,
-      model: args.model,
+      model,
       failureMode,
       rejected,
       notes: result.errors.join('; '),

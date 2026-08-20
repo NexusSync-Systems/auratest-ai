@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 ADAPTER_DIR="$ROOT_DIR/adapters/auauratesting-gemma"
-DATA_DIR="$ADAPTER_DIR/finetune/mlx-data"
+DATA_DIR="${DATA_DIR:-$ADAPTER_DIR/finetune/mlx-data}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ADAPTER_DIR/finetune/output/lowram-lora}"
 VENV_PYTHON="$ADAPTER_DIR/finetune/.venv/bin/python"
 
@@ -16,6 +16,8 @@ STEPS_PER_REPORT="${STEPS_PER_REPORT:-5}"
 STEPS_PER_EVAL="${STEPS_PER_EVAL:-10}"
 MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-2048}"
 SAVE_EVERY="${SAVE_EVERY:-20}"
+VAL_BATCHES="${VAL_BATCHES:-}"
+RESUME_ADAPTER_FILE="${RESUME_ADAPTER_FILE:-}"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 if [ -x "$VENV_PYTHON" ]; then
@@ -34,6 +36,14 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
+RESUME_ARGS=()
+if [ -n "$RESUME_ADAPTER_FILE" ]; then
+  RESUME_ARGS=(--resume-adapter-file "$RESUME_ADAPTER_FILE")
+fi
+
+VAL_ARGS=()
+[ -n "$VAL_BATCHES" ] && VAL_ARGS=(--val-batches "$VAL_BATCHES")
+
 echo "Starting low-RAM MLX LoRA training"
 echo "  model:       $MODEL_ID"
 echo "  data:        $DATA_DIR"
@@ -41,6 +51,9 @@ echo "  output:      $OUTPUT_DIR"
 echo "  iters:       $ITERS"
 echo "  batch size:  $BATCH_SIZE"
 echo "  lora layers: $LORA_LAYERS"
+echo "  learning rate: $LEARNING_RATE"
+[ -n "$RESUME_ADAPTER_FILE" ] && echo "  resume:      $RESUME_ADAPTER_FILE"
+[ -n "$VAL_BATCHES" ] && echo "  val batches: $VAL_BATCHES"
 
 "$PYTHON_BIN" -m mlx_lm lora \
   --model "$MODEL_ID" \
@@ -53,6 +66,7 @@ echo "  lora layers: $LORA_LAYERS"
   --learning-rate "$LEARNING_RATE" \
   --steps-per-report "$STEPS_PER_REPORT" \
   --steps-per-eval "$STEPS_PER_EVAL" \
+  "${VAL_ARGS[@]}" \
   --max-seq-length "$MAX_SEQ_LENGTH" \
   --save-every "$SAVE_EVERY" \
   --grad-checkpoint

@@ -16,9 +16,35 @@ Current low-RAM settings:
 
 Do not switch this adapter to `gemma2:9b` on a low-RAM machine.
 
+## Install From Git
+
+This repository does not store Ollama model blobs or MLX checkpoint weights. A second machine should rebuild the local Ollama adapter from the tracked `Modelfile`.
+
+Prerequisites:
+
+- Node.js dependencies installed with `npm install`
+- frontend dependencies installed with `npm run frontend:install`
+- Ollama installed and running
+
+Install the local tester model:
+
+```bash
+npm run adapter:gemma:install
+```
+
+The command pulls the base model and creates the local adapter:
+
+```bash
+ollama pull gemma2:2b
+ollama create auauratesting-gemma -f adapters/auauratesting-gemma/Modelfile
+```
+
+Use the model name `auauratesting-gemma` with Ollama host `http://localhost:11434`.
+
 ## Commands
 
 ```bash
+npm run adapter:gemma:install
 npm run adapter:gemma:create
 npm run eval:llm:offline -- --strict
 npm run eval:llm -- --model auauratesting-gemma --tag quality --timeout-ms 30000 --verbose

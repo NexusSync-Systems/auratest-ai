@@ -308,6 +308,10 @@ function isRetryLikeElement(el) {
   return el.tagName === 'BUTTON' && /znovu|obnovit|načíst|nacist|retry|reload|refresh|zkusit/.test(text);
 }
 
+function isDisabledElement(el) {
+  return Boolean(el?.disabled) || String(el?.disabled || '').toLowerCase() === 'true';
+}
+
 function wasActionTargetUsed(steps, action, target) {
   const key = actionTargetKey(action, target);
   return (steps || []).some((step) => actionTargetKey(step.action, step.target) === key);
@@ -348,10 +352,69 @@ function isSpecificContentLink(el) {
 
 function isCompletionContext({ currentUrl, title, goal }) {
   const haystack = `${currentUrl || ''} ${title || ''} ${goal || ''}`.toLowerCase();
-  return /success|complete|completed|thank|thanks|done|hotovo|dokon[cč]en|odesl[aá]n|potvrzen/.test(haystack);
+  return /success|complete|completed|thank|thanks|done|saved|hotovo|dokon[cč]en|odesl[aá]n|potvrzen|ulo[zž]en/.test(haystack);
 }
 
-function chooseFallbackAction(interactiveElements, steps, runtimeSignals = false) {
+function isLoadingOrSavingContext({ currentUrl, title, goal, visibleState }) {
+  const haystack = `${currentUrl || ''} ${title || ''} ${goal || ''} ${visibleState || ''}`.toLowerCase();
+  return /loading|saving|spinner|na[cč][ií]t|ukl[aá]d|uklad|ček|cek/.test(haystack);
+}
+
+function shouldPreferRetryForRuntime(selected, interactiveElements) {
+  if (!selected) return true;
+  if (isRetryLikeElement(selected)) return false;
+  if (selected.tagName !== 'A') return true;
+  const hasRetryControl = interactiveElements.some(isRetryLikeElement);
+  if (!hasRetryControl) return false;
+  const text = String(selected.text || '').toLowerCase();
+  if (/detail/.test(text)) return true;
+  if (/vytvořit|vytvorit|nov[ýy]|novou|new|create|přidat|pridat|add/.test(text)) return true;
+  if (/nastaven|settings|security|bezpe[cč]|z[aá]kazn[ií]k|zakaznik|clanek|článek|faktura|projekt/.test(text)) return false;
+  return true;
+}
+
+function chooseFallbackAction(interactiveElements, steps, runtimeSignals = false, context = {}) {
+  if (isCompletionContext(context) && !hasRuntimeSignals(context.consoleLogs, context.networkErrors)) {
+    return {
+      reasoning: 'Cíl testu je splněný a nejsou vidět chyby, proto test bezpečně ukončím.',
+      action: 'finish',
+      target: null,
+      value: null,
+      detected_bugs: []
+    };
+  }
+
+  if (isLoadingOrSavingContext(context) && interactiveElements.some(isDisabledElement)) {
+    return {
+      reasoning: 'Stránka právě načítá nebo ukládá data a hlavní ovládací prvek je disabled, proto počkám.',
+      action: 'wait',
+      target: null,
+      value: '2000',
+      detected_bugs: []
+    };
+  }
+
+  if (context.suggestedUrl && /^https?:\/\//i.test(context.suggestedUrl)) {
+    return {
+      reasoning: 'Opakovaná akce nepřinesla nové prvky, proto použiji doporučenou plnou URL pro další pokrytí.',
+      action: 'navigate',
+      target: context.suggestedUrl,
+      value: null,
+      detected_bugs: []
+    };
+  }
+
+  if (interactiveElements.length === 0) {
+    const lastScroll = [...(steps || [])].reverse().find((step) => step.action === 'scroll');
+    return {
+      reasoning: 'Nejsou viditelné žádné interaktivní prvky, proto posunu stránku pro další obsah.',
+      action: 'scroll',
+      target: null,
+      value: lastScroll?.value === 'down' ? 'up' : 'down',
+      detected_bugs: []
+    };
+  }
+
   if (runtimeSignals) {
     const retryControl = interactiveElements
       .filter(isRetryLikeElement)
@@ -408,6 +471,19 @@ function chooseFallbackAction(interactiveElements, steps, runtimeSignals = false
     };
   }
 
+  const submitControl = interactiveElements
+    .filter(isSubmitLikeElement)
+    .find((el) => !isDisabledElement(el) && !wasActionTargetUsed(steps, 'click', el.id));
+  if (submitControl) {
+    return {
+      reasoning: `Všechna viditelná povinná pole už vypadají připravená, proto odešlu formulář přes "${submitControl.text || submitControl.id}".`,
+      action: 'click',
+      target: submitControl.id,
+      value: null,
+      detected_bugs: []
+    };
+  }
+
   const unusedLinks = interactiveElements
     .filter(isSpecificContentLink)
     .filter((el) => !wasActionTargetUsed(steps, 'click', el.id));
@@ -457,7 +533,8 @@ function withSanitizedBugs(step, actionResponse, reasoning, consoleLogs, network
 }
 
 export function sanitizeActionResponse(actionResponse, context) {
-  const { currentUrl, title, goal, interactiveElements, consoleLogs, networkErrors, steps } = context;
+  const { currentUrl, title, goal, visibleState, suggestedUrl, interactiveElements, consoleLogs, networkErrors, steps } = context;
+  const sanitizerContext = { currentUrl, title, goal, visibleState, suggestedUrl, consoleLogs, networkErrors };
   const validIds = new Set(interactiveElements.map((el) => el.id));
   const byId = new Map(interactiveElements.map((el) => [el.id, el]));
   let action = actionResponse?.action;
@@ -468,20 +545,24 @@ export function sanitizeActionResponse(actionResponse, context) {
     : 'Model nevrátil použitelnou úvahu, proto volím bezpečný průzkumný krok.';
 
   if (!AGENT_ACTIONS.has(action)) {
-    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
   }
 
   if ((action === 'click' || action === 'type') && typeof target !== 'number') {
-    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
   }
 
   if ((action === 'click' || action === 'type') && !validIds.has(target)) {
-    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
   }
 
   if (action === 'navigate') {
+    if (interactiveElements.length === 0 && isGenericHomeLink({ tagName: 'A', text: 'home', href: target })) {
+      return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
+    }
+
     if (typeof target !== 'string') {
-      return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+      return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
     }
 
     const matchingHref = interactiveElements.find((el) => el.href && el.href === target);
@@ -496,13 +577,17 @@ export function sanitizeActionResponse(actionResponse, context) {
         if (/^https?:\/\//i.test(absolute)) {
           target = absolute;
         } else {
-          return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+          return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
         }
       } catch (e) {
-        return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+        return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
       }
     }
     value = null;
+  }
+
+  if (interactiveElements.length === 0 && action !== 'scroll' && action !== 'wait' && action !== 'finish') {
+    return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
   }
 
   if (action === 'scroll') {
@@ -516,7 +601,7 @@ export function sanitizeActionResponse(actionResponse, context) {
   }
 
   let selected = byId.get(target);
-  if (action === 'click' && hasRuntimeSignals(consoleLogs, networkErrors) && !isRetryLikeElement(selected)) {
+  if (action === 'click' && hasRuntimeSignals(consoleLogs, networkErrors) && shouldPreferRetryForRuntime(selected, interactiveElements)) {
     const retryControl = interactiveElements
       .filter(isRetryLikeElement)
       .find((el) => !wasActionTargetUsed(steps, 'click', el.id));
@@ -529,7 +614,14 @@ export function sanitizeActionResponse(actionResponse, context) {
     }
   }
 
-  if (action === 'click' && isCompletionContext({ currentUrl, title, goal }) && !hasRuntimeSignals(consoleLogs, networkErrors)) {
+  if (action === 'click' && isLoadingOrSavingContext(sanitizerContext) && (isGenericHomeLink(selected) || isDisabledElement(selected))) {
+    action = 'wait';
+    target = null;
+    value = '2000';
+    reasoning = 'Stránka právě načítá nebo ukládá data, proto nebudu odcházet ani klikat disabled prvek a počkám.';
+  }
+
+  if (action === 'click' && isCompletionContext(sanitizerContext) && !hasRuntimeSignals(consoleLogs, networkErrors)) {
     action = 'finish';
     target = null;
     value = null;
@@ -578,12 +670,12 @@ export function sanitizeActionResponse(actionResponse, context) {
       value = null;
       reasoning = `Místo obecného návratu zvolím konkrétní neotestovaný odkaz "${betterLink.text || betterLink.href}".`;
     } else {
-      return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors)), actionResponse, reasoning, consoleLogs, networkErrors);
+      return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
     }
   }
 
   if (wasActionTargetUsed(steps, action, target)) {
-    const fallback = chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors));
+    const fallback = chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext);
     fallback.reasoning = `(Ochrana proti smyčce) ${fallback.reasoning}`;
     return withSanitizedBugs(fallback, actionResponse, reasoning, consoleLogs, networkErrors);
   }
@@ -887,7 +979,9 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
             actionResponse = JSON.parse(cleaned + ending);
             parsed = true;
             break;
-          } catch (e) {}
+          } catch {
+            // toto doplnění závorek nesedlo, zkus další
+          }
         }
         if (!parsed) {
            throw new Error(`Nelze opravit utržený JSON: ${parseErr.message}`);
@@ -895,11 +989,9 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
       }
     } catch (err) {
       console.error('LLM parsing failed:', err);
-      let extractedReasoning = `(Záchranný krok) AI vygenerovalo nečitelný nebo utržený JSON: ${err.message}. Agent zkouší posunout stránku a pokračovat.`;
-      try {
-        // Mock fallback if string includes reasoning
-        extractedReasoning = "(Záchranný krok) AI vygenerovalo nečitelný JSON, skript vynucuje rolování";
-      } catch(e) {}
+      // Pozn.: dřív tu byl try/catch, který tuto zprávu bezpodmínečně přepsal
+      // konstantou a zahodil tak err.message. Diagnostiku si ponecháváme.
+      const extractedReasoning = `(Záchranný krok) AI vygenerovalo nečitelný nebo utržený JSON: ${err.message}. Agent zkouší posunout stránku a pokračovat.`;
 
       actionResponse = {
         reasoning: extractedReasoning,
@@ -1646,8 +1738,8 @@ export async function auditGreenAndResidency(url) {
           try {
             const body = await response.body();
             size = body.length;
-          } catch (e) {
-            // ignorovat (např. CORS)
+          } catch {
+            // tělo odpovědi není dostupné (např. CORS) — velikost neznámá
           }
         }
         totalBytes += size;
@@ -1657,7 +1749,9 @@ export async function auditGreenAndResidency(url) {
           ipAddresses.add(serverAddr.ipAddress);
           domainToIp.set(urlObj.hostname, serverAddr.ipAddress);
         }
-      } catch (e) {}
+      } catch {
+        // jednotlivá odpověď se nepodařila změřit — ostatní měření pokračuje
+      }
     });
 
     await page.goto(url, { waitUntil: 'networkidle' });

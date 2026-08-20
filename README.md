@@ -1,5 +1,16 @@
 # AuraGuard 🛡️ (dříve AuraTest AI)
 
+> **Stav: 🟢 Aktivní vývoj — růstová linie**
+>
+> **Probíhá přepozicování těžiště z EAA na NIS2.** Důvod: EAA má pokutu 10 mil. Kč,
+> kupuje ho vývojář a konkurujeme Deque na jejich vlastním enginu (Axe-Core).
+> NIS2 (zákon č. 264/2025 Sb.) dopadá na ~6 000 subjektů v ČR, přechodné období
+> končí **1. 1. 2027**, pokuty jdou do **250 mil. Kč nebo 2 % obratu** a nese je
+> i statutární orgán osobně. Modul NIS2 zde už je — chybí obal, dokumentace
+> doložitelnosti a workflow hlášení incidentu NÚKIB do 24 hodin.
+>
+> Druhý modul v pořadí: **AI Act registr** (plná použitelnost 2. 8. 2026).
+
 AuraGuard je absolutní evropská špička v **Compliance-as-a-Code** a automatizovaném QA testování. Kombinuje sílu umělé inteligence (LLM), Playwrightu a expertních statických analyzátorů k tomu, aby vaše webové aplikace splňovaly přísné technické, bezpečnostní a evropské normy ještě před nasazením do produkce (CI/CD) i dlouho po něm.
 
 ---

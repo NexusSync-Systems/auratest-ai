@@ -3,7 +3,8 @@ import argparse
 import json
 from pathlib import Path
 
-from mlx_lm import generate, load
+from mlx_lm import load
+from mlx_lm.generate import stream_generate
 from mlx_lm.sample_utils import make_sampler
 
 
@@ -21,8 +22,9 @@ def parse_args():
     parser.add_argument('--model', default='mlx-community/gemma-2-2b-it-4bit')
     parser.add_argument('--adapter-path', default='adapters/auauratesting-gemma/finetune/output/lowram-lora')
     parser.add_argument('--output', default='adapters/auauratesting-gemma/finetune/mlx-responses.jsonl')
-    parser.add_argument('--max-tokens', type=int, default=384)
+    parser.add_argument('--max-tokens', type=int, default=192)
     parser.add_argument('--limit', type=int, default=0)
+    parser.add_argument('--no-early-stop-json', action='store_true')
     return parser.parse_args()
 
 
@@ -77,6 +79,53 @@ def first_json_object(text):
     return text.strip()
 
 
+def complete_json_object(text):
+    start = text.find('{')
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == '\\':
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1].strip()
+    return None
+
+
+def generate_response(model, tokenizer, prompt, sampler, max_tokens, early_stop_json=True):
+    chunks = []
+    for response in stream_generate(
+        model,
+        tokenizer,
+        prompt=prompt,
+        max_tokens=max_tokens,
+        sampler=sampler,
+    ):
+        chunks.append(response.text)
+        if early_stop_json:
+            candidate = complete_json_object(''.join(chunks))
+            if candidate:
+                return candidate
+    return first_json_object(''.join(chunks))
+
+
 def main():
     args = parse_args()
     system_content = Path(args.system_file).read_text(encoding='utf-8').strip() if args.system_file else DEFAULT_SYSTEM
@@ -92,15 +141,14 @@ def main():
     with output_path.open('w', encoding='utf-8') as handle:
         for index, case in enumerate(cases, start=1):
             prompt = render_prompt(tokenizer, system_content, case['prompt'])
-            response = generate(
+            response = generate_response(
                 model,
                 tokenizer,
-                prompt=prompt,
-                max_tokens=args.max_tokens,
-                sampler=sampler,
-                verbose=False,
-            ).strip()
-            response = first_json_object(response)
+                prompt,
+                sampler,
+                args.max_tokens,
+                early_stop_json=not args.no_early_stop_json,
+            )
             handle.write(json.dumps({'id': case['id'], 'response': response}, ensure_ascii=False) + '\n')
             handle.flush()
             print(f'{index}/{len(cases)} {case["id"]}', flush=True)
