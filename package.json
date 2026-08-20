@@ -13,14 +13,16 @@
     "build": "cd frontend && npm run build",
     "frontend:install": "cd frontend && npm install",
     "frontend:dev": "cd frontend && npm run dev",
+    "frontend:test": "cd frontend && npm test",
     "install:all": "npm install && npm run frontend:install",
     "setup": "npm run install:all && npx playwright install",
     "dev": "npx concurrently \"npm run dev:server\" \"npm run frontend:dev\"",
     "test": "jest",
     "test:e2e": "playwright test",
-    "eval:llm": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --run-model",
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "eval:llm": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --run-model --strict",
     "eval:llm:capture": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --run-model --model auauratesting-gemma --tag quality --timeout-ms 30000 --verbose --write-failures adapters/auauratesting-gemma/model-failures.jsonl",
-    "eval:llm:offline": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl",
+    "eval:llm:offline": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --strict",
     "dataset:sft": "node tools/llm-eval/export-sft.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --output adapters/auauratesting-gemma/data/auratest-gemma-sft.jsonl",
     "dataset:preferences": "node tools/llm-eval/export-preferences.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --failures adapters/auauratesting-gemma/model-failures.jsonl --output adapters/auauratesting-gemma/data/auratest-gemma-preferences.jsonl",
     "dataset:preferences:v3": "node tools/llm-eval/export-preferences.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --failures adapters/auauratesting-gemma/model-failures-v3.jsonl --output adapters/auauratesting-gemma/data/auratest-gemma-preferences-v3.jsonl",
@@ -73,5 +75,12 @@
     "jest": "^30.4.2",
     "playwright": "^1.60.0",
     "supertest": "^7.2.2"
+  },
+  "overrides": {
+    "tar": "^7.5.1",
+    "fast-xml-parser": "^5.11.0",
+    "brace-expansion": "^2.0.2",
+    "ip-address": "^10.2.1",
+    "uuid": "^11.1.0"
   }
 }

@@ -14,5 +14,23 @@ export default defineConfig({
         ws: true
       }
     }
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        // Bez rozdělení šel celý bundle v jednom chunku přes 1 MB.
+        // Firebase je největší kus a mění se zřídka, takže se dobře cachuje.
+        manualChunks: {
+          firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore'],
+          markdown: ['react-markdown'],
+        }
+      }
+    }
+  },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./src/test/setup.js'],
+    include: ['src/**/*.test.{js,jsx}'],
   }
 })
