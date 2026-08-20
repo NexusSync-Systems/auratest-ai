@@ -17,3 +17,4 @@ adapters/*/finetune/**/*.safetensors
 adapters/*/finetune/mlx-responses*.jsonl
 __pycache__/
 *.pyc
+generated-scripts/
