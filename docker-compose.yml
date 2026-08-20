@@ -1,17 +1,42 @@
-version: '3.8'
-
 services:
   auratest-ai:
     build: .
     container_name: auratest-ai
+    restart: unless-stopped
+
+    # Vázáno na loopback — server patří za reverzní proxy, ne přímo do sítě.
+    # Pro přímé vystavení změňte na "3001:3001".
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
+
+    # Bez tohohle běžel kontejner bez Firebase credentials, Slack tokenů
+    # a bez allowlistů (ALLOWED_LLM_HOSTS, ALLOWED_DB_HOSTS), takže se
+    # dotčené funkce tiše vypnuly.
+    env_file:
+      - .env
+
     volumes:
       - ./screenshots:/app/screenshots
+      - ./videos:/app/videos
       - ./generated-scripts:/app/generated-scripts
+      # Servisní klíč se montuje read-only, do image se nekopíruje.
+      - ./firebase-credentials.json:/app/firebase-credentials.json:ro
+
+    # Chromium potřebuje větší /dev/shm, jinak v kontejneru padá.
+    shm_size: 1gb
+
+    # Playwright umí sežrat celý host — bez stropu jeden zaseknutý běh
+    # položí stroj.
+    mem_limit: 2g
+    cpus: 2.0
+
     # If using local Ollama, you might need this to access host.docker.internal
     # extra_hosts:
     #   - "host.docker.internal:host-gateway"
+
     environment:
       - NODE_ENV=production
       - PORT=3001
+      # Kontejner běží za proxy — bez toho je req.ip vždy IP proxy
+      # a rate limiting se klíčuje na jedinou hodnotu.
+      - TRUST_PROXY=1

@@ -5,18 +5,61 @@ import { sendSlackNotification } from '../slack-notifier.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
+// Exit kódy: 0 = prošlo, 1 = compliance selhalo, 2 = chyba použití,
+// 3 = interní chyba. Dřív splývalo všechno do 0/1, takže CI nerozlišilo
+// „web nesplňuje směrnice" od „nástroj se nespustil".
+const EXIT_OK = 0;
+const EXIT_COMPLIANCE_FAILED = 1;
+const EXIT_USAGE = 2;
+const EXIT_INTERNAL = 3;
+
+const VALID_AUDITS = ['nis2', 'cra', 'cve', 'eaa', 'ai', 'gdpr', 'ai-agent', 'all'];
+const USAGE = 'Použití: auraguard --url <https://vase-aplikace.cz> --audit <' + VALID_AUDITS.join('|') + '>';
+
 const args = process.argv.slice(2);
+
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(USAGE);
+  process.exit(EXIT_OK);
+}
+
 const urlIndex = args.indexOf('--url');
 const auditIndex = args.indexOf('--audit');
 
 if (urlIndex === -1 || urlIndex + 1 >= args.length) {
   console.error('Chyba: Musíte zadat cílové URL pomocí parametru --url');
-  console.error('Použití: auraguard --url <https://vase-aplikace.cz> --audit <nis2|cra|cve|eaa|ai|gdpr|ai-agent|all>');
-  process.exit(1);
+  console.error(USAGE);
+  process.exit(EXIT_USAGE);
 }
 
 const url = args[urlIndex + 1];
+
+// Bez validace se z `--url --audit nis2` stalo URL "--audit". Hlavně ale
+// hodnota jde přímo do Playwright page.goto(), takže `file:///etc/passwd`
+// nebo `http://169.254.169.254/` z CI runneru znamená čtení souborů / SSRF.
+let parsedUrl;
+try {
+  parsedUrl = new URL(url);
+} catch {
+  console.error(`Chyba: "${url}" není platná URL.`);
+  console.error(USAGE);
+  process.exit(EXIT_USAGE);
+}
+if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+  console.error(`Chyba: povoleno je pouze schéma http nebo https (zadáno: ${parsedUrl.protocol}).`);
+  process.exit(EXIT_USAGE);
+}
+
 const auditType = (auditIndex !== -1 && auditIndex + 1 < args.length) ? args[auditIndex + 1] : 'all';
+
+// Bez tohohle skončil překlep (`--audit nis`) tak, že neproběhl ŽÁDNÝ audit,
+// hasErrors zůstalo false a CLI vypsalo „prošla všemi EU audity" s exit 0.
+// V CI to tiše propustilo nasazení.
+if (!VALID_AUDITS.includes(auditType)) {
+  console.error(`Chyba: neznámý typ auditu "${auditType}".`);
+  console.error(USAGE);
+  process.exit(EXIT_USAGE);
+}
 
 console.log(`\n🛡️  AuraGuard CI/CD Zabezpečení 🛡️`);
 console.log(`Cílové URL: ${url}`);
@@ -118,11 +161,18 @@ async function runCLI() {
       const llmConfig = { provider: 'ollama', model: 'llama3', host: 'http://localhost:11434', headless: true, maxSteps: 5, mode: 'smoke_test' };
       const aiAgentReport = await runAutonomousTest(url, 'Najdi všechny logické nebo javascriptové chyby na webu.', llmConfig, () => {});
       
-      if (!aiAgentReport.success && aiAgentReport.bugs && aiAgentReport.bugs.length > 0) {
-        console.error(`❌ SELHÁNÍ: AI Agent objevil na webu ${aiAgentReport.bugs.length} chyb!`);
-        aiAgentReport.bugs.forEach(bug => console.error(`   - ${bug}`));
+      const agentBugs = aiAgentReport.bugs || [];
+      if (agentBugs.length > 0) {
+        console.error(`❌ SELHÁNÍ: AI Agent objevil na webu ${agentBugs.length} chyb!`);
+        agentBugs.forEach(bug => console.error(`   - ${bug}`));
         hasErrors = true;
-        failedAudits.push(`*AI Agent*: Byly nalezeny funkční chyby (${aiAgentReport.bugs.length} chyb)`);
+        failedAudits.push(`*AI Agent*: Byly nalezeny funkční chyby (${agentBugs.length} chyb)`);
+      } else if (aiAgentReport.success === false) {
+        // Test neproběhl (LLM nedostupné, timeout). Dřív to spadlo do větve
+        // „PASS: žádné viditelné chyby", tedy falešně negativní výsledek.
+        console.error('❌ SELHÁNÍ: AI Agent Test neproběhl korektně.');
+        hasErrors = true;
+        failedAudits.push('*AI Agent*: Test se nepodařilo dokončit');
       } else {
         console.log('✅ PASS: AI Agent Test (Žádné viditelné chyby na webu)\n');
       }
@@ -130,7 +180,8 @@ async function runCLI() {
 
   } catch (err) {
     console.error(`❌ Kritická chyba při provádění auditu: ${err.message}`);
-    process.exit(1);
+    if (err.stack) console.error(err.stack);
+    process.exit(EXIT_INTERNAL);
   }
 
   if (hasErrors) {
@@ -190,11 +241,16 @@ async function runCLI() {
       );
     }
 
-    process.exit(1);
+    process.exit(EXIT_COMPLIANCE_FAILED);
   } else {
     console.log(`\n🎉 ZÁVĚR: Aplikace prošla všemi EU audity. Nasazení povoleno!`);
-    process.exit(0);
+    process.exit(EXIT_OK);
   }
 }
 
-runCLI();
+// Bez .catch() by výjimka mimo try (např. ze sendSlackNotification) přeskočila
+// process.exit() a spolehla se na výchozí chování Node.
+runCLI().catch((err) => {
+  console.error('❌ Neošetřená chyba CLI:', err);
+  process.exit(EXIT_INTERNAL);
+});

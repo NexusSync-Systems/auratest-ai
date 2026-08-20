@@ -1,9 +1,34 @@
 node_modules
 frontend/node_modules
 .git
+.github
+
+# Secrets — bez těchto řádků se servisní klíč Firebase zapékal do image.
 .env
+.env.*
+firebase-credentials.json
+*.pem
+*.key
+
+# Artefakty běhu a testovací data
 screenshots
+videos
+sessions
 generated-scripts
 test-results
+test-results.json
 playwright-report
 playwright/.cache
+*.sqlite
+
+# Vývojové a trénovací věci, které v produkčním image nemají co dělat
+adapters
+tools
+tests
+scratch
+docs
+__pycache__
+*.pyc
+frontend/dist
+CODE_REVIEW.md
+COMMITS.md

@@ -6,7 +6,9 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  reporter: 'html',
+  // HTML reporter má default `open: 'on-failure'` — v CI po selhání nastartuje
+  // server s reportem a job visí až do timeoutu.
+  reporter: process.env.CI ? [['html', { open: 'never' }], ['list']] : 'html',
   use: {
     baseURL: 'http://localhost:3001',
     trace: 'on-first-retry',
@@ -21,5 +23,8 @@ export default defineConfig({
     command: 'npm run dev',
     url: 'http://localhost:3001',
     reuseExistingServer: !process.env.CI,
+    // `npm run dev` startuje přes concurrently backend i Vite; default 60 s
+    // v CI často nestačí.
+    timeout: 120_000,
   },
 });

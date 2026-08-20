@@ -1,4 +1,6 @@
-import fetch from 'node-fetch';
+// Pozn.: dřív se importoval `node-fetch`, který ale NENÍ v package.json —
+// fungovalo to jen díky hoistingu tranzitivní závislosti firebase-admin.
+// Node 18+ má fetch globálně.
 
 /**
  * Odešle upozornění do Slacku pomocí Slack Bot API (chat.postMessage).
@@ -55,6 +57,8 @@ export async function sendSlackNotification(channel, title, message, isError = t
 
   try {
     const response = await fetch('https://slack.com/api/chat.postMessage', {
+      // Bez timeoutu mohl CLI v CI viset donekonečna.
+      signal: AbortSignal.timeout(10000),
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

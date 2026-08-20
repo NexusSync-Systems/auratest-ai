@@ -35,9 +35,13 @@ export function verifySlackRequest(rawBody, headers) {
   }
 
   // Ochrana proti replay útoku — požadavek nesmí být starší než 5 minut.
+  //
+  // Pozor na NaN: `Math.abs(now - NaN) > FIVE_MINUTES` je false, takže
+  // nečíselný timestamp kontrolu celou přeskočil.
   const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - Number(timestamp)) > FIVE_MINUTES) {
-    return { ok: false, reason: 'Slack timestamp je mimo povolené okno (replay).' };
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts) || Math.abs(now - ts) > FIVE_MINUTES) {
+    return { ok: false, reason: 'Slack timestamp je neplatný nebo mimo povolené okno (replay).' };
   }
 
   const body = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : String(rawBody || '');
