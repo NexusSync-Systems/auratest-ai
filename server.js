@@ -1,5 +1,6 @@
 import express from 'express';
 import http from 'http';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import path from 'path';
@@ -7,24 +8,128 @@ import fs from 'fs';
 import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM, runChaosTest, getGridEnergyStatus, auditAIAct, auditStrictCookies, auditCRAVulnerabilities, checkPage, checkForm } from './agent.js';
 import { fetchTranslations } from './db-connector.js';
 import { authenticateToken } from './auth.js';
+import { auth } from './db.js';
 import { assertPublicHttpUrl } from './ssrf-guard.js';
 import { verifySlackRequest, parseSlackPayload } from './slack-verify.js';
 import { sendSlackNotification } from './slack-notifier.js';
 import * as db from './db.js';
 import { redactEventData } from './pii-redactor.js';
+import { SCREENSHOTS_DIR, VIDEOS_DIR, SDK_DIR, FRONTEND_DIST_DIR, ensureDir } from './paths.js';
 
 // Global error handlers to prevent unhandled rejections from crashing the process
+// Po nezachycené výjimce je proces v nedefinovaném stavu (viselé Playwright
+// prohlížeče, poloviční zápisy do Firestore). Logovat a běžet dál je
+// anti-pattern — ukončíme se a spoléháme na restart přes process manager.
+let isShuttingDown = false;
+
+function shutdownWithError() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  try {
+    server.close(() => process.exit(1));
+  } catch {
+    process.exit(1);
+  }
+  // Pojistka, kdyby se server.close() zaseklo na otevřených spojeních.
+  // Bez .unref() — unref'nutý timer event loop neudrží a pojistka by se
+  // nikdy nevykonala, přesně naopak, než komentář sliboval.
+  setTimeout(() => process.exit(1), 5000);
+}
+
 process.on('uncaughtException', (err) => {
   console.error('Kritická chyba: Uncaught Exception:', err);
+  if (process.env.NODE_ENV === 'test') return;
+  shutdownWithError();
 });
 
+// Stejná politika jako u uncaughtException: neošetřené odmítnutí promise
+// znamená, že nějaká cesta kódem doběhla v nedefinovaném stavu.
+// (Dřív se tu jen logovalo, což bylo v rozporu s komentářem výš.)
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Kritická chyba: Unhandled Rejection at:', promise, 'reason:', reason);
+  if (process.env.NODE_ENV === 'test') return;
+  shutdownWithError();
 });
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
+
+// Za reverzní proxy / TLS terminátorem je jinak req.protocol vždy 'http'
+// a req.ip je IP proxy, což rozbíjí rate limiting podle klienta.
+// Pozor: Number('true') je NaN a Express pro NaN nedůvěřuje žádnému hopu,
+// takže nejpravděpodobnější zápis TRUST_PROXY=true by ochranu tiše vypnul.
+function parseTrustProxy(raw) {
+  if (!raw) return false;
+  const value = String(raw).trim();
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (/^\d+$/.test(value)) return Number(value);
+  return value; // IP, CIDR nebo seznam ('loopback', '10.0.0.0/8', ...)
+}
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rate limiting. Záměrně bez další závislosti — in-memory okno stačí pro
+// jednoinstanční nasazení, kterým aplikace dnes je (viz wsClients a
+// recentEventsCache). Při škálování na víc instancí nahradit Redisem.
+//
+// Chrání hlavně: /api/auraguard/report (veřejný, zapisuje do Firestore),
+// /api/trigger-test (brute-force sdíleného secretu) a audit endpointy
+// (každý request spouští Chromium).
+// ─────────────────────────────────────────────────────────────────────────────
+function rateLimit({ windowMs, max, keyFn = (req) => req.ip }) {
+  const hits = new Map();
+
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of hits) {
+      if (now > entry.resetAt) hits.delete(key);
+    }
+  }, windowMs);
+  if (typeof sweep.unref === 'function') sweep.unref();
+
+  return (req, res, next) => {
+    const key = keyFn(req) || 'unknown';
+    const now = Date.now();
+    const entry = hits.get(key);
+
+    if (!entry || now > entry.resetAt) {
+      hits.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    if (entry.count >= max) {
+      res.set('Retry-After', String(Math.ceil((entry.resetAt - now) / 1000)));
+      return res.status(429).json({ error: 'Příliš mnoho požadavků. Zkuste to za chvíli.' });
+    }
+    entry.count += 1;
+    next();
+  };
+}
+
+// Obecný strop pro celé API.
+const apiLimiter = rateLimit({ windowMs: 60_000, max: 300 });
+// Telemetrie je veřejná a zapisuje do DB — limit per projekt, ne per IP
+// (jeden web má mnoho návštěvníků s různými IP).
+// Klíčováno DVOJICÍ projekt+IP. Samotný `project` je neověřený vstup od
+// anonyma, takže by útočník posláním cizího klíče vyčerpal okno konkrétního
+// zákazníka (DoS jeho telemetrie). Samotná IP zase nefunguje, protože web
+// má mnoho návštěvníků.
+const reportLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 600,
+  keyFn: (req) => `${req.body?.project || 'unknown'}|${req.ip}`,
+});
+// Druhá vrstva: strop na projekt bez ohledu na IP, ale výrazně vyšší.
+const reportProjectLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 5000,
+  keyFn: (req) => req.body?.project || req.ip,
+});
+// Endpointy spouštějící prohlížeč nebo LLM — drahé, přísnější limit.
+const heavyLimiter = rateLimit({ windowMs: 60_000, max: 20 });
+// CI/CD trigger chráněný sdíleným secretem — brzda na brute-force.
+const triggerLimiter = rateLimit({ windowMs: 60_000, max: 10 });
 
 // CORS: veřejné SDK/telemetrické cesty mají otevřené CORS (volají je weby
 // zákazníků), zbytek API je omezen na povolené originy z ALLOWED_ORIGINS.
@@ -50,32 +155,186 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '10mb' }));
+// Artefakty mají vlastní, výrazně vyšší limit: stránka se session o padesáti
+// krocích načte padesát screenshotů najednou a obecných 300/min by na ni
+// nestačilo. Chráněné jsou capability tokenem, ne limitem.
+const artifactLimiter = rateLimit({ windowMs: 60_000, max: 2000 });
+app.use(['/api/screenshots', '/api/videos'], artifactLimiter);
+app.use('/api', apiLimiter);
 
-const __dirname = path.resolve();
-const screenshotsDir = path.join(__dirname, 'screenshots');
-if (!fs.existsSync(screenshotsDir)) {
-  fs.mkdirSync(screenshotsDir, { recursive: true });
-}
-app.use('/api/screenshots', express.static(screenshotsDir));
+// Cesty z paths.js, ne z process.cwd()/path.resolve() — agent.js zapisoval
+// jinam, než server.js servíroval, takže artefakty vracely 404, pokud se
+// server spustil z jiného adresáře.
+const screenshotsDir = ensureDir(SCREENSHOTS_DIR);
+const videosDir = ensureDir(VIDEOS_DIR);
 
-const videosDir = path.join(__dirname, 'videos');
-if (!fs.existsSync(videosDir)) {
-  fs.mkdirSync(videosDir, { recursive: true });
-}
-app.use('/api/videos', express.static(videosDir));
+// ─────────────────────────────────────────────────────────────────────────────
+// Artefakty (screenshoty, videa) byly dřív servírované přes express.static bez
+// autentizace. Názvy jsou `<sessionId>_step_N.png`, takže s dřívějším
+// predikovatelným sessionId (Date.now()) šly cizí screenshoty prostě uhodnout —
+// a ty typicky obsahují přihlášené obrazovky.
+//
+// Bearer token tu použít nejde: <img src> ani <video src> hlavičky neposílají.
+// Řešíme capability tokenem — každá session má `artifactToken` (128 bit),
+// který se posílá v query. Bez znalosti tokenu je artefakt nedostupný.
+// Jméno souboru navíc prochází regexem a servíruje se root-relativně, takže
+// neprojde path traversal.
+// ─────────────────────────────────────────────────────────────────────────────
+const ARTIFACT_NAME = /^[A-Za-z0-9_-]+\.(png|webm)$/;
 
-const sdkDir = path.join(__dirname, 'public/sdk');
-if (!fs.existsSync(sdkDir)) {
-  fs.mkdirSync(sdkDir, { recursive: true });
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
 }
-app.use('/sdk', express.static(sdkDir));
+
+function serveArtifact(dir) {
+  return async (req, res) => {
+    const name = req.params.file;
+    if (!ARTIFACT_NAME.test(name)) {
+      return res.status(400).json({ error: 'Neplatný název souboru.' });
+    }
+
+    const token = req.query.t;
+    if (!token) return res.status(401).json({ error: 'Chybí přístupový token artefaktu.' });
+
+    // Názvy artefaktů: `<sessionId>_step_<n>.png` a `<sessionId>_video.webm`
+    // (viz agent.js). Z obou se sessionId vytáhne odstraněním přípony.
+    const sessionId = name
+      .replace(/_step_\d+\.png$/, '')
+      .replace(/_video\.webm$/, '');
+    try {
+      const session = await db.getSession(sessionId);
+      if (!session || !session.artifactToken || !safeEqual(token, session.artifactToken)) {
+        return res.status(404).json({ error: 'Artefakt nenalezen.' });
+      }
+    } catch (err) {
+      console.error('Chyba ověření artefaktu:', err);
+      return res.status(500).json({ error: 'Artefakt se nepodařilo ověřit.' });
+    }
+
+    res.sendFile(name, { root: dir }, (err) => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'Artefakt nenalezen.' });
+    });
+  };
+}
+
+app.get('/api/screenshots/:file', serveArtifact(screenshotsDir));
+app.get('/api/videos/:file', serveArtifact(videosDir));
+
+app.use('/sdk', express.static(ensureDir(SDK_DIR)));
 
 const PORT = process.env.PORT || 3001;
+const MAX_AGENT_STEPS = parseInt(process.env.MAX_AGENT_STEPS, 10) || 50;
+// Veřejná adresa serveru. Dřív se do generovaného SDK reflektovala hlavička
+// Host z requestu — útočník s kontrolou nad Host (nebo přes cache poisoning)
+// tak mohl přesměrovat telemetrii zákazníků na vlastní server.
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
+// Sdílený kanál pro živou telemetrii; doručení je filtrované podle ws.userId.
+const GLOBAL_WS_CHANNEL = 'global_auraguard';
 
-// In-memory sessions store
-const sessions = new Map();
+const MAX_ANALYZED_EVENTS = 200;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Strop na souběžně běžící Playwright instance. Každý audit i test spouští
+// Chromium; bez limitu vyčerpá pár desítek paralelních požadavků RAM stroje.
+// ─────────────────────────────────────────────────────────────────────────────
+const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS, 10) || 3;
+// Strop, po kterém se slot uvolní i bez dokončené odpovědi (zamrzlý handler).
+const BROWSER_SLOT_MAX_HOLD_MS = parseInt(process.env.BROWSER_SLOT_MAX_HOLD_MS, 10) || 10 * 60_000;
+
+const browserSlots = {
+  inUse: 0,
+  tryAcquire() {
+    if (this.inUse >= MAX_CONCURRENT_BROWSERS) return false;
+    this.inUse += 1;
+    return true;
+  },
+  release() {
+    this.inUse = Math.max(0, this.inUse - 1);
+  },
+};
+
+/** Odmítne požadavek s 429, když nejsou volné sloty pro prohlížeč. */
+function browserSlotGuard(req, res, next) {
+  if (!browserSlots.tryAcquire()) {
+    res.set('Retry-After', '30');
+    return res.status(429).json({ error: 'Server právě zpracovává maximum souběžných testů. Zkuste to za chvíli.' });
+  }
+  // Slot se uvolní, až odpověď doopravdy skončí.
+  //
+  // Dřív se poslouchalo i na 'close', jenže ten padne i když se klient odpojí
+  // uprostřed zpracování — Chromium přitom běží dál. Šlo tak limit obejít
+  // spamováním požadavků a okamžitým odpojením.
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    browserSlots.release();
+  };
+  res.on('finish', release);
+  // Pojistka pro případ, že se odpověď nikdy neodešle (např. zamrzlý handler).
+  const safetyTimer = setTimeout(release, BROWSER_SLOT_MAX_HOLD_MS);
+  if (typeof safetyTimer.unref === 'function') safetyTimer.unref();
+  res.on('finish', () => clearTimeout(safetyTimer));
+  next();
+}
+
+// Whitelist polí, která smí klient měnit přes PATCH /api/monitors/:id.
+// Mimo něj zůstávají userId, lastRunTime, lastRunStatus, lastRunBugsCount.
+const MONITOR_PATCHABLE_FIELDS = [
+  'name', 'url', 'goal', 'interval', 'active', 'provider', 'model', 'host',
+  'maxSteps', 'mode', 'trackExceptions', 'trackPromiseRejections',
+  'trackLongTasks', 'trackNetworkErrors', 'slowApiThresholdMs',
+];
+
+// Pozn.: dřív tu byla in-memory `sessions` mapa — zapisovalo se do ní, ale
+// nikdy se z ní nečetlo, takže jen rostla. Zdrojem pravdy je Firestore.
 // WebSocket clients map: sessionId -> Set of WS connections
 const wsClients = new Map();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SSRF: middleware, které ověří uživatelem zadanou URL dřív, než na ni server
+// pošle prohlížeč nebo HTTP požadavek. Ověřenou URL dá do req.safeUrl.
+//
+// Dřív se assertPublicHttpUrl volal ručně jen na 3 endpointech z ~15 — právě
+// proto, že se handlery přidávaly kopírováním. Middleware to řeší systémově.
+// ─────────────────────────────────────────────────────────────────────────────
+function urlGuard(pick = (req) => req.body?.url) {
+  return async (req, res, next) => {
+    const raw = pick(req);
+    if (!raw) return res.status(400).json({ error: 'Chybí URL.' });
+    try {
+      req.safeUrl = await assertPublicHttpUrl(raw);
+      next();
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LLM host allowlist: `host` se dřív bral přímo z těla requestu a queryLLM na
+// něj poslal POST — tedy libovolný POST na interní službu. Host teď pochází
+// výhradně z konfigurace serveru; klient smí zvolit jen provider a model.
+// ─────────────────────────────────────────────────────────────────────────────
+const DEFAULT_LLM_HOST = process.env.LLM_HOST || 'http://localhost:11434';
+const ALLOWED_LLM_HOSTS = (process.env.ALLOWED_LLM_HOSTS || DEFAULT_LLM_HOST)
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+function resolveLlmHost(requested) {
+  if (!requested) return DEFAULT_LLM_HOST;
+  return ALLOWED_LLM_HOSTS.includes(requested) ? requested : DEFAULT_LLM_HOST;
+}
+
+function sanitizeLlmConfig(raw = {}) {
+  return {
+    provider: raw.provider || 'ollama',
+    model: raw.model || 'llama3',
+    host: resolveLlmHost(raw.host),
+  };
+}
 
 // Helper to broadcast step updates to WebSocket clients for a session
 function broadcastToSession(sessionId, data) {
@@ -130,17 +389,23 @@ app.get('/api/mock-translations', (req, res) => {
 });
 
 // 1. Run Autonomous Test
-app.post('/api/run-test', authenticateToken, async (req, res) => {
-  const { url, goal, model, host, headless, maxSteps, mode, provider, testLogin, testPassword } = req.body;
+app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (req, res) => {
+  const { goal, model, headless, maxSteps, mode, provider, testLogin, testPassword } = req.body;
+  const url = req.safeUrl;
 
-  if (!url || (mode !== 'monkey' && mode !== 'smart_monkey' && !goal)) {
-    return res.status(400).json({ error: 'Chybí URL nebo cíl testu.' });
+  if (mode !== 'monkey' && mode !== 'smart_monkey' && !goal) {
+    return res.status(400).json({ error: 'Chybí cíl testu.' });
   }
 
-  const sessionId = `session_${Date.now()}`;
+  // Nepredikovatelné ID: `session_${Date.now()}` šlo uhodnout (odposlech cizího
+  // WebSocketu, stahování cizích screenshotů) a při dvou requestech ve stejné
+  // milisekundě se session slily dohromady.
+  const sessionId = `session_${randomUUID()}`;
+  const artifactToken = randomUUID();
   const sessionData = {
     id: sessionId,
     userId: req.user.userId,
+    artifactToken,
     url,
     goal: mode === 'monkey' 
       ? 'Průzkumný test (Monkey Mode - bez AI)' 
@@ -152,25 +417,41 @@ app.post('/api/run-test', authenticateToken, async (req, res) => {
     timestamp: new Date().toISOString()
   };
 
-  sessions.set(sessionId, sessionData);
-  await db.saveSession(sessionId, sessionData);
+  // Express 4 nepředává odmítnuté promise z async handleru do error middleware,
+  // takže selhání zápisu tu dřív znamenalo request visící do timeoutu
+  // a jedinou stopou byl unhandledRejection.
+  try {
+    await db.saveSession(sessionId, sessionData);
+  } catch (err) {
+    console.error('Nepodařilo se založit session:', err);
+    return res.status(503).json({ error: 'Session se nepodařilo založit. Zkuste to znovu.' });
+  }
 
   // Return sessionId immediately, run Playwright test in background
-  res.json({ sessionId, status: 'running' });
+  res.json({ sessionId, artifactToken, status: 'running' });
 
   // Background agent run
   const llmConfig = {
-    provider: provider || 'ollama',
-    model: model || 'llama3',
-    host: host || 'http://localhost:11434',
-    headless: headless !== false,
-    maxSteps: parseInt(maxSteps) || 10,
+    ...sanitizeLlmConfig({ provider, model, host: req.body.host }),
+    // headless natvrdo true mimo dev — klient si nesmí na serveru otevřít GUI
+    // prohlížeč, a maxSteps má strop, aby jeden request nevytížil stroj.
+    headless: process.env.NODE_ENV === 'production' ? true : headless !== false,
+    maxSteps: Math.min(Math.max(parseInt(maxSteps) || 10, 1), MAX_AGENT_STEPS),
     mode: mode || 'ai',
     testLogin: testLogin || '',
     testPassword: testPassword || ''
   };
 
+  // Test běží na pozadí až po odeslání odpovědi, takže slot pro prohlížeč
+  // se drží ručně (res.finish by ho uvolnil předčasně).
   (async () => {
+    if (!browserSlots.tryAcquire()) {
+      sessionData.status = 'failed';
+      sessionData.summary = 'Server zpracovává maximum souběžných testů. Zkuste to znovu za chvíli.';
+      await db.saveSession(sessionId, sessionData).catch(() => {});
+      broadcastToSession(sessionId, { type: 'failed', error: sessionData.summary, summary: sessionData.summary });
+      return;
+    }
     try {
       try {
         if (mode === 'crawler') {
@@ -189,7 +470,8 @@ app.post('/api/run-test', authenticateToken, async (req, res) => {
               if (stepInfo.step === 0) return;
               stepInfo.action = `[${new URL(targetUrl).pathname}] ${stepInfo.action || ''}`;
               sessionData.steps.push(stepInfo);
-              db.saveSession(sessionId, sessionData);
+              db.saveSession(sessionId, sessionData)
+                .catch((e) => console.error('Uložení kroku selhalo:', e.message));
               broadcastToSession(sessionId, { type: 'step', step: stepInfo });
             }, sessionId);
 
@@ -226,12 +508,16 @@ app.post('/api/run-test', authenticateToken, async (req, res) => {
               return;
             }
             sessionData.steps.push(stepInfo);
-            db.saveSession(sessionId, sessionData);
+            db.saveSession(sessionId, sessionData)
+              .catch((e) => console.error('Uložení kroku selhalo:', e.message));
             broadcastToSession(sessionId, { type: 'step', step: stepInfo });
           }, sessionId);
 
           sessionData.status = 'completed';
           sessionData.bugs = result.bugs;
+          // Výkonnostní varování se dřív nikam nepropsala — agent je odděluje
+          // od bugů, ale žádný konzument je nečetl.
+          sessionData.warnings = result.warnings || [];
           sessionData.summary = result.summary;
           sessionData.performanceMetrics = result.performanceMetrics;
           sessionData.generatedScript = result.generatedScript;
@@ -241,6 +527,7 @@ app.post('/api/run-test', authenticateToken, async (req, res) => {
           broadcastToSession(sessionId, {
             type: 'completed',
             bugs: result.bugs,
+            warnings: result.warnings || [],
             summary: result.summary,
             success: result.success,
             performanceMetrics: result.performanceMetrics,
@@ -283,6 +570,8 @@ app.post('/api/run-test', authenticateToken, async (req, res) => {
         error: criticalErr.message,
         summary: `Interní chyba serveru: ${criticalErr.message}`
       });
+    } finally {
+      browserSlots.release();
     }
   })();
 });
@@ -297,13 +586,15 @@ function requireTriggerSecret(req, res, next) {
   }
   const header = req.headers['authorization'] || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token || token !== secret) {
+  // Přímé !== prosakuje délku i pozici prvního rozdílu (timing).
+  // Správný vzor je v repu už použit ve slack-verify.js.
+  if (!token || !safeEqual(token, secret)) {
     return res.status(401).json({ error: 'Neplatný nebo chybějící trigger token.' });
   }
   next();
 }
 
-app.post('/api/trigger-test', requireTriggerSecret, async (req, res) => {
+app.post('/api/trigger-test', triggerLimiter, requireTriggerSecret, browserSlotGuard, async (req, res) => {
   const { url, goal, mode, headless, maxSteps, testLogin, testPassword } = req.body;
   if (!url) return res.status(400).json({ error: 'Chybí URL pro test.' });
 
@@ -336,20 +627,36 @@ app.post('/api/trigger-test', requireTriggerSecret, async (req, res) => {
 
 // --- AURAAURAGUARD SYNTHETIC MONITORS & TELEMETRY ---
 
-// Helper to broadcast to all WebSocket clients regardless of sessionId
-function broadcastToAll(data) {
+// Dřív tu bylo broadcastToAll(), které posílalo monitory a telemetrii VŠECH
+// uživatelů každému připojenému klientovi. Teď se doručuje jen vlastníkovi.
+function broadcastToUser(userId, data) {
+  if (!userId) return;
   const payload = JSON.stringify(data);
   wsClients.forEach((clientsSet) => {
     clientsSet.forEach((ws) => {
-      if (ws.readyState === 1) { // OPEN
+      if (ws.readyState === 1 && ws.userId === userId) {
         ws.send(payload);
       }
     });
   });
 }
 
-// Background scheduler running every minute
-const schedulerInterval = setInterval(async () => {
+// ─────────────────────────────────────────────────────────────────────────────
+// Plánovač monitorů.
+//
+// Dřív to byl setInterval s async callbackem: když jeden tik trval déle než
+// 60 s (getAllActiveMonitors + N síťových updateMonitor), spustil se další
+// paralelně. Teď se další tik plánuje až po dokončení předchozího.
+//
+// Pozn.: plánovač běží v každé instanci procesu. Rezervace přes lastRunTime
+// (read-then-write) není atomická, takže při víc instancích může monitor
+// naskočit dvakrát. Pro víceinstanční nasazení je potřeba Firestore
+// transakce nebo externí scheduler — viz TODO níž.
+// ─────────────────────────────────────────────────────────────────────────────
+const SCHEDULER_TICK_MS = 60000;
+let schedulerTimer = null;
+
+async function schedulerTick() {
   try {
     const activeMonitors = await db.getAllActiveMonitors();
     const now = Date.now();
@@ -367,15 +674,27 @@ const schedulerInterval = setInterval(async () => {
       const lastRun = monitor.lastRunTime || 0;
 
       if (now - lastRun >= intervalMs) {
-        // Update lastRunTime in db immediately to prevent duplicate runs
+        // Rezervace slotu. TODO: převést na Firestore transakci (uvnitř znovu
+        // přečíst lastRunTime a zapsat jen když je stále starý) — dnešní
+        // read-then-write není atomická napříč instancemi.
         await db.updateMonitor(monitor.id, { lastRunTime: now });
 
-        const sessionId = `session_monitor_${monitor.id}_${Date.now()}`;
+        // Strop na souběžné běhy: bez něj znamená 50 aktivních monitorů
+        // 50 současně spuštěných Chromium procesů.
+        //
+        // Slot se bere až těsně před spuštěním testu. Dřív se bral tady nahoře,
+        // ale mezi tím byl `await db.saveSession(...)` mimo try/finally —
+        // selhání zápisu (kvóta, síť) slot NIKDY neuvolnilo a po několika
+        // takových chybách se plánovač i audity zablokovaly natrvalo.
+        //
+        // sessionId musí být nepredikovatelné — je součástí názvu screenshotů.
+        const sessionId = `session_monitor_${randomUUID()}`;
         console.log(`[AuraAuraGuard] Spouštím monitor: ${monitor.name} (${monitor.url}) -> ${sessionId}`);
 
         const sessionData = {
           id: sessionId,
           userId: monitor.userId,
+          artifactToken: randomUUID(),
           url: monitor.url,
           goal: monitor.goal,
           status: 'running',
@@ -386,14 +705,27 @@ const schedulerInterval = setInterval(async () => {
           isSynthetic: true,
           monitorId: monitor.id
         };
-        await db.saveSession(sessionId, sessionData);
+        try {
+          await db.saveSession(sessionId, sessionData);
+        } catch (err) {
+          console.error(`[AuraAuraGuard] Nepodařilo se založit session monitoru ${monitor.name}:`, err.message);
+          continue;
+        }
+
+        if (!browserSlots.tryAcquire()) {
+          console.warn(`[AuraAuraGuard] Monitor ${monitor.name} odložen: vyčerpán limit souběžných prohlížečů.`);
+          // Rezervaci vrátíme, aby se monitor zkusil znovu v dalším tiku
+          // a nečekal celý svůj interval.
+          await db.updateMonitor(monitor.id, { lastRunTime: lastRun }).catch(() => {});
+          continue;
+        }
 
         const llmConfig = {
-          provider: monitor.provider || 'ollama',
-          model: monitor.model || 'llama3',
-          host: monitor.host || 'http://localhost:11434',
+          // Host prochází allowlistem i tady — do DB se mohl dostat dřív,
+          // než PATCH /api/monitors začal validovat.
+          ...sanitizeLlmConfig({ provider: monitor.provider, model: monitor.model, host: monitor.host }),
           headless: true,
-          maxSteps: monitor.maxSteps || 10,
+          maxSteps: Math.min(Math.max(monitor.maxSteps || 10, 1), MAX_AGENT_STEPS),
           mode: 'ai',
           trackExceptions: monitor.trackExceptions !== false,
           trackPromiseRejections: monitor.trackPromiseRejections !== false,
@@ -411,7 +743,9 @@ const schedulerInterval = setInterval(async () => {
               (progress) => {
                 if (progress.step === 0) return;
                 sessionData.steps.push(progress);
-                db.saveSession(sessionId, sessionData);
+                // Bez .catch() končilo selhání zápisu jako unhandled rejection.
+                db.saveSession(sessionId, sessionData)
+                  .catch((e) => console.error('Uložení kroku monitoru selhalo:', e.message));
                 broadcastToSession(sessionId, { type: 'step', step: progress });
               },
               sessionId
@@ -419,6 +753,9 @@ const schedulerInterval = setInterval(async () => {
 
             sessionData.status = 'completed';
             sessionData.bugs = result.bugs;
+            // Výkonnostní varování se dřív nikam nepropsala — agent je odděluje
+            // od bugů, ale žádný konzument je nečetl.
+            sessionData.warnings = result.warnings || [];
             sessionData.summary = result.summary;
             sessionData.performanceMetrics = result.performanceMetrics;
             sessionData.generatedScript = result.generatedScript;
@@ -431,7 +768,7 @@ const schedulerInterval = setInterval(async () => {
             });
 
             const userMonitors = await db.getMonitors(monitor.userId);
-            broadcastToAll({ type: 'monitors_updated', monitors: userMonitors });
+            broadcastToUser(monitor.userId, { type: 'monitors_updated', monitors: userMonitors });
           } catch (err) {
             console.error(`[AuraAuraGuard] Monitor ${monitor.name} selhal:`, err.message);
             sessionData.status = 'failed';
@@ -441,7 +778,9 @@ const schedulerInterval = setInterval(async () => {
             await db.updateMonitor(monitor.id, { lastRunStatus: 'error' });
 
             const userMonitors = await db.getMonitors(monitor.userId);
-            broadcastToAll({ type: 'monitors_updated', monitors: userMonitors });
+            broadcastToUser(monitor.userId, { type: 'monitors_updated', monitors: userMonitors });
+          } finally {
+            browserSlots.release();
           }
         })();
       }
@@ -449,10 +788,34 @@ const schedulerInterval = setInterval(async () => {
   } catch (err) {
     console.error('Chyba plánovače na pozadí:', err.message);
   }
-}, 60000);
+}
 
-if (schedulerInterval && typeof schedulerInterval.unref === 'function') {
-  schedulerInterval.unref();
+function scheduleNextTick() {
+  schedulerTimer = setTimeout(async () => {
+    await schedulerTick();
+    scheduleNextTick();
+  }, SCHEDULER_TICK_MS);
+  if (typeof schedulerTimer.unref === 'function') schedulerTimer.unref();
+}
+
+if (process.env.NODE_ENV !== 'test') {
+  scheduleNextTick();
+}
+
+// Bez tohohle se `schedulerTimer` jen přiřazoval a nikdy nerušil, takže
+// aplikace neuměla korektně skončit (a v Dockeru navíc npm jako PID 1
+// SIGTERM ani nepředával — viz Dockerfile).
+function gracefulShutdown(signal) {
+  console.log(`Přijat ${signal}, ukončuji…`);
+  if (schedulerTimer) clearTimeout(schedulerTimer);
+  wss.clients.forEach((ws) => ws.close(1001, 'Server se ukončuje'));
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10_000);
+}
+
+if (process.env.NODE_ENV !== 'test') {
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
 // REST Endpoints for Projects
@@ -500,22 +863,22 @@ app.get('/api/monitors', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/monitors', authenticateToken, async (req, res) => {
-  const { name, url, goal, interval, provider, model, host, maxSteps, trackExceptions, trackPromiseRejections, trackLongTasks, trackNetworkErrors, slowApiThresholdMs } = req.body;
-  if (!name || !url) {
-    return res.status(400).json({ error: 'Chybí název nebo URL monitoru.' });
+// urlGuard je tu podstatný: uloženou URL volá scheduler opakovaně, takže bez
+// kontroly by šlo založit persistentní SSRF na interní adresu.
+app.post('/api/monitors', authenticateToken, urlGuard(), async (req, res) => {
+  const { name, goal, interval, provider, model, host, maxSteps, trackExceptions, trackPromiseRejections, trackLongTasks, trackNetworkErrors, slowApiThresholdMs } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: 'Chybí název monitoru.' });
   }
 
   try {
     const newMonitor = await db.createMonitor(req.user.userId, {
       name,
-      url,
+      url: req.safeUrl,
       goal: goal || 'Prohledej stránku a najdi jakékoliv chyby',
       interval: interval || '1h',
-      provider: provider || 'ollama',
-      model: model || 'llama3',
-      host: host || 'http://localhost:11434',
-      maxSteps: parseInt(maxSteps) || 10,
+      ...sanitizeLlmConfig({ provider, model, host }),
+      maxSteps: Math.min(Math.max(parseInt(maxSteps) || 10, 1), MAX_AGENT_STEPS),
       trackExceptions: trackExceptions !== false,
       trackPromiseRejections: trackPromiseRejections !== false,
       trackLongTasks: trackLongTasks !== false,
@@ -534,7 +897,28 @@ app.patch('/api/monitors/:id', authenticateToken, async (req, res) => {
     if (!monitor) return res.status(404).json({ error: 'Monitor nenalezen.' });
     if (monitor.userId !== req.user.userId) return res.status(403).json({ error: 'Přístup odepřen.' });
 
-    const updated = await db.updateMonitor(req.params.id, req.body);
+    // Mass assignment: dřív šlo celé req.body rovnou do docRef.update(), takže
+    // uživatel mohl přepsat userId (a ukrást cizí monitor) nebo lastRunTime.
+    const patch = {};
+    for (const key of MONITOR_PATCHABLE_FIELDS) {
+      if (Object.hasOwn(req.body, key)) patch[key] = req.body[key];
+    }
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: 'Žádné povolené pole k úpravě.' });
+    }
+
+    // URL smí být jen veřejná — monitor ji periodicky volá ze serveru.
+    if (patch.url) {
+      try {
+        patch.url = await assertPublicHttpUrl(patch.url);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    }
+    if (patch.host) patch.host = resolveLlmHost(patch.host);
+    if (patch.maxSteps) patch.maxSteps = Math.min(Math.max(parseInt(patch.maxSteps) || 10, 1), MAX_AGENT_STEPS);
+
+    const updated = await db.updateMonitor(req.params.id, patch);
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -567,97 +951,132 @@ app.get('/api/auraguard/events', authenticateToken, async (req, res) => {
 // Endpoint pro manuální spuštění AI bezpečnostní analýzy
 app.post('/api/auraguard/analyze-security', authenticateToken, async (req, res) => {
   try {
-    const { events } = req.body; // Můžeme poslat vybrané události
-    if (!events || !Array.isArray(events)) {
-      return res.status(400).json({ error: 'Missing or invalid events array' });
+    // Dřív se sem posílal celý obsah událostí od klienta bez ověření — endpoint
+    // tak fungoval jako neomezená LLM proxy a otevíral prompt injection přes
+    // events[].data.message, jejíž výstup se uživateli zobrazí jako bezpečnostní
+    // doporučení. Teď přijímáme jen ID a data načítáme serverem.
+    const { eventIds } = req.body;
+    if (!Array.isArray(eventIds) || eventIds.length === 0) {
+      return res.status(400).json({ error: 'Chybí seznam ID událostí (eventIds).' });
     }
-    
-    // Validace, že události patří projektům uživatele (zjednodušeně, ověřujeme na frontendu)
-    // Ideálně by server ještě zkontroloval, jestli event.project patří req.user.userId
-    
+    if (eventIds.length > MAX_ANALYZED_EVENTS) {
+      return res.status(400).json({ error: `Najednou lze analyzovat nejvýše ${MAX_ANALYZED_EVENTS} událostí.` });
+    }
+
+    const owned = await db.getAuraGuardEvents(req.user.userId);
+    const ownedById = new Map(owned.map((e) => [e.id, e]));
+    const events = eventIds.map((id) => ownedById.get(id)).filter(Boolean);
+
+    if (events.length === 0) {
+      return res.status(404).json({
+        error: 'Žádná z uvedených událostí nebyla nalezena mezi vašimi nedávnými událostmi.'
+      });
+    }
+
+    // getAuraGuardEvents vrací jen posledních 500 událostí, takže starší ID
+    // tiše propadnou. Bez téhle informace vypadá výsledek jako úplný.
+    const missing = eventIds.filter((id) => !ownedById.has(id));
+
     const analysis = await analyzeSecurityVulnerabilities(events, { provider: 'ollama', model: 'llama3' });
-    res.json({ analysis });
+    res.json({
+      analysis,
+      analyzedCount: events.length,
+      skippedCount: missing.length,
+      ...(missing.length > 0 && {
+        note: `${missing.length} událostí nebylo nalezeno mezi posledními 500 — analýza je nezahrnuje.`
+      })
+    });
   } catch (err) {
     console.error('Error during security analysis:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Bezpečnostní analýza selhala.' });
   }
 });
 
-app.post('/api/auraguard/analyze-accessibility', authenticateToken, async (req, res) => {
-  try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'Chybí URL pro audit' });
-    
-    const report = await auditAccessibility(url);
-    res.json(report);
-  } catch (err) {
-    console.error('Error during accessibility audit:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+// ─────────────────────────────────────────────────────────────────────────────
+// Audit endpointy — dřív 8 doslova identických handlerů (validace url → zavolat
+// funkci → res.json). Kopírování bylo důvod, proč u všech osmi chyběla SSRF
+// kontrola. Teď je registrace tabulková: jedno místo = jeden urlGuard.
+// Cesty zůstávají stejné kvůli kompatibilitě s frontendem.
+// ─────────────────────────────────────────────────────────────────────────────
+const URL_AUDITS = {
+  'analyze-accessibility': auditAccessibility,
+  'analyze-nis2': auditNIS2AndPQC,
+  'analyze-green-gdpr': auditGreenAndResidency,
+  'analyze-cra': auditCRA_SBOM,
+  'chaos-test': runChaosTest,
+  'ai-act-audit': auditAIAct,
+  'cookie-audit': auditStrictCookies,
+  'cra-vuln-audit': auditCRAVulnerabilities,
+};
 
-app.post('/api/auraguard/analyze-nis2', authenticateToken, async (req, res) => {
-  try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'Chybí URL pro audit' });
-    
-    const report = await auditNIS2AndPQC(url);
-    res.json(report);
-  } catch (err) {
-    console.error('Error during NIS2 audit:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/auraguard/analyze-green-gdpr', authenticateToken, async (req, res) => {
-  try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'Chybí URL pro audit' });
-    
-    const report = await auditGreenAndResidency(url);
-    res.json(report);
-  } catch (err) {
-    console.error('Error during Green/GDPR audit:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/auraguard/analyze-cra', authenticateToken, async (req, res) => {
-  try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'Chybí URL pro CRA SBOM audit' });
-    
-    const report = await auditCRA_SBOM(url);
-    res.json(report);
-  } catch (err) {
-    console.error('Error during CRA SBOM audit:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+for (const [slug, auditFn] of Object.entries(URL_AUDITS)) {
+  app.post(`/api/auraguard/${slug}`, authenticateToken, heavyLimiter, browserSlotGuard, urlGuard(), async (req, res) => {
+    try {
+      res.json(await auditFn(req.safeUrl));
+    } catch (err) {
+      console.error(`Audit ${slug} selhal:`, err);
+      res.status(500).json({ error: `Audit ${slug} selhal.` });
+    }
+  });
+}
 
 app.post('/api/auraguard/auto-heal', authenticateToken, async (req, res) => {
   try {
     const { eventData, llmConfig } = req.body;
     if (!eventData) return res.status(400).json({ error: 'Chybí data události' });
-    
-    const result = await generateAutoHealPatch(eventData, llmConfig || {});
+
+    // llmConfig.host z těla requestu se ignoruje (SSRF) — viz sanitizeLlmConfig.
+    const result = await generateAutoHealPatch(eventData, sanitizeLlmConfig(llmConfig));
     res.json({ patch: result.text || result.response || result });
   } catch (err) {
     console.error('Error during Auto-Heal:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Auto-Heal selhal.' });
   }
 });
 
-app.post('/api/auraguard/chaos-test', authenticateToken, async (req, res) => {
+/**
+ * Odeslání reportu na Slack incoming webhook.
+ *
+ * Dřív to frontend posílal přímo z prohlížeče. Slack u incoming webhooků
+ * neposílá CORS hlavičky, takže request VŽDY selhal — a catch blok pak
+ * uživateli zobrazil "Report odeslán (Simulace)". Navíc byl webhook (tajemství)
+ * vystavený v klientském kódu a v DevTools.
+ */
+app.post('/api/notify/slack', authenticateToken, async (req, res) => {
+  const { webhookUrl, text } = req.body;
+  if (!webhookUrl || !text) {
+    return res.status(400).json({ error: 'Chybí webhookUrl nebo text.' });
+  }
+
+  let safeWebhook;
   try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'Chybí URL pro DORA Chaos test' });
-    
-    const report = await runChaosTest(url);
-    res.json(report);
+    safeWebhook = await assertPublicHttpUrl(webhookUrl);
+    if (new URL(safeWebhook).hostname !== 'hooks.slack.com') {
+      return res.status(400).json({ error: 'Povolené jsou pouze webhooky na hooks.slack.com.' });
+    }
   } catch (err) {
-    console.error('Error during DORA Chaos test:', err);
-    res.status(500).json({ error: err.message });
+    return res.status(400).json({ error: `Neplatná adresa webhooku: ${err.message}` });
+  }
+
+  try {
+    const slackRes = await fetch(safeWebhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({ text: String(text).slice(0, 3000) }),
+    });
+
+    if (!slackRes.ok) {
+      const detail = await slackRes.text().catch(() => '');
+      console.error('Slack webhook odmítl zprávu:', slackRes.status, detail);
+      return res.status(502).json({ error: `Slack zprávu odmítl (HTTP ${slackRes.status}).` });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Odeslání na Slack selhalo:', err);
+    res.status(502).json({ error: 'Odeslání na Slack selhalo.' });
   }
 });
 
@@ -671,46 +1090,9 @@ app.get('/api/auraguard/grid-status', authenticateToken, (req, res) => {
   }
 });
 
-app.post('/api/auraguard/ai-act-audit', authenticateToken, async (req, res) => {
+app.post('/api/auraguard/monitor-page', authenticateToken, urlGuard((req) => req.body?.target?.url), async (req, res) => {
   try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'Chybí URL' });
-    const report = await auditAIAct(url);
-    res.json(report);
-  } catch (err) {
-    console.error('Error during AI Act audit:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/auraguard/cookie-audit', authenticateToken, async (req, res) => {
-  try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'Chybí URL' });
-    const report = await auditStrictCookies(url);
-    res.json(report);
-  } catch (err) {
-    console.error('Error during Cookie audit:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/auraguard/cra-vuln-audit', authenticateToken, async (req, res) => {
-  try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'URL je povinné.' });
-    const result = await auditCRAVulnerabilities(url);
-    res.json(result);
-  } catch (error) {
-    console.error('CRA Vuln Audit error:', error);
-    res.status(500).json({ error: error.message || 'CRA Vuln selhal' });
-  }
-});
-
-app.post('/api/auraguard/monitor-page', authenticateToken, async (req, res) => {
-  try {
-    const { target } = req.body;
-    if (!target || !target.url) return res.status(400).json({ error: 'Cíl monitoringu (url) je povinný.' });
+    const target = { ...req.body.target, url: req.safeUrl };
     const result = await checkPage(target);
     
     // Slack notifikace při výpadku
@@ -718,7 +1100,7 @@ app.post('/api/auraguard/monitor-page', authenticateToken, async (req, res) => {
       const channel = process.env.SLACK_CHANNEL || '#general';
       const blocks = [
         { type: 'section', text: { type: 'mrkdwn', text: `*Detail chyby:*\n${result.error || 'Neznámá chyba'}` } },
-        { type: 'context', elements: [{ type: 'mrkdwn', text: `Odezva: ${result.responseTime}ms` }] },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: `Odezva: ${result.durationMs ?? '?'}ms` }] },
         { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Zkontrolovat znovu', emoji: true }, style: 'primary', value: target.url, action_id: 'run_audit_again' }] }
       ];
       await sendSlackNotification(channel, 'AuraGuard: VÝPADEK WEBU', `Stránka *${target.url}* neodpovídá správně!`, true, blocks, 'uptime');
@@ -731,10 +1113,9 @@ app.post('/api/auraguard/monitor-page', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/auraguard/monitor-form', authenticateToken, async (req, res) => {
+app.post('/api/auraguard/monitor-form', authenticateToken, urlGuard((req) => req.body?.target?.url), async (req, res) => {
   try {
-    const { target } = req.body;
-    if (!target || !target.url) return res.status(400).json({ error: 'Cíl formuláře (url) je povinný.' });
+    const target = { ...req.body.target, url: req.safeUrl };
     const result = await checkForm(target);
 
     // Slack notifikace při chybě formuláře
@@ -742,7 +1123,7 @@ app.post('/api/auraguard/monitor-form', authenticateToken, async (req, res) => {
       const channel = process.env.SLACK_CHANNEL || '#general';
       const blocks = [
         { type: 'section', text: { type: 'mrkdwn', text: `*Detail chyby:*\n${result.error || 'Formulář nešel odeslat'}` } },
-        { type: 'context', elements: [{ type: 'mrkdwn', text: `Odezva: ${result.responseTime}ms` }] }
+        { type: 'context', elements: [{ type: 'mrkdwn', text: `Odezva: ${result.durationMs ?? '?'}ms` }] }
       ];
       await sendSlackNotification(channel, 'AuraGuard: CHYBA FORMULÁŘE', `Formulář na *${target.url}* selhal v odeslání.`, true, blocks, 'uptime');
     }
@@ -759,7 +1140,14 @@ app.post('/api/auraguard/monitor-form', authenticateToken, async (req, res) => {
 // Slack route zachytává RAW tělo (express.raw), aby šlo ověřit podpis.
 app.post('/api/slack/events', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
   try {
-    const rawBody = req.body; // Buffer (díky express.raw)
+    // Když globální express.json tělo už zpracoval (Content-Type: application/json),
+    // express.raw se přeskočí a req.body je objekt. Syrové tělo si proto bereme
+    // z req.rawBody, které ukládá `verify` callback u express.json.
+    const rawBody = Buffer.isBuffer(req.body) ? req.body : req.rawBody;
+    if (!rawBody) {
+      console.warn('[Slack] Chybí syrové tělo požadavku, nelze ověřit podpis.');
+      return res.status(400).send('Chybí tělo požadavku');
+    }
 
     // Ověření pravosti požadavku podle Slack podpisu (v0).
     const verdict = verifySlackRequest(rawBody, req.headers);
@@ -812,11 +1200,40 @@ app.post('/api/slack/events', express.raw({ type: '*/*', limit: '1mb' }), async 
   }
 });
 
-// Uchování v paměti nedávných eventů pro deduplikaci (v produkci použít např. Redis)
-const recentEventsCache = new Map();
+// ─────────────────────────────────────────────────────────────────────────────
+// Deduplikace nedávných eventů.
+//
+// Dřív to byla obyčejná Map, jejíž TTL se kontrolovalo jen při čtení —
+// expirované položky se nikdy nemazaly. Signatura obsahuje message, filename
+// i lineno, takže útočník na veřejném endpointu vygeneroval neomezeně
+// unikátních klíčů → OOM. Teď LRU se stropem a periodickým úklidem.
+//
+// Stále per-proces: po restartu se okno ztratí a při víc instancích
+// deduplikace nefunguje napříč. Pro víceinstanční nasazení nahradit Redisem.
+// ─────────────────────────────────────────────────────────────────────────────
 const CACHE_TTL_MS = 60 * 60 * 1000; // 60 minut
+const CACHE_MAX_ENTRIES = parseInt(process.env.EVENT_CACHE_MAX_ENTRIES, 10) || 10000;
 
-app.post('/api/auraguard/report', async (req, res) => {
+const recentEventsCache = new Map();
+
+function cacheEvent(signature, entry) {
+  // Map si drží pořadí vložení, takže nejstarší klíč je první.
+  if (recentEventsCache.size >= CACHE_MAX_ENTRIES) {
+    const oldestKey = recentEventsCache.keys().next().value;
+    recentEventsCache.delete(oldestKey);
+  }
+  recentEventsCache.set(signature, entry);
+}
+
+const eventCacheSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of recentEventsCache) {
+    if (now - entry.lastSeen >= CACHE_TTL_MS) recentEventsCache.delete(key);
+  }
+}, CACHE_TTL_MS / 4);
+if (typeof eventCacheSweep.unref === 'function') eventCacheSweep.unref();
+
+app.post('/api/auraguard/report', reportLimiter, reportProjectLimiter, async (req, res) => {
   const { project, type, data, timestamp } = req.body;
   if (!project) return res.status(400).json({ error: 'Chybí ID projektu.' });
 
@@ -825,11 +1242,27 @@ app.post('/api/auraguard/report', async (req, res) => {
     if (!proj) return res.status(404).json({ error: 'Projekt nebyl nalezen nebo je neaktivní.' });
     if (!proj.active) return res.status(403).json({ error: 'Projekt je deaktivován.' });
 
-    // Ověření povolených domén (Origin check)
-    const origin = req.headers.origin || req.headers.referer;
-    if (proj.allowedOrigins && proj.allowedOrigins.length > 0 && origin) {
-      const match = proj.allowedOrigins.some(o => origin.startsWith(o));
-      if (!match) {
+    // Ověření povolených domén (Origin check).
+    //
+    // Dřív: `... && origin` — když útočník hlavičku Origin vůbec neposlal
+    // (curl, server-to-server), kontrola se CELÁ přeskočila. A `startsWith`
+    // propustil `https://example.com.evil.com` pro allowlist `https://example.com`.
+    // Teď: chybějící Origin = odmítnutí, porovnává se normalizovaný origin.
+    if (proj.allowedOrigins && proj.allowedOrigins.length > 0) {
+      const originHeader = req.headers.origin || req.headers.referer;
+      if (!originHeader) {
+        return res.status(403).json({ error: 'Přístup zamítnut. Chybí hlavička Origin.' });
+      }
+      let requestOrigin;
+      try {
+        requestOrigin = new URL(originHeader).origin;
+      } catch {
+        return res.status(403).json({ error: 'Přístup zamítnut. Neplatná hlavička Origin.' });
+      }
+      const allowed = proj.allowedOrigins.some((o) => {
+        try { return new URL(o).origin === requestOrigin; } catch { return false; }
+      });
+      if (!allowed) {
         return res.status(403).json({ error: 'Přístup zamítnut. Nepovolená doména odesílatele.' });
       }
     }
@@ -847,19 +1280,13 @@ app.post('/api/auraguard/report', async (req, res) => {
         cachedEvent.count += 1;
         cachedEvent.lastSeen = Date.now();
         
-        // Aktualizace existujícího záznamu v DB (pokud by to bylo žádoucí) - pro jednoduchost zde jen notifikujeme WSS
-        // Notifikujeme frontend (WSS), že počet se zvýšil
-        if (req.app.locals.wss) {
-          req.app.locals.wss.clients.forEach(client => {
-            if (client.readyState === 1 && client.projectId === project) {
-              client.send(JSON.stringify({ 
-                type: 'event_deduplicated', 
-                data: { id: cachedEvent.id, count: cachedEvent.count, timestamp: new Date().toISOString() } 
-              }));
-            }
-          });
-        }
-        
+        // Dřív se tu notifikovalo přes `req.app.locals.wss`, které se nikde
+        // nenastavovalo (a ws.projectId taky ne) — celá větev byla no-op.
+        broadcastToUser(proj.userId, {
+          type: 'event_deduplicated',
+          data: { id: cachedEvent.id, count: cachedEvent.count, timestamp: new Date().toISOString() }
+        });
+
         return res.status(200).json({ success: true, deduplicated: true, count: cachedEvent.count });
       }
     }
@@ -872,13 +1299,10 @@ app.post('/api/auraguard/report', async (req, res) => {
     });
     
     // Uložení do deduplikační cache
-    recentEventsCache.set(eventSignature, {
-      id: newEvent.id,
-      count: 1,
-      lastSeen: Date.now()
-    });
+    cacheEvent(eventSignature, { id: newEvent.id, count: 1, lastSeen: Date.now() });
 
-    broadcastToAll({ type: 'auraguard_live_event', event: newEvent });
+    // Telemetrie jde jen vlastníkovi projektu, ne všem připojeným klientům.
+    broadcastToUser(proj.userId, { type: 'auraguard_live_event', event: newEvent });
     res.json({ success: true, eventId: newEvent.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -886,7 +1310,21 @@ app.post('/api/auraguard/report', async (req, res) => {
 });
 
 app.get('/api/auraguard/sdk.js', (req, res) => {
+  // Bez PUBLIC_BASE_URL se dřív reflektovala hlavička Host — útočník s kontrolou
+  // nad ní (nebo přes cache poisoning na CDN) přesměroval telemetrii zákazníků
+  // na vlastní server. Fail-closed: bez konfigurace SDK negenerujeme.
+  const reportBaseUrl = PUBLIC_BASE_URL
+    || (process.env.NODE_ENV === 'production' ? null : `${req.protocol}://${req.get('host')}`);
+
+  if (!reportBaseUrl) {
+    return res.status(503)
+      .type('text/plain')
+      .send('// AuraGuard SDK není nakonfigurováno: chybí PUBLIC_BASE_URL na serveru.');
+  }
+
   res.setHeader('Content-Type', 'application/javascript');
+  // Odpověď závisí na konfiguraci, ne na požadavku — ale ať ji CDN nemíchá.
+  res.setHeader('Cache-Control', 'public, max-age=300');
   res.send(`
 (function() {
   const scriptTag = document.currentScript;
@@ -894,19 +1332,51 @@ app.get('/api/auraguard/sdk.js', (req, res) => {
   const trackErrors = scriptTag ? scriptTag.getAttribute('data-track-errors') !== 'false' : true;
   const trackPerf = scriptTag ? scriptTag.getAttribute('data-track-perf') !== 'false' : true;
   const slowThreshold = parseInt(scriptTag ? scriptTag.getAttribute('data-slow-api-threshold') : '1500') || 1500;
-  const reportUrl = '${req.protocol}://${req.get('host')}/api/auraguard/report';
+  const reportUrl = '${reportBaseUrl}/api/auraguard/report';
 
   if (!project) {
     console.error('[AuraAuraGuard] Chybí data-project atribut pro odesílání logů.');
     return;
   }
 
+  // Reference na nativní fetch DŘÍV, než ho níž přepíšeme kvůli měření
+  // latence. Bez toho posílal sendReport přes přepsanou verzi: report na
+  // endpoint vrátí 4xx (nepovolená doména, neznámý projekt, rate limit),
+  // wrapper z toho udělá další 'network_error' report, ten zase dostane 4xx
+  // → nekonečná smyčka požadavků z prohlížeče zákazníka.
+  const nativeFetch = window.fetch ? window.fetch.bind(window) : null;
+
+  // Strop na počet reportů ze stránky. Chyba v requestAnimationFrame nebo
+  // setInterval by jinak generovala tisíce reportů za sekundu.
+  var reportCount = 0;
+  var MAX_REPORTS_PER_PAGE = 25;
+  var seenSignatures = {};
+  var isSending = false;
+
   function sendReport(type, data) {
-    fetch(reportUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project: project, type: type, data: data, timestamp: new Date().toISOString() })
-    }).catch(function() {});
+    // Ochrana proti rekurzi: výjimka uvnitř error listeneru by spustila
+    // listener znovu.
+    if (isSending) return;
+    if (reportCount >= MAX_REPORTS_PER_PAGE) return;
+
+    var signature = type + '|' + (data.message || '') + '|' + (data.filename || '') + '|' + (data.lineno || '');
+    if (seenSignatures[signature]) return;
+    seenSignatures[signature] = true;
+    reportCount++;
+
+    isSending = true;
+    try {
+      if (!nativeFetch) return;
+      nativeFetch(reportUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: project, type: type, data: data, timestamp: new Date().toISOString() })
+      }).catch(function() {});
+    } catch (e) {
+      // SDK nikdy nesmí rozbít web zákazníka
+    } finally {
+      isSending = false;
+    }
   }
 
   if (trackErrors) {
@@ -949,6 +1419,8 @@ app.get('/api/auraguard/sdk.js', (req, res) => {
       window.fetch = function(...args) {
         const start = Date.now();
         return originalFetch.apply(this, args).then(function(response) {
+          // Vlastní telemetrický endpoint se nereportuje — jinak vzniká smyčka.
+          if (response.url && response.url.indexOf(reportUrl) === 0) return response;
           const duration = Date.now() - start;
           if (duration > slowThreshold) {
             sendReport('network_slow', {
@@ -975,7 +1447,7 @@ app.get('/api/auraguard/sdk.js', (req, res) => {
 });
 
 // 2. Compare Pages (Prod vs Preview Diff)
-app.post('/api/compare', authenticateToken, async (req, res) => {
+app.post('/api/compare', authenticateToken, heavyLimiter, browserSlotGuard, async (req, res) => {
   const { url1, url2 } = req.body;
 
   if (!url1 || !url2) {
@@ -1000,7 +1472,7 @@ app.post('/api/compare', authenticateToken, async (req, res) => {
 });
 
 // 3. Audit Translations
-app.post('/api/audit-translations', authenticateToken, async (req, res) => {
+app.post('/api/audit-translations', authenticateToken, heavyLimiter, browserSlotGuard, async (req, res) => {
   const { url, translationSource, model, host, provider } = req.body;
 
   if (!url || !translationSource) {
@@ -1048,31 +1520,79 @@ app.post('/api/audit-translations', authenticateToken, async (req, res) => {
   }
 });
 
-// Handle WebSocket connections
-server.on('upgrade', (request, socket, head) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocket upgrade
+//
+// Dřív se kontrolovala jen PŘÍTOMNOST sessionId — ne token a ne vlastnictví.
+// Se sessionId tvaru `session_${Date.now()}` stačilo ID uhodnout a člověk četl
+// živě kroky, screenshoty a bugy cizích testů.
+//
+// Teď: povinný Firebase ID token a ověření, že session patří volajícímu.
+// Klient posílá token v query (`?token=`) — WebSocket API v prohlížeči
+// vlastní hlavičky nastavit neumí.
+// ─────────────────────────────────────────────────────────────────────────────
+server.on('upgrade', async (request, socket, head) => {
+  // Node po emitu 'upgrade' odebere vlastní error listener a socket předá nám.
+  // Bez tohohle posluchače stačí spojení resetnout během await verifyIdToken()
+  // a socket vyhodí neošetřenou chybu → uncaughtException → (nově) exit.
+  // Tedy triviální vzdálený DoS.
+  const onSocketError = (err) => {
+    console.warn('Chyba socketu při WS upgrade:', err.message);
+    socket.destroy();
+  };
+  socket.on('error', onSocketError);
+
+  const reject = (code, reason) => {
+    if (!socket.destroyed && socket.writable) {
+      socket.write(`HTTP/1.1 ${code} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    }
+    socket.destroy();
+  };
+
   try {
     const { pathname, searchParams } = new URL(request.url, `http://${request.headers.host}`);
+    if (pathname !== '/ws') return socket.destroy();
 
-    if (pathname === '/ws') {
-      const sessionId = searchParams.get('sessionId');
-      if (!sessionId) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
-      }
+    const sessionId = searchParams.get('sessionId');
+    const token = searchParams.get('token');
+    if (!sessionId || !token) return reject(401, 'Unauthorized');
 
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request, sessionId);
-      });
-    } else {
-      socket.destroy();
+    let userId;
+    try {
+      const decoded = await auth.verifyIdToken(token);
+      userId = decoded.uid;
+    } catch {
+      return reject(401, 'Unauthorized');
     }
+
+    // `global_auraguard` je per-uživatelský kanál telemetrie, ne konkrétní běh.
+    if (sessionId !== GLOBAL_WS_CHANNEL) {
+      const session = await db.getSession(sessionId);
+      // Session se zakládá až chvíli po startu testu — povolíme i "zatím
+      // neexistuje", ale cizí session odmítneme.
+      if (session && session.userId !== userId) return reject(403, 'Forbidden');
+    }
+
+    // Socket je předán ws knihovně, která si dál chyby řeší sama.
+    socket.removeListener('error', onSocketError);
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request, sessionId, userId);
+    });
   } catch (err) {
+    console.error('Chyba WS upgrade:', err);
     socket.destroy();
   }
 });
 
-wss.on('connection', (ws, request, sessionId) => {
+wss.on('connection', (ws, request, sessionId, userId) => {
+  ws.userId = userId;
+
+  // Bez posluchače by chyba socketu (reset spojení) vyletěla jako
+  // neošetřená výjimka a shodila proces.
+  ws.on('error', (err) => {
+    console.warn('Chyba WebSocket spojení:', err.message);
+  });
+
   if (!wsClients.has(sessionId)) {
     wsClients.set(sessionId, new Set());
   }
@@ -1090,18 +1610,40 @@ wss.on('connection', (ws, request, sessionId) => {
 });
 
 // Fallback to static serving if frontend dist folder exists
-const frontendDistPath = path.join(__dirname, 'frontend', 'dist');
+const frontendDistPath = FRONTEND_DIST_DIR;
 if (fs.existsSync(frontendDistPath)) {
   app.use(express.static(frontendDistPath));
+  // Bez této podmínky vracel GET /api/neexistujici index.html se stavem 200
+  // místo 404, což mátlo klienty i monitoring.
   app.get('*', (req, res) => {
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: 'Endpoint nenalezen.' });
+    }
     res.sendFile(path.join(frontendDistPath, 'index.html'));
   });
 }
 
 // Global Express error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Express zachytil neošetřenou chybu routy:', err);
-  res.status(500).json({ error: 'Interní chyba serveru.', details: err.message });
+  // Po částečně odeslané odpovědi už hlavičky měnit nejde.
+  if (res.headersSent) return next(err);
+
+  // Chyby body-parseru nesou vlastní status (400 u nevalidního JSON,
+  // 413 u příliš velkého těla). Dřív se všechno přepsalo na 500, takže
+  // klient nepoznal chybu ve svém požadavku od chyby serveru.
+  const status = Number(err.status || err.statusCode) || 500;
+
+  if (status >= 500) {
+    // Detaily (Firestore/pg/mysql chyby) prozrazují názvy kolekcí, hostnames
+    // a cesty — logujeme je serverově, klientovi dáme jen dohledávací ID.
+    const errorId = randomUUID();
+    console.error(`Express zachytil neošetřenou chybu routy [${errorId}]:`, err);
+    const body = { error: 'Interní chyba serveru.', errorId };
+    if (process.env.NODE_ENV !== 'production') body.details = err.message;
+    return res.status(status).json(body);
+  }
+
+  res.status(status).json({ error: err.message || 'Neplatný požadavek.' });
 });
 
 if (process.env.NODE_ENV !== 'test') {

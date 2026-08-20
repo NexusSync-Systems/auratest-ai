@@ -1,8 +1,46 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
+import path from 'path';
+import { assertPublicHttpUrl } from './ssrf-guard.js';
 
 const execAsync = promisify(exec);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Konfigurace zdrojů překladů přichází z HTTP requestu, takže každý parametr,
+// který se propíše do síťového spojení nebo na filesystém, musí být omezen.
+//
+//   • apiUrl     → assertPublicHttpUrl (jinak SSRF s vlastními hlavičkami)
+//   • dbHost     → allowlist z env (jinak skenování interních portů a DB)
+//   • sqlitePath → jen uvnitř TRANSLATIONS_SQLITE_DIR (jinak čtení libovolného
+//                  souboru na disku / oracle na jeho existenci)
+//   • cwd        → ignorováno, skript běží vždy v process.cwd()
+// ─────────────────────────────────────────────────────────────────────────────
+const ALLOWED_DB_HOSTS = (process.env.ALLOWED_DB_HOSTS || '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+const SQLITE_ROOT = path.resolve(process.env.TRANSLATIONS_SQLITE_DIR || process.cwd());
+
+function assertAllowedDbHost(host) {
+  const target = host || 'localhost';
+  if (ALLOWED_DB_HOSTS.length === 0) {
+    throw new Error('Připojení k databázi překladů není povoleno: chybí ALLOWED_DB_HOSTS v konfiguraci serveru.');
+  }
+  if (!ALLOWED_DB_HOSTS.includes(target)) {
+    throw new Error(`Databázový host "${target}" není na allowlistu (ALLOWED_DB_HOSTS).`);
+  }
+  return target;
+}
+
+function assertAllowedSqlitePath(rawPath) {
+  const resolved = path.resolve(SQLITE_ROOT, rawPath);
+  // path.relative je spolehlivější než startsWith — ošetří i `/rootfoo` vs `/root`.
+  const rel = path.relative(SQLITE_ROOT, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('Cesta k SQLite databázi je mimo povolený adresář.');
+  }
+  return resolved;
+}
 
 /**
  * Fetches translations from various sources (API, Postgres, MySQL, SQLite, or Custom Script)
@@ -47,7 +85,13 @@ async function fetchFromApi(config) {
     }
   }
 
-  const response = await fetch(apiUrl, { method: 'GET', headers });
+  const safeApiUrl = await assertPublicHttpUrl(apiUrl);
+  const response = await fetch(safeApiUrl, {
+    method: 'GET',
+    headers,
+    redirect: 'error', // redirect by mohl obejít kontrolu cílové adresy
+    signal: AbortSignal.timeout(15000),
+  });
   if (!response.ok) {
     throw new Error(`API vrátilo chybu: ${response.status} ${response.statusText}`);
   }
@@ -77,7 +121,7 @@ async function fetchFromPostgres(config) {
   const { Client } = pg.default || pg;
 
   const client = new Client({
-    host: dbHost || 'localhost',
+    host: assertAllowedDbHost(dbHost),
     port: parseInt(dbPort) || 5432,
     user: dbUser,
     password: dbPassword,
@@ -99,7 +143,7 @@ async function fetchFromMysql(config) {
 
   const mysql = await import('mysql2/promise');
   const connection = await mysql.createConnection({
-    host: dbHost || 'localhost',
+    host: assertAllowedDbHost(dbHost),
     port: parseInt(dbPort) || 3306,
     user: dbUser,
     password: dbPassword,
@@ -118,16 +162,17 @@ async function fetchFromSqlite(config) {
   const { sqlitePath, dbQuery } = config;
   if (!sqlitePath) throw new Error('Chybí cesta k SQLite databázi (sqlitePath).');
   const cleanQuery = validateReadOnlyQuery(dbQuery);
+  const safePath = assertAllowedSqlitePath(sqlitePath);
 
-  if (!fs.existsSync(sqlitePath)) {
-    throw new Error(`Soubor databáze neexistuje na cestě: ${sqlitePath}`);
+  if (!fs.existsSync(safePath)) {
+    throw new Error('Soubor databáze na zadané cestě neexistuje.');
   }
 
   const sqlite3 = await import('sqlite3');
   const { Database } = sqlite3.default || sqlite3;
 
   return new Promise((resolve, reject) => {
-    const db = new Database(sqlitePath, sqlite3.OPEN_READONLY, (err) => {
+    const db = new Database(safePath, sqlite3.OPEN_READONLY, (err) => {
       if (err) return reject(new Error(`Nepodařilo se otevřít SQLite: ${err.message}`));
     });
 
@@ -150,7 +195,9 @@ const ALLOWED_SCRIPTS = {
 };
 
 async function fetchFromScript(config) {
-  const { scriptName, cwd } = config;
+  // `cwd` z requestu se záměrně ignoruje — jinak by šel whitelistovaný skript
+  // spustit z libovolného adresáře.
+  const { scriptName } = config;
   if (!scriptName) throw new Error('Chybí název povoleného skriptu (scriptName).');
 
   const allowedCommand = ALLOWED_SCRIPTS[scriptName];
@@ -159,7 +206,7 @@ async function fetchFromScript(config) {
   }
 
   try {
-    const { stdout, stderr } = await execAsync(allowedCommand, { cwd: cwd || process.cwd() });
+    const { stdout, stderr } = await execAsync(allowedCommand, { cwd: process.cwd(), timeout: 30000 });
     if (stderr && stderr.trim().length > 0) {
       console.warn('Varování skriptu (stderr):', stderr);
     }

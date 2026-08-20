@@ -4,7 +4,95 @@ import path from 'path';
 import fs from 'fs';
 import AxeBuilder from '@axe-core/playwright';
 import geoip from 'geoip-lite';
+import { assertPublicHttpUrl } from './ssrf-guard.js';
+import { SCREENSHOTS_DIR, VIDEOS_DIR, GENERATED_SCRIPTS_DIR, ensureDir, safeFileToken } from './paths.js';
 
+// Bez timeoutu drželo zaseknuté spojení celou testovací session — a s 12
+// opakováními po 5 s to mohlo běžet prakticky neomezeně.
+const LLM_TIMEOUT_MS = parseInt(process.env.LLM_TIMEOUT_MS, 10) || 60_000;
+
+/**
+ * Vytáhne text odpovědi z OpenAI-kompatibilního i Ollama tvaru a ověří, že
+ * tam vůbec je. Dřív se sahalo rovnou na result.choices[0].message.content
+ * (resp. result.message.content) a jiný tvar odpovědi shodil agenta na
+ * nicneříkajícím TypeError.
+ */
+function requireLlmContent(result, url) {
+  const content = result?.choices?.[0]?.message?.content ?? result?.message?.content;
+  if (typeof content !== 'string' || content.length === 0) {
+    throw new Error(`LLM (${url}) vrátilo odpověď v neočekávaném tvaru.`);
+  }
+  return content;
+}
+
+/**
+ * Zástupné symboly pro testovací přihlašovací údaje. Do promptu (a tím i do
+ * DB, WS broadcastu a generovaného skriptu) jde jen placeholder; skutečná
+ * hodnota se dosazuje až v okamžiku vyplnění formuláře.
+ */
+const CREDENTIAL_PLACEHOLDERS = {
+  login: '{{TEST_LOGIN}}',
+  password: '{{TEST_PASSWORD}}',
+};
+
+function resolveCredentialPlaceholders(value, llmConfig = {}) {
+  if (typeof value !== 'string') return value;
+  return value
+    .split(CREDENTIAL_PLACEHOLDERS.login).join(llmConfig.testLogin || '')
+    .split(CREDENTIAL_PLACEHOLDERS.password).join(llmConfig.testPassword || '');
+}
+
+/**
+ * Vrátí registrovatelnou doménu (eTLD+1 aproximace): `app.example.co.uk`
+ * -> `example.co.uk`. Nejde o plný seznam veřejných sufixů, ale pro
+ * porovnání "jsme pořád na stejném webu" to stačí.
+ */
+function registrableDomain(hostname) {
+  const host = String(hostname).toLowerCase();
+
+  // IP literál se musí porovnávat celý. Jinak by `1.2.3.4` a `9.9.3.4`
+  // vyšly jako "stejná doména" (obojí -> '3.4'). SSRF guard sice interní
+  // rozsahy stejně zachytí, ale politika originu by tu byla bezzubá.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':')) return host;
+
+  const parts = host.split('.');
+  if (parts.length <= 2) return parts.join('.');
+  // Dvoudílné sufixy typu .co.uk, .com.au, .gov.cz
+  const twoLevel = /^(co|com|net|org|gov|edu|ac|gob|gouv)\.[a-z]{2}$/;
+  const lastTwo = parts.slice(-2).join('.');
+  return twoLevel.test(lastTwo) ? parts.slice(-3).join('.') : lastTwo;
+}
+
+/**
+ * Agent se během běhu naviguje na URL, kterou vybral LLM podle obsahu
+ * testované stránky — prompt injection na cizím webu by ho jinak poslal
+ * na interní adresu a obsah by se vrátil do reportu.
+ *
+ * Držíme ho proto na téže registrovatelné doméně jako startovní URL, ne na
+ * přesném originu: první verze porovnávala origin, takže po běžném
+ * přesměrování (http -> https, apex -> www) selhala KAŽDÁ další navigace
+ * a vyráběla falešné bugy. Subdomény a jazykové mutace jsou legitimní cíle.
+ *
+ * `currentUrl` je aktuální adresa po případných přesměrováních.
+ */
+async function assertNavigationAllowed(target, startUrl, currentUrl = startUrl) {
+  let parsed;
+  try {
+    parsed = new URL(target, currentUrl);
+  } catch {
+    throw new Error(`Neplatný cíl navigace: ${target}`);
+  }
+
+  const allowed = new Set([
+    registrableDomain(new URL(startUrl).hostname),
+    registrableDomain(new URL(currentUrl).hostname),
+  ]);
+
+  if (!allowed.has(registrableDomain(parsed.hostname))) {
+    throw new Error(`Navigace mimo testovaný web (${parsed.hostname}) byla zablokována.`);
+  }
+  return await assertPublicHttpUrl(parsed.href);
+}
 
 // Helper to query LLM (Ollama or apfel/OpenAI-compatible)
 async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llama3', host = 'http://localhost:11434') {
@@ -28,6 +116,7 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
           body: JSON.stringify({
             model: model || 'apple-foundationmodel',
             messages,
@@ -58,6 +147,7 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
           const retryResponse = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
             body: JSON.stringify({
               model: model || 'apple-foundationmodel',
               messages,
@@ -83,12 +173,10 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
             throw new Error(`API error (${retryStatus}): ${retryText}`);
           }
           
-          const result = JSON.parse(retryText);
-          return result.choices[0].message.content;
+          return requireLlmContent(JSON.parse(retryText), url);
         }
 
-        const result = await response.json();
-        return result.choices[0].message.content;
+        return requireLlmContent(await response.json(), url);
       } catch (err) {
         if (attempts < maxAttempts - 1 && (err.message.includes('fetch failed') || err.message.includes('socket hang up') || err.message.includes('ECONNREFUSED') || err.message.includes('body stream already read'))) {
           console.log(`[apfel AI] Dočasná chyba připojení (pokus ${attempts + 1}/${maxAttempts}). Čekám 5 sekund...: ${err.message}`);
@@ -99,6 +187,9 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
         throw new Error(`Selhání komunikace s LLM AI (${url}): ${err.message}`);
       }
     }
+    // Bez tohohle throw mohla funkce po vyčerpání pokusů propadnout za smyčku
+    // a vrátit undefined — volající pak spadl na responseText.replace().
+    throw new Error(`LLM nedostupné po ${maxAttempts} pokusech (${url}).`);
     } catch (outerErr) {
       throw new Error(`Selhání komunikace s LLM AI (${url}): ${outerErr.message}`);
     }
@@ -118,6 +209,7 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
         body: JSON.stringify({
           model: model || 'llama3',
           messages,
@@ -133,22 +225,29 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
       }
 
       const result = await response.json();
-      return result.message.content;
+      return requireLlmContent(result, url);
     } catch (err) {
       console.warn('Ollama connection failed, attempting fallback without JSON formatting...', err.message);
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: model || 'llama3',
-          messages,
-          stream: false,
-          options: { temperature: 0.1, num_predict: 4096 }
-        })
-      });
-      if (!response.ok) throw new Error(`Ollama fallback failed: ${response.statusText}`);
-      const result = await response.json();
-      return result.message.content;
+      // Fallback byl dřív mimo try/catch — jeho selhání skončilo jako
+      // neošetřená chyba, a `result.message.content` spadlo na jiném tvaru.
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+          body: JSON.stringify({
+            model: model || 'llama3',
+            messages,
+            stream: false,
+            options: { temperature: 0.1, num_predict: 4096 }
+          })
+        });
+        if (!response.ok) throw new Error(`Ollama fallback failed: ${response.statusText}`);
+        const result = await response.json();
+        return requireLlmContent(result, url);
+      } catch (fallbackErr) {
+        throw new Error(`Selhání komunikace s Ollamou (${url}): ${fallbackErr.message}`);
+      }
     }
   }
 }
@@ -170,6 +269,14 @@ async function extractInteractiveElements(page) {
 
     // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
     elements.forEach((el) => {
+      // Vnitřek SVG (path, g, circle…) NENÍ HTMLElement, takže `offsetWidth`
+      // je undefined a rychlá kontrola viditelnosti ho nezachytí. Zároveň
+      // dědí `cursor: pointer` od tlačítka, ve kterém leží, takže se dřív
+      // registroval jako klikatelný prvek. Agent pak klikal na <path>,
+      // Playwright hlásil "element is not stable / not visible" a z toho
+      // vznikl FALEŠNÝ BUG na naprosto funkčním webu.
+      if (!(el instanceof HTMLElement)) return;
+
       const tagName = el.tagName;
       if (nonVisualTags.has(tagName)) return;
 
@@ -184,6 +291,12 @@ async function extractInteractiveElements(page) {
       if (!isInteractiveTag && !hasClickAttribute) {
         style = window.getComputedStyle(el);
         if (style.cursor !== 'pointer') return;
+
+        // `cursor: pointer` se dědí, takže každý <span> uvnitř tlačítka by se
+        // registroval zvlášť. Klikat se má na skutečný ovládací prvek, ne na
+        // jeho vnitřek — pokud takový předek existuje, tenhle prvek přeskočíme.
+        const control = el.closest('a, button, [role="button"], input, select, textarea, label');
+        if (control && control !== el) return;
       }
 
       // Basic visibility check for display and opacity using computed style
@@ -206,7 +319,13 @@ async function extractInteractiveElements(page) {
           placeholder: el.getAttribute('placeholder') || '',
           name: el.getAttribute('name') || '',
           role: el.getAttribute('role') || '',
-          href: el.getAttribute('href') || ''
+          href: el.getAttribute('href') || '',
+          // Bez těchto dvou polí byly hasElementValue() i isDisabledElement()
+          // vždy false, takže logika "nepřepisuj vyplněné pole" a "neklikej na
+          // disabled tlačítko" nikdy nefungovala.
+          value: typeof el.value === 'string' ? el.value : '',
+          disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
+          checked: el.checked === true
         });
 
         elementsToMutate.push({ el, id: String(qaIdCounter) });
@@ -293,6 +412,11 @@ function isCheckboxElement(el) {
 }
 
 function hasElementValue(el) {
+  // U checkboxů a radiobuttonů `value` nevypovídá o vyplněnosti (výchozí je
+  // 'on' bez ohledu na zaškrtnutí) — rozhoduje `checked`.
+  if (isCheckboxElement(el) || String(el?.type || '').toLowerCase() === 'radio') {
+    return el?.checked === true;
+  }
   return el?.value !== undefined && el.value !== null && String(el.value).trim() !== '';
 }
 
@@ -312,9 +436,18 @@ function isDisabledElement(el) {
   return Boolean(el?.disabled) || String(el?.disabled || '').toLowerCase() === 'true';
 }
 
-function wasActionTargetUsed(steps, action, target) {
+// Akce bez cíle (scroll, wait) se opakují legitimně — dřív je klíč
+// `akce:null` po prvním použití zablokoval natrvalo a fallback pak alternoval
+// scroll down/up až do vyčerpání maxSteps.
+const REPEATABLE_ACTIONS = new Set(['scroll', 'wait']);
+const LOOP_LOOKBACK_STEPS = 3;
+
+function wasActionTargetUsed(steps, action, target, lookback = LOOP_LOOKBACK_STEPS) {
+  if (REPEATABLE_ACTIONS.has(action)) return false;
   const key = actionTargetKey(action, target);
-  return (steps || []).some((step) => actionTargetKey(step.action, step.target) === key);
+  // Jen nedávná historie: kliknout na stejný prvek po deseti krocích je
+  // legitimní návrat, ne smyčka.
+  return (steps || []).slice(-lookback).some((step) => actionTargetKey(step.action, step.target) === key);
 }
 
 function wasInputTyped(steps, id) {
@@ -350,8 +483,16 @@ function isSpecificContentLink(el) {
   return text.length > 0 || String(el.href || '').length > 1;
 }
 
-function isCompletionContext({ currentUrl, title, goal }) {
-  const haystack = `${currentUrl || ''} ${title || ''} ${goal || ''}`.toLowerCase();
+/**
+ * Dřív se do haystacku počítal i `goal` — uživatelský popis cíle, který skoro
+ * vždy obsahuje "dokončení"/"complete" ("ověř, že se objednávka dokončí").
+ * Stačilo tedy zadat takový cíl a agent vyhodnotil finish hned v prvním kroku
+ * na libovolné stránce, takže test vůbec neproběhl.
+ *
+ * Rozhoduje se proto jen podle skutečného stavu stránky (URL a titulek).
+ */
+function isCompletionContext({ currentUrl, title }) {
+  const haystack = `${currentUrl || ''} ${title || ''}`.toLowerCase();
   return /success|complete|completed|thank|thanks|done|saved|hotovo|dokon[cč]en|odesl[aá]n|potvrzen|ulo[zž]en/.test(haystack);
 }
 
@@ -458,9 +599,12 @@ function chooseFallbackAction(interactiveElements, steps, runtimeSignals = false
     };
   }
 
+  // Checkbox se pozná podle `checked`, ne podle `value`: <input type="checkbox">
+  // bez atributu value má el.value === 'on' i když zaškrtnutý není, takže
+  // hasElementValue() tu vracela vždy true a celá větev byla mrtvá.
   const uncheckedBox = interactiveElements
     .filter(isCheckboxElement)
-    .find((el) => !hasElementValue(el) && !wasClicked(steps, el.id));
+    .find((el) => el.checked !== true && !wasClicked(steps, el.id));
   if (uncheckedBox) {
     return {
       reasoning: `Vybírám neotestovaný checkbox "${uncheckedBox.text || uncheckedBox.name || uncheckedBox.id}", protože může být povinný před odesláním formuláře.`,
@@ -534,7 +678,7 @@ function withSanitizedBugs(step, actionResponse, reasoning, consoleLogs, network
 
 export function sanitizeActionResponse(actionResponse, context) {
   const { currentUrl, title, goal, visibleState, suggestedUrl, interactiveElements, consoleLogs, networkErrors, steps } = context;
-  const sanitizerContext = { currentUrl, title, goal, visibleState, suggestedUrl, consoleLogs, networkErrors };
+  const sanitizerContext = { currentUrl, title, goal, visibleState, suggestedUrl, consoleLogs, networkErrors, steps };
   const validIds = new Set(interactiveElements.map((el) => el.id));
   const byId = new Map(interactiveElements.map((el) => [el.id, el]));
   let action = actionResponse?.action;
@@ -750,22 +894,38 @@ async function extractPageTexts(page) {
 /**
  * Runs an autonomous AI QA Test Session on a given URL.
  */
+/**
+ * Escapuje hodnotu do JS literálu. Dřív se `step.value` a `step.target`
+ * interpolovaly přímo do apostrofů — jenže obojí pochází z LLM / obsahu
+ * testované stránky, takže hodnota `'); require('child_process').exec(...); //`
+ * vyrobila spustitelný .spec.ts. Ten se navíc zapisuje na disk a uživatel ho
+ * pouští přes `npx playwright test` → RCE na jeho stroji nebo v CI.
+ */
+function jsLiteral(value) {
+  return JSON.stringify(value === undefined || value === null ? '' : String(value));
+}
+
+/** Jednořádkový, bezpečný komentář — `\n` v reasoningu jinak rozbije syntaxi. */
+function jsComment(value) {
+  return String(value ?? '').replace(/\r?\n/g, ' ').replace(/\*\//g, '* /').slice(0, 200);
+}
+
 export function generatePlaywrightScript(steps, startUrl) {
   let script = `import { test, expect } from '@playwright/test';\n\n`;
   script += `test('Autonomously generated AI test', async ({ page }) => {\n`;
-  script += `  await page.goto('${startUrl}');\n\n`;
-  
+  script += `  await page.goto(${jsLiteral(startUrl)});\n\n`;
+
   for (const step of steps) {
     if (!step.action || step.action === 'finish') continue;
-    script += `  // Step ${step.step}: ${step.reasoning || step.action}\n`;
+    script += `  // Step ${step.step}: ${jsComment(step.reasoning || step.action)}\n`;
     if (step.action === 'click' && step.target) {
-      script += `  await page.click('[data-qa-id="${step.target}"]');\n`;
+      script += `  await page.click(${jsLiteral(`[data-qa-id="${step.target}"]`)});\n`;
     } else if (step.action === 'type' && step.target) {
-      script += `  await page.fill('[data-qa-id="${step.target}"]', '${step.value}');\n`;
+      script += `  await page.fill(${jsLiteral(`[data-qa-id="${step.target}"]`)}, ${jsLiteral(step.value)});\n`;
     } else if (step.action === 'scroll') {
       script += `  await page.mouse.wheel(0, ${step.value === 'down' ? 500 : -500});\n`;
     } else if (step.action === 'navigate' && step.target) {
-      script += `  await page.goto('${step.target}');\n`;
+      script += `  await page.goto(${jsLiteral(step.target)});\n`;
     } else if (step.action === 'wait') {
       script += `  await page.waitForTimeout(2000);\n`;
     }
@@ -816,7 +976,11 @@ async function determineNextAction(llmConfig, currentUrl, title, interactiveElem
 
   let credentialsInfo = '';
   if (llmConfig.testLogin || llmConfig.testPassword) {
-    credentialsInfo = `\nTEST CREDENTIALS (Use these if you need to log in or fill out auth forms):\n- Login/Email: ${llmConfig.testLogin || 'Not provided'}\n- Password: ${llmConfig.testPassword || 'Not provided'}\n`;
+    // Dřív se sem vkládal login i heslo v plaintextu. Prompt se posílá na
+    // llmConfig.host a hodnota kroku končí v DB, ve WebSocket broadcastu
+    // i ve vygenerovaném .spec.ts na disku. Modelu proto dáváme jen
+    // zástupné symboly a skutečné hodnoty dosadíme až v page.fill().
+    credentialsInfo = `\nTEST CREDENTIALS (Use these placeholders verbatim when a login form needs filling — never invent real values):\n- Login/Email: ${CREDENTIAL_PLACEHOLDERS.login}\n- Password: ${CREDENTIAL_PLACEHOLDERS.password}\n`;
   }
 
   if (llmConfig.mode === 'monkey') {
@@ -1018,10 +1182,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
   let browser;
   try {
     browser = await chromium.launch({ headless: llmConfig.headless !== false });
-    const videosDir = path.join(process.cwd(), 'videos');
-    if (!fs.existsSync(videosDir)) {
-      fs.mkdirSync(videosDir, { recursive: true });
-    }
+    const videosDir = ensureDir(VIDEOS_DIR);
 
     const context = await browser.newContext({
       viewport: { width: 1280, height: 720 },
@@ -1072,6 +1233,10 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
 
     const steps = [];
     const bugs = [];
+    // Dřív šlo všechno s prefixem [AuraAuraGuard- do `bugs` a `success` se
+    // počítalo jako bugs.length === 0. Long task > 100 ms nebo pomalé API tak
+    // označilo prakticky každou reálnou aplikaci za neúspěch.
+    const warnings = [];
     let currentStep = 1;
     const maxSteps = llmConfig.maxSteps || 10;
     let isFinished = false;
@@ -1079,27 +1244,33 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
 
   // Listen to console messages and errors
   const consoleLogs = [];
+  // Sady pro O(1) deduplikaci — dřív se používalo bugs.includes() v handleru
+  // volaném na každou console/response událost, tedy O(n²).
+  const seenFindings = new Set();
+  const addFinding = (collection, message) => {
+    if (seenFindings.has(message)) return;
+    seenFindings.add(message);
+    collection.push(message);
+  };
+  // Výkonnostní signály nejsou chyby funkčnosti.
+  const WARNING_PREFIXES = ['[AuraAuraGuard-Performance]', '[AuraAuraGuard-NetworkSlow]'];
+
   page.on('console', (msg) => {
     const type = msg.type();
     const text = msg.text();
     consoleLogs.push({ type, text, timestamp: new Date().toISOString() });
 
     if (text.startsWith('[AuraAuraGuard-')) {
-      if (!bugs.includes(text)) {
-        bugs.push(text);
-      }
+      addFinding(WARNING_PREFIXES.some((p) => text.startsWith(p)) ? warnings : bugs, text);
     } else if (type === 'error') {
-      bugs.push(`Detekována chyba v konzoli: "${text}"`);
+      addFinding(bugs, `Detekována chyba v konzoli: "${text}"`);
     }
   });
 
   // Listen to unhandled exceptions via Playwright
   if (trackExceptions) {
     page.on('pageerror', (exception) => {
-      const bugMsg = `[AuraAuraGuard-Error] Neošetřená výjimka: ${exception.message}\nStack: ${exception.stack || 'Žádný stack trace'}`;
-      if (!bugs.includes(bugMsg)) {
-        bugs.push(bugMsg);
-      }
+      addFinding(bugs, `[AuraAuraGuard-Error] Neošetřená výjimka: ${exception.message}\nStack: ${exception.stack || 'Žádný stack trace'}`);
     });
   }
 
@@ -1112,19 +1283,27 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       return;
     }
     networkErrors.push({ url: reqUrl, error: errText });
-    bugs.push(`Selhal síťový požadavek: GET ${reqUrl} - ${errText}`);
+    // Přes addFinding, aby platila stejná deduplikace jako u ostatních
+    // nálezů — přímý push ji obcházel. Metoda z requestu, ne natvrdo GET.
+    addFinding(bugs, `Selhal síťový požadavek: ${request.method()} ${reqUrl} - ${errText}`);
   });
 
   // Měření síťové latence a zachycování HTTP chyb (AuraAuraGuard)
   if (trackNetworkErrors) {
-    const requestStartTimes = new Map();
+    // WeakMap klíčovaná objektem requestu:
+    //   • dřív se klíčovalo URL, takže dva paralelní požadavky na stejnou
+    //     adresu se přepsaly a naměřená latence byla nesmyslná,
+    //   • delete() se volalo jen při response, takže abortované a neúspěšné
+    //     požadavky v mapě zůstávaly navždy (memory leak).
+    const requestStartTimes = new WeakMap();
     page.on('request', (request) => {
-      requestStartTimes.set(request.url(), Date.now());
+      requestStartTimes.set(request, Date.now());
     });
 
     page.on('response', (response) => {
       const url = response.url();
-      const startTime = requestStartTimes.get(url);
+      const request = response.request();
+      const startTime = requestStartTimes.get(request);
       const status = response.status();
       const method = response.request().method();
 
@@ -1132,27 +1311,26 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         const resourceType = response.request().resourceType();
         const isCritical = ['fetch', 'xhr', 'document', 'script'].includes(resourceType);
         if (isCritical) {
-          const bugMsg = `[AuraAuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`;
-          if (!bugs.includes(bugMsg)) {
-            bugs.push(bugMsg);
-          }
+          addFinding(bugs, `[AuraAuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`);
         }
       }
 
       if (startTime) {
         const duration = Date.now() - startTime;
-        requestStartTimes.delete(url);
+        requestStartTimes.delete(request);
 
         const resourceType = response.request().resourceType();
         if (duration > slowApiThresholdMs && (resourceType === 'fetch' || resourceType === 'xhr')) {
-          const bugMsg = `[AuraAuraGuard-NetworkSlow] Pomalá odpověď API: ${method} ${url} trvala ${duration}ms`;
-          if (!bugs.includes(bugMsg)) {
-            bugs.push(bugMsg);
-          }
+          addFinding(warnings, `[AuraAuraGuard-NetworkSlow] Pomalá odpověď API: ${method} ${url} trvala ${duration}ms`);
         }
       }
     });
   }
+
+  // Kolik položek už bylo odesláno v předchozích krocích (viz stepData níž).
+  let emittedLogCount = 0;
+  let emittedBugCount = 0;
+  let emittedWarningCount = 0;
 
   try {
     if (onStepProgress) onStepProgress({ step: 0, action: 'Navigace', detail: `Otevírání ${url}` });
@@ -1161,8 +1339,10 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     while (currentStep <= maxSteps && !isFinished) {
       // 1. Gather current state
       const currentUrl = page.url();
-      const screenshotFileName = `${sessionId}_step_${currentStep}.png`;
-      const screenshotPath = path.join(process.cwd(), 'screenshots', screenshotFileName);
+      // sessionId se u monitorů skládá z hodnot z DB — bez očištění by `../`
+      // v něm zapsalo PNG mimo adresář screenshotů.
+      const screenshotFileName = `${safeFileToken(sessionId)}_step_${currentStep}.png`;
+      const screenshotPath = path.join(ensureDir(SCREENSHOTS_DIR), screenshotFileName);
 
       // ⚡ Bolt: Paralelizace CDP Playwright příkazů pro rychlé získání title, stavu a screenshotu
       const [title, interactiveElements] = await Promise.all([
@@ -1203,10 +1383,17 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         target: actionResponse.target,
         value: actionResponse.value,
         screenshot: `/api/screenshots/${screenshotFileName}`,
-        logs: [...consoleLogs],
-        bugs: [...bugs],
+        // Jen přírůstek od minulého kroku. Dřív se kopírovala kompletní
+        // dosavadní historie do KAŽDÉHO kroku — kvadratická paměť, která se
+        // navíc celá ukládala do Firestore a posílala po WebSocketu.
+        logs: consoleLogs.slice(emittedLogCount),
+        bugs: bugs.slice(emittedBugCount),
+        warnings: warnings.slice(emittedWarningCount),
         timestamp: new Date().toISOString()
       };
+      emittedLogCount = consoleLogs.length;
+      emittedBugCount = bugs.length;
+      emittedWarningCount = warnings.length;
       steps.push(stepData);
 
       if (onStepProgress) onStepProgress(stepData);
@@ -1223,12 +1410,19 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
           await page.click(`[data-qa-id="${targetId}"]`, { timeout: 5000 });
         } else if (actionResponse.action === 'type') {
           const targetId = actionResponse.target;
-          await page.fill(`[data-qa-id="${targetId}"]`, actionResponse.value || '', { timeout: 5000 });
+          // Placeholder → skutečná hodnota se objeví jen tady, ne v promptu,
+          // v uloženém kroku ani ve vygenerovaném skriptu.
+          const typedValue = resolveCredentialPlaceholders(actionResponse.value || '', llmConfig);
+          await page.fill(`[data-qa-id="${targetId}"]`, typedValue, { timeout: 5000 });
         } else if (actionResponse.action === 'scroll') {
           const direction = actionResponse.value === 'up' ? -500 : 500;
           await page.evaluate((y) => window.scrollBy(0, y), direction);
         } else if (actionResponse.action === 'navigate') {
-          await page.goto(actionResponse.target, { waitUntil: 'networkidle', timeout: 15000 });
+          // LLM vybírá cíl navigace podle obsahu testované stránky, takže
+          // prompt injection na cizím webu jinak agenta pošle na interní
+          // adresu (např. cloud metadata) a obsah se vrátí do reportu.
+          const navTarget = await assertNavigationAllowed(actionResponse.target, url, currentUrl);
+          await page.goto(navTarget, { waitUntil: 'networkidle', timeout: 15000 });
         } else if (actionResponse.action === 'wait') {
           const waitTime = parseInt(actionResponse.value) || 2000;
           await page.waitForTimeout(waitTime);
@@ -1238,7 +1432,12 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         await page.waitForTimeout(1000);
       } catch (actionErr) {
         console.error(`Akce '${actionResponse.action}' na prvek [data-qa-id="${actionResponse.target}"] selhala:`, actionErr.message);
-        bugs.push(`Akce '${actionResponse.action}' v kroku ${currentStep} selhala: ${actionErr.message}`);
+
+        // Zablokování vlastní bezpečnostní politikou není chyba testované
+        // aplikace — nesmí to shodit `success` ani se hlásit jako bug.
+        const blockedByPolicy = /zablokována|neveřejn|interní rozsah/i.test(actionErr.message);
+        const message = `Akce '${actionResponse.action}' v kroku ${currentStep} selhala: ${actionErr.message}`;
+        addFinding(blockedByPolicy ? warnings : bugs, message);
       }
 
       currentStep++;
@@ -1261,17 +1460,27 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
 
     } catch (err) {
       console.error('Test execution failed:', err);
-      // Musí se použít push jen pokud bugs existuje z vrchního scope
-      // Tady musíme přidat proměnné, které nemusí být přístupné pokud to crashne v early setupu,
-      // ale scope 'bugs' je uvnitř bloku nahoře.
-      if (typeof bugs !== 'undefined') bugs.push(`Katastrofická chyba testu: ${err.message}`);
+      // `bugs` je const ve stejném scope, dřívější typeof kontrola byla vždy true.
+      bugs.push(`Katastrofická chyba testu: ${err.message}`);
     }
 
     let videoUrl = null;
     try {
-      if (page && page.video()) {
-        const videoPath = await page.video().path();
-        videoUrl = `/api/videos/${path.basename(videoPath)}`;
+      const video = page && typeof page.video === 'function' ? page.video() : null;
+      if (video) {
+        // Playwright finalizuje video až při zavření kontextu. Spoléhat na
+        // browser.close() ve finally dávalo useknuté nebo nulové soubory.
+        await context.close();
+
+        // Playwright pojmenovává video náhodným hashem, který se sessionId
+        // nijak netýká. Server ale ověřuje capability token tak, že si
+        // sessionId vytáhne z názvu souboru — s hashem tam nic nenajde
+        // a video vracelo vždy 404. Proto ho přejmenujeme.
+        const videoFileName = `${safeFileToken(sessionId)}_video.webm`;
+        const targetPath = path.join(ensureDir(VIDEOS_DIR), videoFileName);
+        await video.saveAs(targetPath);
+        await video.delete().catch(() => {});
+        videoUrl = `/api/videos/${videoFileName}`;
       }
     } catch (e) {
       console.log("Mohlo selhat získání cesty k videu", e.message);
@@ -1279,17 +1488,17 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
 
     // --- FÁZE 2: Generování Playwright kódu ---
     const generatedScript = generatePlaywrightScript(steps, url);
-    const scriptsDir = path.join(process.cwd(), 'generated-scripts');
-    if (!fs.existsSync(scriptsDir)) {
-      fs.mkdirSync(scriptsDir, { recursive: true });
-    }
+    const scriptsDir = ensureDir(GENERATED_SCRIPTS_DIR);
     const scriptPath = path.join(scriptsDir, `test-${Date.now()}.spec.ts`);
     fs.writeFileSync(scriptPath, generatedScript, 'utf8');
 
     return {
+      // Výkonnostní varování (long tasks, pomalé API) nejsou chyby funkčnosti
+      // a do success se nezapočítávají.
       success: bugs.length === 0,
       steps,
-      bugs: [...new Set(bugs)], // unique values
+      bugs: [...new Set(bugs)],
+      warnings: [...new Set(warnings)],
       summary: isFinished ? 'Test úspěšně dokončen.' : 'Test dosáhl limitu maximálního počtu kroků.',
       performanceMetrics,
       generatedScript,
@@ -1424,6 +1633,113 @@ export async function comparePages(url1, url2) {
 /**
  * Audits translations on a page using a loaded localization dictionary.
  */
+const TRANSLATION_AUDIT_MAX_TEXTS = parseInt(process.env.TRANSLATION_AUDIT_MAX_TEXTS, 10) || 150;
+const TRANSLATION_AUDIT_CONCURRENCY = parseInt(process.env.TRANSLATION_AUDIT_CONCURRENCY, 10) || 4;
+const TRANSLATION_DICT_CONTEXT_ENTRIES = 20;
+
+/** Zploští vnořený i18n JSON na "a.b.c" -> "text"; nestringy přeskočí. */
+function flattenObjectForAudit(obj, prefix = '', out = {}) {
+  if (!obj || typeof obj !== 'object') return out;
+  for (const [key, value] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      flattenObjectForAudit(value, path, out);
+    } else if (typeof value === 'string') {
+      out[path] = value;
+    }
+    // čísla, booleany a pole nejsou překlady — přeskakujeme
+  }
+  return out;
+}
+
+/** Jednoduchý limiter souběhu; zachovává pořadí výsledků. */
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await worker(items[index], index);
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
+}
+
+/**
+ * Vybere podmnožinu slovníku relevantní k textu. Dřív platilo
+ * `if (hasKeyword || currentDictSize < 20)`, takže když nic nematchovalo,
+ * do promptu se dostalo prvních 20 klíčů podle pořadí v objektu — model
+ * dostal nesouvisející kontext a halucinoval klíč. Teď skórujeme podle
+ * počtu shodných slov a bereme jen nenulové skóre.
+ */
+function pickRelevantDictionary(pageText, processedDict) {
+  const keywords = pageText.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+  if (keywords.length === 0) return {};
+
+  const scored = [];
+  for (const entry of processedDict) {
+    let score = 0;
+    for (const word of keywords) {
+      if (entry.valLower.includes(word) || entry.kLower.includes(word)) score++;
+    }
+    if (score > 0) scored.push({ entry, score });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  const relevant = {};
+  for (const { entry } of scored.slice(0, TRANSLATION_DICT_CONTEXT_ENTRIES)) {
+    relevant[entry.k] = entry.val;
+  }
+  return relevant;
+}
+
+const TRANSLATION_SYSTEM_PROMPT = `You are AuraTest AI, a software localization specialist.
+You will be given text found on a web page and a reference translation dictionary in JSON format.
+You must evaluate whether the page text is a correct translation from the dictionary (which may be formatted differently), or if it's hardcoded text, or if a translation is missing.
+Reply ONLY with a JSON object:
+{
+  "status": "matched_fuzzy" | "untranslated" | "typo" | "ignored",
+  "key": "the localization key from the dictionary that matches this text, if any",
+  "suggestion": "Recommendation for fixing or explanation"
+}
+
+CRITICAL: All JSON output values ('suggestion') MUST be written in the Czech language (Čeština).`;
+
+async function evaluateTranslationWithLlm(pageText, item, processedDict, llmConfig) {
+  const relevantDict = pickRelevantDictionary(pageText, processedDict);
+
+  // Bez relevantního kontextu nemá smysl plýtvat dotazem — text prostě
+  // ve slovníku není.
+  if (Object.keys(relevantDict).length === 0) {
+    return { status: 'untranslated', key: '', suggestion: 'Text nemá ve slovníku žádný podobný záznam.' };
+  }
+
+  const prompt = `Page Text: "${pageText}"
+HTML Tag: <${item.tagName}>
+Element Selector: ${item.selector}
+
+Reference localization dictionary (subset):
+${JSON.stringify(relevantDict, null, 2)}
+
+Determine the status of this text. Reply ONLY with JSON.`;
+
+  try {
+    const responseText = await queryLLM(prompt, TRANSLATION_SYSTEM_PROMPT, llmConfig.provider, llmConfig.model, llmConfig.host);
+    const parsed = JSON.parse(responseText.replace(/```json/g, '').replace(/```/g, '').trim());
+    return {
+      status: parsed.status || 'untranslated',
+      key: parsed.key || '',
+      suggestion: parsed.suggestion || ''
+    };
+  } catch (err) {
+    console.warn('AI evaluation failed for text:', pageText, err.message);
+    return { status: 'untranslated', key: '', suggestion: `Vyhodnocení modelem selhalo: ${err.message}` };
+  }
+}
+
 export async function auditTranslations(url, dictionary, llmConfig) {
   let browser;
   let texts = [];
@@ -1450,131 +1766,88 @@ export async function auditTranslations(url, dictionary, llmConfig) {
   }
 
   try {
-    // Auditing logic
-  const auditResults = [];
-  const dictEntries = Object.entries(dictionary);
+    const auditResults = [];
 
-  // ⚡ Bolt: Optimize translation lookup (O(N*M) -> O(N))
-  // Pre-calculate lowercased values to a Map for O(1) lookups instead of repeated array iterations
-  const valueToKeyMap = new Map();
-  const dictSize = dictEntries.length;
-  const processedDict = new Array(dictSize);
-  for (let i = 0; i < dictSize; i++) {
-    const [k, val] = dictEntries[i];
-    const normalizedVal = val.trim().toLowerCase();
-    if (normalizedVal && !valueToKeyMap.has(normalizedVal)) {
-      valueToKeyMap.set(normalizedVal, k);
+    // Slovník je typicky vnořený i18n JSON ({"login": {"title": "..."}}).
+    // Dřív se volalo val.trim() rovnou na hodnotě, takže na vnořeném objektu
+    // celý audit spadl na "val.trim is not a function".
+    const flatDictionary = flattenObjectForAudit(dictionary);
+    const dictEntries = Object.entries(flatDictionary);
+
+    const valueToKeyMap = new Map();
+    const processedDict = dictEntries.map(([k, val]) => {
+      const normalizedVal = val.trim().toLowerCase();
+      if (normalizedVal && !valueToKeyMap.has(normalizedVal)) {
+        valueToKeyMap.set(normalizedVal, k);
+      }
+      return { k, val, kLower: k.toLowerCase(), valLower: val.toLowerCase() };
+    });
+
+    const candidates = [];
+
+    for (const item of texts) {
+      const pageText = item.text.trim();
+      if (!pageText || pageText.length < 2) continue;
+
+      const matchedKey = valueToKeyMap.get(pageText.toLowerCase());
+      if (matchedKey !== undefined) {
+        auditResults.push({
+          text: pageText,
+          selector: item.selector,
+          tagName: item.tagName,
+          status: 'matched',
+          key: matchedKey
+        });
+      } else {
+        candidates.push({ item, pageText });
+      }
     }
-    processedDict[i] = {
-      k,
-      val,
-      kLower: k.toLowerCase(),
-      valLower: val.toLowerCase()
-    };
-  }
 
-  for (const item of texts) {
-    const pageText = item.text.trim();
-    if (!pageText || pageText.length < 2) continue; // skip single characters or empty
+    // Dřív šel na KAŽDÝ neshodující se text sekvenční LLM dotaz bez limitu,
+    // takže stránka s 500 texty držela HTTP request desítky minut.
+    // Teď: tvrdý strop, omezený souběh a celkový timeout.
+    const analyzed = candidates.slice(0, TRANSLATION_AUDIT_MAX_TEXTS);
+    const skippedForLimit = candidates.slice(TRANSLATION_AUDIT_MAX_TEXTS);
 
-    const normalizedPageText = pageText.toLowerCase();
+    const decisions = await mapWithConcurrency(
+      analyzed,
+      TRANSLATION_AUDIT_CONCURRENCY,
+      ({ item, pageText }) => evaluateTranslationWithLlm(pageText, item, processedDict, llmConfig)
+    );
 
-    // 1. Strict match check
-    const matchedKey = valueToKeyMap.get(normalizedPageText);
-
-    if (matchedKey !== undefined) {
+    analyzed.forEach(({ item, pageText }, index) => {
+      const decision = decisions[index];
       auditResults.push({
         text: pageText,
         selector: item.selector,
         tagName: item.tagName,
-        status: 'matched',
-        key: matchedKey
+        status: decision.status,
+        key: decision.key || 'Nenalezen',
+        suggestion: decision.suggestion
       });
-    } else {
-      // Let AI review the untranslated / mismatched text
-      let aiDecision = { status: 'untranslated', suggestion: '', key: '' };
-      
-      const systemPrompt = `You are AuraTest AI, a software localization specialist.
-You will be given text found on a web page and a reference translation dictionary in JSON format.
-You must evaluate whether the page text is a correct translation from the dictionary (which may be formatted differently), or if it's hardcoded text, or if a translation is missing.
-Reply ONLY with a JSON object:
-{
-  "status": "matched_fuzzy" | "untranslated" | "typo" | "ignored",
-  "key": "the localization key from the dictionary that matches this text, if any",
-  "suggestion": "Recommendation for fixing or explanation"
-}
+    });
 
-CRITICAL: All JSON output values ('suggestion') MUST be written in the Czech language (Čeština).`;
-
-      // Show a subset of the dictionary to the LLM to avoid overwhelming context
-      // Filter dictionary entries that might be related to the text to keep it small
-      // ⚡ Bolt: Optimize O(N*M) dictionary iteration for LLM context filtering
-      const keywords = pageText.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-      const keywordsLen = keywords.length;
-
-      const relevantDict = {};
-      let currentDictSize = 0;
-
-      for (let i = 0; i < dictSize; i++) {
-        const entry = processedDict[i];
-        let hasKeyword = false;
-        for (let j = 0; j < keywordsLen; j++) {
-          const word = keywords[j];
-          if (entry.valLower.includes(word) || entry.kLower.includes(word)) {
-            hasKeyword = true;
-            break;
-          }
-        }
-
-        if (hasKeyword || currentDictSize < 20) {
-          if (relevantDict[entry.k] === undefined) {
-             relevantDict[entry.k] = entry.val;
-             currentDictSize++;
-          }
-        }
-      }
-
-      const prompt = `Page Text: "${pageText}"
-HTML Tag: <${item.tagName}>
-Element Selector: ${item.selector}
-
-Reference localization dictionary (subset):
-${JSON.stringify(relevantDict, null, 2)}
-
-Determine the status of this text. Reply ONLY with JSON.`;
-
-      try {
-        const responseText = await queryLLM(prompt, systemPrompt, llmConfig.provider, llmConfig.model, llmConfig.host);
-        const cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(cleaned);
-        aiDecision = {
-          status: parsed.status || 'untranslated',
-          key: parsed.key || '',
-          suggestion: parsed.suggestion || ''
-        };
-      } catch (err) {
-        console.warn('AI evaluation failed for text:', pageText, err.message);
-      }
-
+    for (const { item, pageText } of skippedForLimit) {
       auditResults.push({
         text: pageText,
         selector: item.selector,
         tagName: item.tagName,
-        status: aiDecision.status,
-        key: aiDecision.key || 'Nenalezen',
-        suggestion: aiDecision.suggestion
+        status: 'skipped',
+        key: 'Nenalezen',
+        suggestion: `Přeskočeno: překročen limit ${TRANSLATION_AUDIT_MAX_TEXTS} analyzovaných textů na jeden běh.`
       });
     }
-  }
 
-    const issues = auditResults.filter(r => r.status !== 'matched' && r.status !== 'ignored');
+    const issues = auditResults.filter(r => r.status !== 'matched' && r.status !== 'ignored' && r.status !== 'skipped');
 
     return {
       success: true,
       screenshot,
       results: auditResults,
       issuesCount: issues.length,
-      issues
+      issues,
+      dictionarySize: dictEntries.length,
+      skippedCount: skippedForLimit.length
     };
   } finally {
     if (browser) {
@@ -1613,26 +1886,37 @@ export async function auditAccessibility(url) {
     const context = await browser.newContext();
     const page = await context.newPage();
     
-    await page.goto(url, { waitUntil: 'networkidle' });
-    
-    // Získání reportu z axe pomocí AxeBuilder
-    const results = await new AxeBuilder({ page }).analyze();
-    
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+
+    // Bez .withTags() běžela i best-practice a experimentální pravidla, jejichž
+    // porušení NENÍ porušením WCAG 2.1 AA / EN 301 549 — v compliance reportu
+    // to dělalo falešné poplachy.
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+      .analyze();
+
+    const mapNodes = (v) => ({
+      id: v.id,
+      impact: v.impact,
+      description: v.description,
+      help: v.help,
+      helpUrl: v.helpUrl,
+      nodes: v.nodes.map(n => ({
+        html: n.html,
+        target: n.target,
+        failureSummary: n.failureSummary
+      }))
+    });
+
     return {
       success: true,
       url,
-      violations: results.violations.map(v => ({
-        id: v.id,
-        impact: v.impact,
-        description: v.description,
-        help: v.help,
-        helpUrl: v.helpUrl,
-        nodes: v.nodes.map(n => ({
-          html: n.html,
-          target: n.target,
-          failureSummary: n.failureSummary
-        }))
-      }))
+      violations: results.violations.map(mapNodes),
+      // `incomplete` = položky, které axe neumí rozhodnout automaticky
+      // (typicky kontrast na obrázkovém pozadí). Dřív se zahazovaly, což
+      // vyrábělo false negatives — patří do reportu k ručnímu posouzení.
+      incomplete: results.incomplete.map(mapNodes),
+      passedCount: results.passes.length
     };
   } catch (err) {
     console.error('Chyba při auditu přístupnosti:', err);
@@ -1644,6 +1928,28 @@ export async function auditAccessibility(url) {
   }
 }
 
+/**
+ * `Strict-Transport-Security: max-age=0` HSTS fakticky vypíná, ale dřívější
+ * `!!header` ho hlásilo jako splněno. Vyžadujeme aspoň rok.
+ */
+function hasStrongHsts(header) {
+  if (!header) return false;
+  const match = /max-age\s*=\s*(\d+)/i.exec(header);
+  return Boolean(match) && parseInt(match[1], 10) >= 31536000;
+}
+
+/**
+ * CSP s `unsafe-inline`/`unsafe-eval` nebo wildcardem ve script-src reálně
+ * nechrání; `!!header` ji přesto hlásilo jako splněnou.
+ */
+function hasMeaningfulCsp(header) {
+  if (!header) return false;
+  const scriptSrc = /(?:^|;)\s*script-src([^;]*)/i.exec(header)?.[1] ?? header;
+  if (/'unsafe-inline'|'unsafe-eval'/i.test(scriptSrc)) return false;
+  if (/(^|\s)\*(\s|$)/.test(scriptSrc)) return false;
+  return true;
+}
+
 export async function auditNIS2AndPQC(url) {
   let browser;
   try {
@@ -1651,57 +1957,56 @@ export async function auditNIS2AndPQC(url) {
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     const page = await context.newPage();
     
-    let securityDetails = null;
-    let headers = null;
+    // Hlavičky i TLS bereme z návratové hodnoty page.goto().
+    //
+    // Dřív se odchytávaly v page.on('response') s podmínkou
+    // `response.url() === url` — po jakémkoli přesměrování (http→https, www.)
+    // se URL neshodla a `headers` zůstaly null, takže VŠECHNY NIS2 kontroly
+    // hlásily false. A `response.securityDetails()` vrací Promise, která se
+    // nikdy neawaitovala: `pqc.secure` tak bylo vždy true (i na čistém HTTP)
+    // a `protocol` undefined → každý web včetně TLS 1.3 dostal hlášku
+    // "Zastaralý protokol!".
+    const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    if (!response) throw new Error('Server nevrátil žádnou odpověď.');
 
-    page.on('response', response => {
-      if (response.url() === url || response.url() === url + '/') {
-        headers = response.headers();
-        try {
-          securityDetails = response.securityDetails();
-        } catch (e) {
-          // fallback pokud securityDetails není dostupné (např. HTTP bez S)
-        }
-      }
-    });
-
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
-    
-    // Zpracování NIS2 (hlavičky)
-    const hsts = headers && headers['strict-transport-security'];
-    const csp = headers && headers['content-security-policy'];
-    const xcto = headers && headers['x-content-type-options'];
-    const xfo = headers && headers['x-frame-options'];
+    const headers = response.headers();
+    const securityDetails = await response.securityDetails();
 
     const nis2 = {
-      hsts: !!hsts,
-      csp: !!csp,
-      xContentTypeOptions: xcto === 'nosniff',
-      xFrameOptions: !!xfo,
+      hsts: hasStrongHsts(headers['strict-transport-security']),
+      csp: hasMeaningfulCsp(headers['content-security-policy']),
+      xContentTypeOptions: (headers['x-content-type-options'] || '').toLowerCase() === 'nosniff',
+      // Moderní ekvivalent X-Frame-Options je CSP frame-ancestors.
+      xFrameOptions: Boolean(headers['x-frame-options']) ||
+        /frame-ancestors/i.test(headers['content-security-policy'] || ''),
+      referrerPolicy: Boolean(headers['referrer-policy']),
+      permissionsPolicy: Boolean(headers['permissions-policy']),
     };
 
-    // Zpracování PQC / TLS 
+    const protocol = securityDetails?.protocol || '';
     const pqc = {
-      secure: !!securityDetails,
-      protocol: securityDetails ? securityDetails.protocol : 'None',
-      subjectName: securityDetails ? securityDetails.subjectName : 'None',
-      issuer: securityDetails ? securityDetails.issuer : 'None',
-      isQuantumSafe: false, // Zatím je ML-KEM/Kyber vzácné
+      secure: Boolean(securityDetails),
+      protocol: protocol || 'None',
+      subjectName: securityDetails?.subjectName || 'None',
+      issuer: securityDetails?.issuer || 'None',
+      isQuantumSafe: false, // ML-KEM/Kyber je zatím vzácné
       recommendation: ''
     };
 
-    const protocol = pqc.protocol || '';
-    if (protocol.includes('TLS 1.3') || protocol.includes('QUIC')) {
+    if (!securityDetails) {
+      pqc.recommendation = "Spojení neběží přes TLS (čisté HTTP). Nasaďte HTTPS — bez něj nelze NIS2 požadavky splnit.";
+    } else if (protocol.includes('TLS 1.3') || protocol.includes('QUIC')) {
       pqc.recommendation = "TLS 1.3 je vynikající základ. Doporučujeme sledovat implementaci ML-KEM (Kyber) na straně poskytovatele certifikátů pro plnou PQC odolnost.";
     } else if (protocol.includes('TLS 1.2')) {
       pqc.recommendation = "TLS 1.2 je přijatelné, ale pro budoucí PQC odolnost zvažte přechod na TLS 1.3.";
     } else {
-      pqc.recommendation = "Zastaralý protokol! Okamžitě aktualizujte konfiguraci serveru kvůli zranitelnosti.";
+      pqc.recommendation = `Zastaralý protokol (${protocol}). Aktualizujte konfiguraci serveru.`;
     }
 
     return {
       success: true,
       url,
+      finalUrl: response.url(),
       nis2,
       pqc
     };
@@ -1713,6 +2018,50 @@ export async function auditNIS2AndPQC(url) {
       await browser.close();
     }
   }
+}
+
+// Anycast CDN a globální hostingy: geolokace jejich IP ukazuje na nejbližší
+// PoP, ne na místo, kde jsou data uložená. Vyvozovat z toho porušení GDPR
+// je metodicky nesprávné.
+const ANYCAST_CDN_PATTERNS = [
+  'cloudflare', 'cdn.cloudflare', 'fastly', 'akamai', 'akamaized', 'edgekey',
+  'edgesuite', 'cloudfront', 'azureedge', 'azurefd', 'stackpathdns',
+  'web.app', 'firebaseapp.com', 'firebasestorage', 'googleusercontent',
+  'gstatic.com', 'googleapis.com', 'ggpht.com', 'jsdelivr', 'unpkg',
+  'bunnycdn', 'b-cdn.net', 'vercel.app', 'netlify.app', 'pages.dev',
+];
+
+function isAnycastCdnHost(hostname) {
+  const host = String(hostname).toLowerCase();
+  return ANYCAST_CDN_PATTERNS.some((needle) => host.includes(needle));
+}
+
+/**
+ * true = vše v EHP, false = prokazatelně mimo, null = neprůkazné.
+ * Neprůkazné je poctivější než FAIL: geolokace CDN nevypovídá o rezidenci dat.
+ */
+function residencyVerdict(locations, nonEULocations, cdnDomains) {
+  if (locations.length === 0) return null;
+  if (nonEULocations.length > 0) return false;
+  // Zbyly jen CDN domény — o skutečné rezidenci nic nevíme.
+  if (cdnDomains.length > 0 && locations.length === cdnDomains.length) return null;
+  return true;
+}
+
+function residencyWarning(locations, nonEULocations, cdnDomains) {
+  if (locations.length === 0) return 'Nepodařilo se zjistit umístění serverů.';
+
+  const cdnNote = cdnDomains.length > 0
+    ? ` ${cdnDomains.length} z ${locations.length} domén běží na anycast CDN, kde geolokace ukazuje na PoP, ne na místo uložení dat — rezidenci u nich ověřte ve smlouvě s poskytovatelem.`
+    : '';
+
+  if (nonEULocations.length > 0) {
+    return `${nonEULocations.length} z ${locations.length} serverů je mimo EU/EHP.${cdnNote}`;
+  }
+  if (cdnDomains.length === locations.length) {
+    return `Všechny zjištěné domény běží na anycast CDN, takže rezidenci dat z IP určit nelze.${cdnNote}`;
+  }
+  return `Zjištěné servery mimo CDN jsou v EU/EHP.${cdnNote}`;
 }
 
 export async function auditGreenAndResidency(url) {
@@ -1760,20 +2109,38 @@ export async function auditGreenAndResidency(url) {
     const nonEULocations = [];
     let usesUSServers = false;
 
-    // EEA seznam
-    const euCountries = ['AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE'];
+    // EHP = EU (27) + Island, Lichtenštejnsko, Norsko. Dřív tu bylo jen 27
+    // zemí EU, přestože komentář mluvil o EEA — norský server tak vycházel
+    // jako mimo EHP, ačkoli adekvátnost platí.
+    const eeaCountries = [
+      'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR',
+      'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK',
+      'SI', 'ES', 'SE',
+      'IS', 'LI', 'NO',
+    ];
+
+    const cdnDomains = [];
 
     for (const [domain, ip] of domainToIp.entries()) {
       const geo = geoip.lookup(ip);
-      if (geo) {
-        const isEU = euCountries.includes(geo.country);
-        const locInfo = { domain, ip, country: geo.country, isEU };
-        locations.push(locInfo);
-        
-        if (!isEU) {
-          nonEULocations.push(locInfo);
-          if (geo.country === 'US') usesUSServers = true;
-        }
+      if (!geo) continue;
+
+      const isEU = eeaCountries.includes(geo.country);
+      const onCdn = isAnycastCdnHost(domain);
+      const locInfo = { domain, ip, country: geo.country, isEU, onCdn };
+      locations.push(locInfo);
+
+      if (onCdn) {
+        // U anycast CDN ukazuje geolokace na nejbližší PoP, ne na místo
+        // uložení dat. Označit to za porušení GDPR je falešný poplach —
+        // živý test na Firebase Hostingu hlásil "3 ze 3 serverů mimo EU".
+        cdnDomains.push(locInfo);
+        continue;
+      }
+
+      if (!isEU) {
+        nonEULocations.push(locInfo);
+        if (geo.country === 'US') usesUSServers = true;
       }
     }
 
@@ -1792,7 +2159,17 @@ export async function auditGreenAndResidency(url) {
         totalDomains: domainToIp.size,
         locations,
         nonEULocations,
-        usesUSServers
+        usesUSServers,
+        // UI i tiskový report tato dvě pole četly, ale agent je nikdy
+        // nevracel — badge byl proto vždy červený a text prázdný,
+        // i u čistě evropského hostingu.
+        //
+        // null = neprůkazné: geolokace podle IP je u anycast CDN
+        // (Cloudflare, Fastly, Akamai) nespolehlivá, protože ukazuje na
+        // PoP, ne na místo uložení dat.
+        cdnDomains,
+        isEUCompliant: residencyVerdict(locations, nonEULocations, cdnDomains),
+        warning: residencyWarning(locations, nonEULocations, cdnDomains)
       }
     };
   } catch (err) {
@@ -1946,6 +2323,7 @@ export async function runChaosTest(url) {
         delayedRequests,
         consoleErrors,
         pageCrashed,
+        isResilient,
         rating: isResilient ? 'DORA Compliant (Resilient)' : 'Failed (Fragile)'
       }
     };
@@ -1959,21 +2337,60 @@ export async function runChaosTest(url) {
   }
 }
 
+/**
+ * POZOR: jde o SIMULACI, ne o naměřená data.
+ *
+ * Dřív se `renewablePercentage` počítalo přes Math.random() a přes
+ * /api/auraguard/grid-status se to podávalo jako fakt. V nástroji, který se
+ * prodává jako compliance produkt, je to zavádějící. Výstup je proto
+ * explicitně označený `simulated: true` a hodnota je deterministická podle
+ * denní doby — náhoda budila dojem měření, které neprobíhá.
+ *
+ * TODO: napojit ENTSO-E Transparency Platform nebo Electricity Maps API
+ *       a přepnout `simulated` na false.
+ */
 export function getGridEnergyStatus() {
-  // Simulátor (Mock) pro energetický status sítě.
-  // V reálné produkci by toto volalo API jako ENTSO-E nebo národní operátory sítě.
   const hour = new Date().getHours();
-  // Simulujeme, že v noci a odpoledne je více "šedé" energie, přes den (soláry) více "zelené"
+  // Přes den (soláry) je v síti víc obnovitelné energie než v noci.
   const isHighCarbon = (hour < 8 || hour > 18);
-  
+
   return {
+    simulated: true,
+    source: 'simulace podle denní doby (žádné reálné měření)',
     status: isHighCarbon ? 'HIGH_CARBON' : 'LOW_CARBON',
-    renewablePercentage: isHighCarbon ? Math.floor(Math.random() * 20) + 10 : Math.floor(Math.random() * 40) + 50, // 10-30% vs 50-90%
-    recommendation: isHighCarbon 
-      ? 'Doporučujeme odložit náročné výpočetní úlohy (ML, zálohování) na dobu s vyšším podílem zelené energie v síti.' 
+    renewablePercentage: isHighCarbon ? 20 : 65,
+    disclaimer: 'Simulovaná hodnota. Pro auditní účely použijte data od provozovatele přenosové soustavy (ENTSO-E).',
+    recommendation: isHighCarbon
+      ? 'Doporučujeme odložit náročné výpočetní úlohy (ML, zálohování) na dobu s vyšším podílem zelené energie v síti.'
       : 'Síť má dostatek obnovitelné energie. Ideální čas pro spuštění náročných batch jobů.'
   };
 }
+
+// Volání AI API viditelná z prohlížeče. Seznam je nutně neúplný — server-side
+// integrace se tudy zachytit nedají, viz `status: 'inconclusive'` níž.
+const AI_API_HOST_PATTERNS = [
+  'api.openai.com', 'anthropic.com', 'generativelanguage.googleapis',
+  'huggingface.co', 'openai.azure.com', 'api.cohere', 'api.mistral.ai',
+  'api.replicate.com', 'bedrock-runtime', 'aiplatform.googleapis',
+  'api.perplexity.ai', 'api.together.xyz', 'api.groq.com',
+];
+
+// Slovní hranice + diakritika. `\b` v JS nefunguje spolehlivě u neanglických
+// znaků, proto u českých výrazů ohraničujeme mezerou/interpunkcí.
+const AI_DISCLAIMER_PATTERN = new RegExp(
+  [
+    '\\bAI\\b',
+    '\\bA\\.I\\.',
+    'umělou?\\s+inteligenc',
+    'umělá\\s+inteligence',
+    'generativní',
+    'vygenerováno\\s+(AI|umělou)',
+    'generated\\s+by\\s+AI',
+    'AI[- ]asistent',
+    'chatbot',
+  ].join('|'),
+  'i'
+);
 
 export async function auditAIAct(url) {
   let browser;
@@ -1986,17 +2403,31 @@ export async function auditAIAct(url) {
     
     page.on('request', request => {
       const reqUrl = request.url().toLowerCase();
-      if (reqUrl.includes('api.openai.com') || reqUrl.includes('anthropic.com') || reqUrl.includes('generativelanguage.googleapis') || reqUrl.includes('huggingface.co')) {
+      if (AI_API_HOST_PATTERNS.some((pattern) => reqUrl.includes(pattern))) {
         aiApisDetected.push(request.url());
       }
     });
 
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
     
-    const pageText = await page.evaluate(() => document.body.innerText.toLowerCase());
-    const hasDisclaimer = pageText.includes('umělá inteligence') || pageText.includes('ai') || pageText.includes('vygenerováno') || pageText.includes('generativní');
+    const pageText = await page.evaluate(() => document.body.innerText);
 
-    const isCompliant = aiApisDetected.length === 0 || hasDisclaimer;
+    // Dřív se testovalo pageText.includes('ai') — 'ai' je podřetězec slov
+    // email, detail, main, mail, fair, retail… takže prakticky každá stránka
+    // prošla jako compliant a skener nikdy nic nenašel. Teď slovní hranice.
+    const hasDisclaimer = AI_DISCLAIMER_PATTERN.test(pageText);
+
+    const usesAi = aiApisDetected.length > 0;
+    // Detekce vidí jen volání z prohlížeče — většina AI integrací běží
+    // server-side, kde tenhle skener nic nezachytí. Když nic nenajdeme,
+    // nesmíme tvrdit "splňuje AI Act"; správný výsledek je "neprůkazné".
+    const status = usesAi ? (hasDisclaimer ? 'pass' : 'fail') : 'inconclusive';
+
+    const RATINGS = {
+      pass: 'PASS: Detekováno využití AI a zároveň nalezeno upozornění pro uživatele.',
+      fail: 'FAIL: Aplikace volá AI API, ale upozornění pro uživatele nebylo nalezeno (AI Transparency Violation).',
+      inconclusive: 'NEPRŮKAZNÉ: Z prohlížeče nebylo zachyceno volání AI API. Server-side integrace tímto testem nelze vyloučit — posuďte ručně.',
+    };
 
     return {
       success: true,
@@ -2004,8 +2435,10 @@ export async function auditAIAct(url) {
       aiAct: {
         apisDetected: aiApisDetected,
         hasDisclaimer,
-        isCompliant,
-        rating: isCompliant ? 'PASS: Aplikace splňuje AI Act (nebo AI nevyužívá)' : 'FAIL: Aplikace pravděpodobně využívá AI bez dostatečného upozornění uživatele (AI Transparency Violation).'
+        status,
+        // null = neprůkazné; UI nesmí neprůkazný výsledek zobrazit jako splněno
+        isCompliant: status === 'inconclusive' ? null : status === 'pass',
+        rating: RATINGS[status]
       }
     };
   } catch (err) {
@@ -2016,6 +2449,37 @@ export async function auditAIAct(url) {
   }
 }
 
+// Prefixy názvů trackovacích cookies. Dřív byly jen tři (_ga, _fbp, _hj).
+const TRACKER_COOKIE_NAMES = [
+  '_ga', '_gid', '_gcl_au', '_gac_',        // Google Analytics / Ads
+  '_fbp', '_fbc',                            // Meta Pixel
+  '_hj',                                     // Hotjar
+  '_uetsid', '_uetvid',                      // Microsoft/Bing UET
+  '_clck', '_clsk',                          // Microsoft Clarity
+  'IDE', 'test_cookie', 'DSID',              // DoubleClick
+  'li_sugr', 'bcookie', 'lidc',              // LinkedIn
+  '_pin_unauth', '_pinterest_',              // Pinterest
+  '_ttp', 'ttclid',                          // TikTok
+  '_scid', '_schn',                          // Snapchat
+  'mp_', 'amplitude_', 'ajs_',               // Mixpanel / Amplitude / Segment
+  '__hstc', '__hssrc', 'hubspotutk',         // HubSpot
+  'intercom-',                               // Intercom
+];
+
+const TRACKER_STORAGE_KEYS = [
+  'amplitude', 'mixpanel', 'ga:', '_ga', 'segment', 'ajs_', 'hotjar',
+  'clarity', 'fullstory', 'heap', 'posthog', 'intercom', 'hubspot',
+];
+
+const TRACKER_HOSTS = [
+  'google-analytics.com', 'googletagmanager.com', 'doubleclick.net',
+  'facebook.net', 'facebook.com/tr', 'hotjar.com', 'clarity.ms',
+  'amplitude.com', 'mixpanel.com', 'segment.io', 'segment.com',
+  'fullstory.com', 'heap.io', 'posthog.com', 'bat.bing.com',
+  'analytics.tiktok.com', 'sc-static.net', 'snapchat.com',
+  'ads-twitter.com', 'linkedin.com/px', 'hs-analytics.net',
+];
+
 export async function auditStrictCookies(url) {
   let browser;
   try {
@@ -2024,6 +2488,18 @@ export async function auditStrictCookies(url) {
     const context = await browser.newContext();
     const page = await context.newPage();
     
+    // Odchozí požadavky na tracking domény jsou nejspolehlivější signál —
+    // trackovat lze i bez cookie.
+    const trackerRequestHosts = new Set();
+    page.on('request', (request) => {
+      try {
+        const host = new URL(request.url()).hostname;
+        if (TRACKER_HOSTS.some((needle) => host.includes(needle))) trackerRequestHosts.add(host);
+      } catch {
+        // neparsovatelná URL požadavku — ignorujeme
+      }
+    });
+
     // Načteme stránku a NIKAM neklikáme
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
     
@@ -2031,28 +2507,42 @@ export async function auditStrictCookies(url) {
     await new Promise(r => setTimeout(r, 5000));
     
     const storageData = await page.evaluate(() => {
-      let ls = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        ls[key] = localStorage.getItem(key);
-      }
-      return {
-        cookies: document.cookie,
-        localStorage: ls
+      const read = (store) => {
+        const out = {};
+        for (let i = 0; i < store.length; i++) {
+          const key = store.key(i);
+          out[key] = store.getItem(key);
+        }
+        return out;
       };
+      return { localStorage: read(localStorage), sessionStorage: read(sessionStorage) };
     });
 
-    const cookiesArr = storageData.cookies ? storageData.cookies.split(';') : [];
-    
-    // Hledáme typické trackery
-    let suspiciousFound = [];
-    cookiesArr.forEach(c => {
-      if (c.includes('_ga') || c.includes('_fbp') || c.includes('_hj')) suspiciousFound.push(c.trim());
-    });
-    
-    Object.keys(storageData.localStorage).forEach(k => {
-      if (k.includes('amplitude') || k.includes('mixpanel') || k.includes('ga:')) suspiciousFound.push(`LS: ${k}`);
-    });
+    // `document.cookie` nevidí HttpOnly cookies — tedy právě ty, které nastavuje
+    // server-side tracking. context.cookies() je vidí.
+    const cookies = await context.cookies();
+
+    const suspiciousFound = [];
+
+    for (const cookie of cookies) {
+      // Dřív se testovalo `c.includes('_ga')` na celém řetězci "název=hodnota",
+      // takže se matchovala i hodnota cookie → falešná pozitiva.
+      if (TRACKER_COOKIE_NAMES.some((prefix) => cookie.name.startsWith(prefix))) {
+        suspiciousFound.push(`Cookie: ${cookie.name} (${cookie.domain})`);
+      }
+    }
+
+    for (const [store, entries] of [['LS', storageData.localStorage], ['SS', storageData.sessionStorage]]) {
+      for (const key of Object.keys(entries)) {
+        if (TRACKER_STORAGE_KEYS.some((needle) => key.toLowerCase().includes(needle))) {
+          suspiciousFound.push(`${store}: ${key}`);
+        }
+      }
+    }
+
+    for (const host of trackerRequestHosts) {
+      suspiciousFound.push(`Požadavek na tracking doménu: ${host}`);
+    }
 
     const isCompliant = suspiciousFound.length === 0;
 
@@ -2062,8 +2552,10 @@ export async function auditStrictCookies(url) {
       gdpr: {
         suspiciousItems: suspiciousFound,
         isCompliant,
-        rating: isCompliant 
-          ? 'PASS: Bez interakce s Cookie bannerem nebyly uloženy žádné podezřelé trackery.' 
+        // Seznam trackerů je nutně neúplný, takže "nic nenalezeno" neznamená
+        // prokazatelný soulad — formulace to musí odrážet.
+        rating: isCompliant
+          ? 'BEZ NÁLEZU: Před udělením souhlasu nebyly nalezeny trackery ze sledovaného seznamu. Nejde o důkaz plného souladu — seznam není vyčerpávající.'
           : 'FAIL: ePrivacy Violation. Aplikace ukládá analytické/marketingové trackery před udělením souhlasu.'
       }
     };
@@ -2075,76 +2567,141 @@ export async function auditStrictCookies(url) {
   }
 }
 
+// Zobrazovaný název knihovny != název npm balíčku. 'vue.js' a 'next.js'
+// v OSV neexistují, takže dotaz vždy vrátil prázdno.
+const NPM_PACKAGE_NAMES = {
+  'jQuery': 'jquery',
+  'React': 'react',
+  'Vue.js': 'vue',
+  'Angular': '@angular/core',
+  'Lodash': 'lodash',
+  'Next.js': 'next',
+};
+
+/** Vrátí semver použitelný pro OSV, jinak null (např. z 'detekováno', '3.x'). */
+function normalizeSemver(raw) {
+  if (typeof raw !== 'string') return null;
+  const match = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(raw);
+  if (!match) return null;
+  return `${match[1]}.${match[2]}.${match[3] ?? '0'}`;
+}
+
 export async function auditCRAVulnerabilities(url) {
   // 1. Získáme SBOM
   const sbomReport = await auditCRA_SBOM(url);
   const libraries = sbomReport.sbom;
   
+  // Prázdný SBOM se dřív vracel jako `isCompliant: true`. To je nejhorší druh
+  // false negative: "vše v pořádku", protože skener nic neviděl. A vidí toho
+  // málo — detekce stojí na globálních proměnných, které bundlovaná aplikace
+  // (Vite/webpack, ESM, tree-shaking) do window vůbec nevystaví.
   if (!libraries || libraries.length === 0) {
     return {
       success: true,
       url,
-      cra: { libraries: [], vulnerabilities: [], isCompliant: true, rating: 'Nejsou detekovány žádné knihovny.' }
+      cra: {
+        libraries: [],
+        vulnerabilities: [],
+        skipped: [],
+        isCompliant: null, // null = neprůkazné, NE splněno
+        rating: 'NEPRŮKAZNÉ: SBOM se nepodařilo sestavit (bundlovaná aplikace nevystavuje knihovny do window). Ověřte závislosti ze zdrojového package.json.'
+      }
     };
   }
 
-  let vulnerabilities = [];
-  
+  const vulnerabilities = [];
+  const skipped = [];
+
   // 2. Pro každou knihovnu zkontrolujeme zranitelnosti přes OSV API
-  // OSV api bere 'name' a 'version' v ekosystému 'npm' (předpokládáme frontend ekosystém)
   for (const lib of libraries) {
-    if (lib.version !== 'Neznámá' && lib.version !== 'detekováno') {
-      try {
-        const query = {
-          version: lib.version.replace(/[^0-9.]/g, ''), // Očištění verze
-          package: { name: lib.name.toLowerCase(), ecosystem: 'npm' }
-        };
-        
-        const response = await fetch('https://api.osv.dev/v1/query', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(query)
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          if (data.vulns && data.vulns.length > 0) {
-            data.vulns.forEach(v => {
-              vulnerabilities.push({
-                library: lib.name,
-                version: lib.version,
-                cve: v.aliases ? v.aliases.find(a => a.startsWith('CVE-')) || v.id : v.id,
-                details: v.details || v.summary || 'Bez popisu',
-                severity: v.database_specific?.severity || 'HIGH'
-              });
-            });
-          }
-        }
-      } catch (err) {
-        console.error(`OSV API Error for ${lib.name}:`, err);
+    const pkgName = NPM_PACKAGE_NAMES[lib.name] || lib.name.toLowerCase();
+    const version = normalizeSemver(lib.version);
+
+    // Dřív se filtrovalo jen na přesnou rovnost s 'detekováno', takže React
+    // s verzí 'detekováno (přes DevTools)' filtrem prošel a do OSV se poslal
+    // prázdný řetězec. Vue '3.x' se očistilo na '3.' — taky neplatné.
+    if (!version) {
+      skipped.push({ library: lib.name, reason: `Verze "${lib.version}" není použitelná pro dotaz do OSV.` });
+      continue;
+    }
+
+    try {
+      const response = await fetch('https://api.osv.dev/v1/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(15000),
+        body: JSON.stringify({ version, package: { name: pkgName, ecosystem: 'npm' } })
+      });
+
+      if (!response.ok) {
+        // Dřív se selhání OSV tiše ignorovalo → výsledek "PASS".
+        skipped.push({ library: lib.name, reason: `OSV vrátilo ${response.status}.` });
+        continue;
       }
+
+      const data = await response.json();
+      for (const v of data.vulns || []) {
+        vulnerabilities.push({
+          library: lib.name,
+          version: lib.version,
+          cve: v.aliases?.find(a => a.startsWith('CVE-')) || v.id,
+          details: v.details || v.summary || 'Bez popisu',
+          severity: v.database_specific?.severity || 'HIGH'
+        });
+      }
+    } catch (err) {
+      console.error(`OSV API Error for ${lib.name}:`, err);
+      skipped.push({ library: lib.name, reason: `Dotaz do OSV selhal: ${err.message}` });
     }
   }
 
-  const isCompliant = vulnerabilities.length === 0;
+  const checkedCount = libraries.length - skipped.length;
+  let isCompliant;
+  let rating;
+
+  if (vulnerabilities.length > 0) {
+    isCompliant = false;
+    rating = `FAIL: Nalezeno ${vulnerabilities.length} zranitelností. Okamžitě aktualizujte závislosti!`;
+  } else if (checkedCount === 0) {
+    isCompliant = null;
+    rating = `NEPRŮKAZNÉ: Žádnou z ${libraries.length} detekovaných knihoven nešlo ověřit proti OSV.`;
+  } else {
+    isCompliant = true;
+    rating = skipped.length > 0
+      ? `ČÁSTEČNÝ PASS: ${checkedCount} z ${libraries.length} knihoven bez známých CVE; ${skipped.length} se nepodařilo ověřit.`
+      : 'PASS: SBOM neobsahuje známé CVE zranitelnosti (CRA Compliant).';
+  }
 
   return {
     success: true,
     url,
-    cra: {
-      libraries,
-      vulnerabilities,
-      isCompliant,
-      rating: isCompliant 
-        ? 'PASS: SBOM neobsahuje známé CVE zranitelnosti (CRA Compliant).' 
-        : `FAIL: Nalezeno ${vulnerabilities.length} zranitelností. Okamžitě aktualizujte závislosti!`
-    }
+    cra: { libraries, vulnerabilities, skipped, isCompliant, rating }
   };
 }
 
 /**
  * FÁZE 4: UPTIME & FORM MONITORING (Bez Playwrightu)
  */
+
+/**
+ * fetch, který sleduje přesměrování ručně a každý hop znovu prožene SSRF
+ * guardem. Vestavěné `redirect: 'follow'` validuje jen první adresu.
+ */
+async function fetchFollowingSafeRedirects(rawUrl, options = {}, maxHops = 5) {
+  let current = await assertPublicHttpUrl(rawUrl);
+
+  for (let hop = 0; hop <= maxHops; hop++) {
+    const res = await fetch(current, { ...options, redirect: 'manual' });
+    const isRedirect = res.status >= 300 && res.status < 400;
+    const location = res.headers.get('location');
+    if (!isRedirect || !location) return res;
+
+    if (hop === maxHops) throw new Error('Překročen limit přesměrování.');
+    current = await assertPublicHttpUrl(new URL(location, current).href);
+  }
+
+  throw new Error('Překročen limit přesměrování.');
+}
 
 export async function checkPage(target) {
   const start = Date.now();
@@ -2163,9 +2720,12 @@ export async function checkPage(target) {
   const timeout = setTimeout(() => controller.abort(), target.timeoutMs || 10000);
 
   try {
-    const res = await fetch(target.url, {
+    // `redirect: 'follow'` obcházel SSRF kontrolu — stačilo veřejnou adresou
+    // přesměrovat na interní. Přesměrování proto sledujeme ručně a každý hop
+    // znovu ověřujeme. Guard tu voláme i na vstupní URL: funkce je
+    // exportovaná, takže se nemůžeme spolehnout jen na middleware v server.js.
+    const res = await fetchFollowingSafeRedirects(target.url, {
       signal: controller.signal,
-      redirect: 'follow',
       headers: { 'User-Agent': 'auraguard-monitor/1.0' },
     });
     const body = await res.text();
@@ -2212,10 +2772,10 @@ export async function checkForm(target) {
     const method = (target.method || 'POST').toUpperCase();
     const body = method === 'GET' ? undefined : new URLSearchParams(target.fields || {});
 
-    const res = await fetch(target.url, {
+    const res = await fetch(await assertPublicHttpUrl(target.url), {
       method,
       signal: controller.signal,
-      redirect: 'manual',
+      redirect: 'manual', // POST se nikam nepřesměrovává, cíl zůstává ověřený
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': 'auraguard-monitor/1.0',

@@ -62,6 +62,19 @@ jest.mock('../db.js', () => {
   };
 });
 
+// Mock SSRF guardu: testy nesmí záviset na DNS. Skutečné chování guardu
+// pokrývá tests/ssrf-guard.test.js; tady jen simulujeme "veřejná adresa
+// projde, interní ne", aby šlo ověřit, že ho routy vůbec volají.
+jest.mock('../ssrf-guard.js', () => ({
+  assertPublicHttpUrl: jest.fn(async (raw) => {
+    const parsed = new URL(raw);
+    if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.)/.test(parsed.hostname)) {
+      throw new Error('Cílová adresa míří na neveřejný/interní rozsah IP.');
+    }
+    return parsed.toString();
+  })
+}));
+
 // Mock the auth.js middleware
 jest.mock('../auth.js', () => {
   return {
@@ -127,6 +140,29 @@ describe('AuraAuraGuard Hub API & SDK Integration Tests', () => {
     expect(res.body.url).toEqual('https://example.com/test');
     expect(res.body.interval).toEqual('5m');
     expect(res.body.slowApiThresholdMs).toEqual(2000);
+  });
+
+  it('POST /api/monitors by měl odmítnout interní URL (SSRF)', async () => {
+    const res = await request(app)
+      .post('/api/monitors')
+      .send({ name: 'Interní', url: 'http://169.254.169.254/latest/meta-data/' });
+
+    expect(res.statusCode).toEqual(400);
+    expect(res.body.error).toMatch(/neveřejn|interní/i);
+  });
+
+  it('PATCH /api/monitors/:id by měl ignorovat pokus o přepsání userId', async () => {
+    const createRes = await request(app)
+      .post('/api/monitors')
+      .send({ name: 'Ownership', url: 'https://example.com/own' });
+
+    const updateRes = await request(app)
+      .patch(`/api/monitors/${createRes.body.id}`)
+      .send({ active: false, userId: 'attacker-999', lastRunStatus: 'success' });
+
+    expect(updateRes.statusCode).toEqual(200);
+    expect(updateRes.body.userId).toEqual('mock-user-123');
+    expect(updateRes.body.lastRunStatus).not.toEqual('success');
   });
 
   it('PATCH /api/monitors/:id by měl aktualizovat status monitoru', async () => {

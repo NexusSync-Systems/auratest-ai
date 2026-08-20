@@ -87,12 +87,40 @@ describe('Utility Functions Unit Tests', () => {
       const script = generatePlaywrightScript(steps, 'https://start.com');
 
       expect(script).toContain("import { test, expect } from '@playwright/test'");
-      expect(script).toContain("await page.goto('https://start.com')");
-      expect(script).toContain("await page.click('[data-qa-id=\"1\"]')");
-      expect(script).toContain("await page.fill('[data-qa-id=\"2\"]', 'test_text')");
-      expect(script).toContain("await page.goto('https://example.com')");
+      // Hodnoty se escapují přes JSON.stringify (dvojité uvozovky) — viz test
+      // na injektáž níž.
+      expect(script).toContain('await page.goto("https://start.com")');
+      expect(script).toContain('await page.click("[data-qa-id=\\"1\\"]")');
+      expect(script).toContain('await page.fill("[data-qa-id=\\"2\\"]", "test_text")');
+      expect(script).toContain('await page.goto("https://example.com")');
       // "finish" should not generate code
       expect(script).not.toContain("finish");
+    });
+
+    it('by neměla dovolit injektáž kódu přes hodnotu z LLM', () => {
+      const payload = "'); require('child_process').exec('rm -rf /'); //";
+      const steps = [
+        {
+          step: 1,
+          action: 'type',
+          target: 'email',
+          value: payload,
+          reasoning: 'Zlomyslny\nviceradkovy reasoning */'
+        }
+      ];
+      const script = generatePlaywrightScript(steps, 'https://start.com');
+
+      // Payload musi zustat uvnitr retezcoveho literalu (JSON.stringify),
+      // ne se stat kodem.
+      expect(script).toContain(`await page.fill("[data-qa-id=\\"email\\"]", ${JSON.stringify(payload)});`);
+
+      // Reasoning nesmi rozbit komentar na dalsi radek ani ukoncit blok.
+      const commentLine = script.split('\n').find((l) => l.includes('Step 1:'));
+      expect(commentLine).toBe('  // Step 1: Zlomyslny viceradkovy reasoning * /');
+
+      // Cely vystup musi byt syntakticky validni JS (Function() kod pouze
+      // zkompiluje, nespousti ho).
+      expect(() => new Function(script.replace(/^import .*$/m, ''))).not.toThrow();
     });
 
     it('by měla vygenerovat validní scrollovaní a čekání', () => {

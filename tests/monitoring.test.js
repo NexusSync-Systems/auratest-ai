@@ -142,7 +142,12 @@ describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
       'session_test_perf'
     );
 
-    expect(result.bugs).toContain('[AuraAuraGuard-Performance] Zaseknutí UI (Long Task): 180ms');
+    // Výkonnostní signály nejsou chyby funkčnosti: dřív padaly do `bugs`
+    // a přes `success: bugs.length === 0` označily za neúspěch prakticky
+    // každou reálnou aplikaci (long task > 100 ms je běžný).
+    expect(result.warnings).toContain('[AuraAuraGuard-Performance] Zaseknutí UI (Long Task): 180ms');
+    expect(result.bugs).not.toContain('[AuraAuraGuard-Performance] Zaseknutí UI (Long Task): 180ms');
+    expect(result.success).toBe(true);
   });
 
   it('by měl zachytit neošetřené výjimky přes pageerror a síťové chyby přes response', async () => {
