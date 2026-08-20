@@ -61,7 +61,17 @@ auraguard --url https://mojeaplikace.cz --audit gdpr
 auraguard --url https://mojeaplikace.cz --audit cve
 ```
 
-Pokud jakýkoliv modul nahlásí kritickou nesrovnalost s legislativou, `auraguard` vrací `exit code 1` a úspěšně shodí např. GitHub Actions.
+### Návratové kódy
+
+| Kód | Význam |
+|---|---|
+| `0` | Vše prošlo |
+| `1` | Aplikace nesplňuje některou ze směrnic — pipeline se zastaví |
+| `2` | Chyba použití (neplatná URL, neznámý typ auditu) |
+| `3` | Interní chyba nástroje (nedostupné LLM, timeout) |
+
+Rozlišení 1 a 3 je podstatné: „web nesplňuje směrnice" je jiná situace než
+„nástroj se nespustil" a pipeline na ně má reagovat odlišně.
 
 ---
 
@@ -73,13 +83,54 @@ npm run setup
 ```
 *(Zajistí Node.js závislosti i stažení Playwright prohlížečů).*
 
-**2. Start (React + Node)**
+**2. Konfigurace**
+
+Zkopírujte si `.env` a nastavte aspoň tyto proměnné. Všechny jsou
+**fail-closed** — bez nich se dotčená funkce vypne, místo aby zůstala
+otevřená:
+
+| Proměnná | K čemu | Výchozí bez ní |
+|---|---|---|
+| `ALLOWED_LLM_HOSTS` | Allowlist LLM endpointů (SSRF) | jen `LLM_HOST` |
+| `LLM_HOST` | Výchozí LLM endpoint | `http://localhost:11434` |
+| `ALLOWED_DB_HOSTS` | Allowlist DB pro zdroje překladů | DB zdroje nefungují |
+| `TRANSLATIONS_SQLITE_DIR` | Kořen pro SQLite zdroje překladů | kořen projektu |
+| `PUBLIC_BASE_URL` | Veřejná adresa serveru pro generované SDK | v produkci SDK vrací 503 |
+| `TRUST_PROXY` | `1`/`true` za reverzní proxy | `req.ip` je IP proxy |
+| `ALLOWED_ORIGINS` | CORS allowlist | jen localhost |
+| `TRIGGER_TEST_SECRET` | Sdílený secret pro CI/CD trigger | endpoint vypnutý |
+| `MAX_CONCURRENT_BROWSERS` | Strop souběžných Chromium instancí | `3` |
+| `MAX_AGENT_STEPS` | Strop kroků agenta | `50` |
+| `LLM_TIMEOUT_MS` | Timeout LLM volání | `60000` |
+
+**3. Start (React + Node)**
 ```bash
 npm run dev
 ```
 
-**3. Otevřít prohlížeč**
-Běžte na **http://localhost:3001** a začněte testovat. Pro AI funkce zadejte URL svého LLM providera v pravém panelu, případně prozkoumejte **novou záložku Audit (Ikona štítu)**.
+**4. Ověřit proti živému webu**
+```bash
+# jednorázově, pokud ještě nejsou stažené prohlížeče
+npx playwright install chromium
+
+# výchozí cíl: https://nexus-sync-8d50b.web.app/logout
+npm run test:smoke
+
+# vlastní cíl
+npm run test:smoke -- https://vase-aplikace.cz
+```
+Automatická sada (`npm test`) běží proti mockům. Tenhle skript spustí agenta
+i všechny skenery proti skutečnému webu a ověří, že vzniká video, sedí názvy
+screenshotů, nevznikají falešné nálezy z navigační politiky a skenery vracejí
+smysluplné výsledky. LLM k tomu potřeba není.
+
+**5. Otevřít prohlížeč**
+Běžte na **http://localhost:3001** a začněte testovat.
+
+> **Pozn. k AI endpointu:** pole „URL adresa AI serveru" v nastavení je
+> omezené serverovým allowlistem `ALLOWED_LLM_HOSTS`. Adresa mimo allowlist
+> se ignoruje a použije se výchozí endpoint serveru — jinak by šlo přes
+> aplikaci posílat požadavky na libovolnou interní službu (SSRF).
 
 ---
 *Vyvinuto s podporou AI (Apfel / Gemini) v rámci transformace testování na Compliance-as-a-Code.*
