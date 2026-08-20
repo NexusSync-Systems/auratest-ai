@@ -1106,3 +1106,98 @@ textarea {
     print-color-adjust: exact !important;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Přístupnost
+   
+   Nástroj překládá axe pravidla `focus-visible`, `label`, `use-of-color`
+   a `page-has-heading-one`, ale sám je porušoval. Tohle je jejich protějšek
+   v CSS; JSX část je v App.jsx.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* Viditelný fokus pro klávesnici. Dřív měly .btn, .nav-item, .history-item
+   a .inspect-tab jen :hover a :active, takže při ovládání tabulátorem nebylo
+   poznat, kde uživatel je. */
+.btn:focus-visible,
+.nav-item:focus-visible,
+.history-item:focus-visible,
+.inspect-tab:focus-visible,
+.link-button:focus-visible,
+a:focus-visible,
+button:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Text jen pro asistivní technologie — doplňuje informaci nesenou dnes
+   pouze barvou nebo emoji. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Tlačítko vypadající jako odkaz — nahrazuje dřívější <a href="#" onClick>,
+   které nebylo skutečným odkazem ani tlačítkem. */
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  font-weight: bold;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+/* .history-item je teď <button>, potřebuje resetovat výchozí styl tlačítka. */
+.history-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  font-family: inherit;
+}
+
+/* .inspect-tab je teď <button> */
+.inspect-tab {
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* Respektuj systémové omezení animací (WCAG 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* .step-card je teď <button> */
+.step-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+}
