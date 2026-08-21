@@ -48,6 +48,15 @@ running_pids() {
         p=$(cat "$f" 2>/dev/null)
         [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null && echo "$p"
     done
+
+    # Osiřelé běhy, které do PID souboru nikdy nezapsaly — třeba proto, že
+    # startovaly ještě starou verzí skriptu. Filtruje se na skutečné vyvolání
+    # skriptu; `caffeinate` a obalový `bash -c` mají jeho jméno taky
+    # v argumentech a počítaly by se navíc.
+    ps -axo pid=,command= 2>/dev/null \
+        | grep 'oracle-retry-launch\.sh' \
+        | grep -v -e ' -c ' -e 'caffeinate' -e 'grep' \
+        | awk '{print $1}'
 }
 
 # ── zastavení ────────────────────────────────────────────────────────────────

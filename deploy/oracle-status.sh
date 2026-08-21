@@ -35,6 +35,24 @@ else
     echo "${RED}neběží${RESET} — spusť: bash deploy/oracle-retry-mac.sh"
 fi
 
+# Nezávislá kontrola na osiřelé běhy.
+#
+# PID soubor zná jen tu poslední smyčku — starší běh, který přežil vadný
+# `--stop`, do něj nikdy nezapsal. A `pgrep -f` na jméno skriptu nestačí:
+# stejný řetězec mají v argumentech `caffeinate` i obalový `bash -c`.
+# Proto se filtruje na skutečné vyvolání skriptu.
+ALL_LOOPS=$(ps -axo pid=,command= 2>/dev/null \
+    | grep 'oracle-retry-launch\.sh' \
+    | grep -v -e ' -c ' -e 'caffeinate' -e 'grep' \
+    | awk '{print $1}')
+LOOP_COUNT=$(echo "$ALL_LOOPS" | grep -cE '^[0-9]+$')
+
+if [[ "$LOOP_COUNT" -gt 1 ]]; then
+    echo "          ${RED}POZOR: běží ${LOOP_COUNT} smyček (PID $(echo "$ALL_LOOPS" | tr '\n' ' '))${RESET}"
+    echo "          ${YELLOW}Navzájem si drží rezervaci kvóty a Oracle je pak škrtí (429).${RESET}"
+    echo "          Ukliď: pkill -f oracle-retry-launch.sh && bash deploy/oracle-retry-mac.sh"
+fi
+
 # ── 2. existuje instance? ────────────────────────────────────────────────────
 printf 'Instance: '
 if command -v oci >/dev/null; then
