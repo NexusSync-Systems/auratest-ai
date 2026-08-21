@@ -30,26 +30,33 @@ RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; DIM=$'\e[2m'; RESET=$'\e[0m'
 die() { echo "${RED}✘${RESET} $*" >&2; exit 1; }
 ok()  { echo "${GREEN}✔${RESET} $*"; }
 
-# Zdrojem pravdy je běžící proces, ne PID soubor.
+# Zdrojem pravdy je PID, který si smyčka sama zapíše.
 #
-# `--stop` dřív zabíjel jen `caffeinate`, jehož PID se ukládal. Vnitřní bash
-# se smyčkou to přežil, osiřel — a protože PID soubor po sobě zmizel, další
-# spuštění ho nemělo jak odhalit. Výsledkem byly dvě smyčky střílející naráz,
-# které si navzájem držely rezervaci kvóty a vyráběly „service limits
-# exceeded" na účtu, kde bylo `used: 0`.
-#
-# Hranaté závorky ve vzoru brání tomu, aby `pgrep` našel sám sebe.
-running_pids() { pgrep -f "[o]racle-retry-launch.sh" 2>/dev/null; }
+# Dvě slepé uličky, kterými to prošlo:
+#   1. Ukládat PID `caffeinate` nestačí — `--stop` zabil obal a vnitřní bash
+#      se smyčkou běžel dál. Dvě smyčky střílející naráz si navzájem drží
+#      rezervaci kvóty a vyrábějí „service limits exceeded" i 429.
+#   2. Hledat proces přes `pgrep -f oracle-retry-launch.sh` taky ne — stejný
+#      řetězec mají v argumentech `caffeinate` i obalový `bash -c`, takže
+#      jeden běh vypadal jako čtyři.
+LOOP_PID_FILE="$HOME/.auraguard-retry-loop.pid"
+
+running_pids() {
+    local p
+    for f in "$LOOP_PID_FILE" "$PID_FILE"; do
+        [[ -f "$f" ]] || continue
+        p=$(cat "$f" 2>/dev/null)
+        [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null && echo "$p"
+    done
+}
 
 # ── zastavení ────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--stop" ]]; then
-    PIDS=$(running_pids)
-    [[ -f "$PID_FILE" ]] && PIDS="$PIDS $(cat "$PID_FILE" 2>/dev/null)"
-    PIDS=$(echo "$PIDS" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u)
+    PIDS=$(running_pids | sort -u)
 
     if [[ -z "$PIDS" ]]; then
         echo "${YELLOW}Nic neběží.${RESET}"
-        rm -f "$PID_FILE"
+        rm -f "$PID_FILE" "$LOOP_PID_FILE"
         exit 0
     fi
 
@@ -64,7 +71,7 @@ if [[ "${1:-}" == "--stop" ]]; then
         kill -9 "$p" 2>/dev/null && echo "  vynuceně ukončen PID $p"
     done
 
-    rm -f "$PID_FILE"
+    rm -f "$PID_FILE" "$LOOP_PID_FILE"
     ok "Zastaveno."
     exit 0
 fi

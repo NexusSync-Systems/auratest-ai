@@ -63,7 +63,15 @@ command -v oci >/dev/null || die "OCI CLI není k dispozici. Spusť to v Cloud S
 
 KEY_FILE=$(mktemp)
 printf '%s\n' "$SSH_PUBLIC_KEY" > "$KEY_FILE"
-trap 'rm -f "$KEY_FILE"' EXIT
+
+# Smyčka si píše vlastní PID.
+#
+# Hledat ji přes `pgrep -f oracle-retry-launch.sh` nejde: stejný řetězec mají
+# v argumentech i `caffeinate` a obalový `bash -c`, takže jeden běh vypadá
+# jako čtyři. Wrapper i status skript se proto ptají tohohle souboru.
+LOOP_PID_FILE="${LOOP_PID_FILE:-$HOME/.auraguard-retry-loop.pid}"
+echo $$ > "$LOOP_PID_FILE"
+trap 'rm -f "$KEY_FILE" "$LOOP_PID_FILE"' EXIT
 
 echo "▶ Zjišťuji availability domény"
 AD_RAW=$(oci iam availability-domain list -c "$COMPARTMENT_OCID" \
@@ -202,6 +210,12 @@ while true; do
                 # Síťový výpadek na tvé straně. Opakovat je správně —
                 # zastavit smyčku kvůli vypadlé Wi-Fi by bylo hloupé.
                 echo "${YELLOW}timeout sítě${RESET}"
+            elif printf '%s' "$OUTPUT" | grep -qi "TooManyRequests\|429"; then
+                # Oracle škrtí. Není to chyba konfigurace ani vyčerpaná
+                # kvóta — jen jsme se ptali moc často. Odpověď je počkat
+                # déle, ne skončit.
+                echo "${YELLOW}Oracle škrtí (429), čekám dvojnásobek${RESET}"
+                sleep $((RETRY_INTERVAL * 2))
             elif printf '%s' "$OUTPUT" | grep -qi "LimitExceeded\|service limits were exceeded\|quota"; then
                 # „Service limits exceeded" NENÍ spolehlivý důvod k zastavení.
                 # Oracle tuhle hlášku vrací i když je kvóta prokazatelně
