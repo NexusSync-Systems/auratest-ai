@@ -103,6 +103,27 @@ while true; do
             printf '[%s] %-3d %s  %sc/%sg ... ' \
                 "$(date +%H:%M:%S)" "$attempt" "${ad##*:}" "$OCPUS" "$MEMORY_GB"
 
+            # Než střelíme znovu, ověřit, že instance mezitím nevznikla.
+            #
+            # Když volání spadne na síťový timeout, nevíme, jestli Oracle
+            # požadavek nepřijal — odpověď se prostě nevrátila. Bez téhle
+            # kontroly by smyčka jela dál a do rána vyrobila hromadu
+            # instancí, o kterých neví.
+            EXISTING=$(oci compute instance list -c "$COMPARTMENT_OCID" \
+                --display-name "$INSTANCE_NAME" \
+                --query 'data[?"lifecycle-state"!=`TERMINATED` && "lifecycle-state"!=`TERMINATING`].id' \
+                --raw-output 2>/dev/null | grep -oE 'ocid1\.instance\.[a-z0-9._-]+' | head -1)
+            if [[ -n "$EXISTING" ]]; then
+                echo "${GREEN}UŽ EXISTUJE${RESET}"
+                IP=$(oci compute instance list-vnics --instance-id "$EXISTING" \
+                    --query 'data[0]."public-ip"' --raw-output 2>/dev/null)
+                echo
+                echo "${GREEN}✔ Instance ${INSTANCE_NAME} už běží (nebo se zakládá).${RESET}"
+                echo "  Veřejná IP: ${IP:-zjisti v konzoli}"
+                echo "  ssh -i ~/.ssh/auraguard ubuntu@${IP:-<ip>}"
+                exit 0
+            fi
+
             # `--wait-for-state RUNNING` tu ZÁMĚRNĚ není. Waiter drží spojení
             # klidně sedm minut a nakonec spadne na „connection to endpoint
             # timed out" — což vypadá jako chyba konfigurace, i když se
