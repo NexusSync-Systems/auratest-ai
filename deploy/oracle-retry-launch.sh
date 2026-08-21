@@ -84,6 +84,22 @@ if [[ ${#ADS[@]} -eq 0 ]]; then
 fi
 printf '  nalezeno %d: %s\n' "${#ADS[@]}" "${ADS[*]}"
 
+# Ověřit, že účet A1 příděl vůbec má. Bez tohohle by smyčka běžela dny
+# proti limitu, který je natvrdo nula — a hlásila by přitom „plno", což
+# svádí k závěru, že jde jen o kapacitu.
+echo "▶ Ověřuji příděl Ampere A1"
+A1_LIMIT=$(oci limits value list --all \
+    --compartment-id "$COMPARTMENT_OCID" \
+    --service-name compute \
+    --query 'data[?name==`standard-a1-core-regional-count`].value | [0]' \
+    --raw-output 2>/dev/null)
+if [[ "$A1_LIMIT" == "0" ]]; then
+    die "Účet má regionální příděl A1 jader nastavený na 0.
+Opakovat nemá smysl — požádej o navýšení v konzoli
+(Limits, Quotas and Usage), nebo přejdi na Cloud Run."
+fi
+printf '  regionální limit: %s jader\n' "${A1_LIMIT:-neznámý}"
+
 # Kombinace tvarů, od většího k menšímu.
 SHAPES=("2 12")
 [[ "$SMALL_FALLBACK" == "1" ]] && SHAPES+=("1 6")
@@ -186,12 +202,33 @@ while true; do
                 # Síťový výpadek na tvé straně. Opakovat je správně —
                 # zastavit smyčku kvůli vypadlé Wi-Fi by bylo hloupé.
                 echo "${YELLOW}timeout sítě${RESET}"
-            elif printf '%s' "$OUTPUT" | grep -qi "LimitExceeded\|quota"; then
-                echo "${RED}LIMIT${RESET}"
-                echo
-                printf '%s' "$OUTPUT" | tail -10
-                echo
-                die "Naráží to na limit účtu, ne na kapacitu. Zkontroluj Limits, Quotas and Usage."
+            elif printf '%s' "$OUTPUT" | grep -qi "LimitExceeded\|service limits were exceeded\|quota"; then
+                # „Service limits exceeded" NENÍ spolehlivý důvod k zastavení.
+                # Oracle tuhle hlášku vrací i když je kvóta prokazatelně
+                # volná — nejspíš na ni chvíli drží rezervaci po požadavcích,
+                # které spadly na timeout. Místo věštění z textu chyby se
+                # zeptáme, kolik jader je skutečně použitých.
+                USED=$(oci limits resource-availability get \
+                    --compartment-id "$COMPARTMENT_OCID" \
+                    --service-name compute \
+                    --limit-name standard-a1-core-count \
+                    --availability-domain "$ad" \
+                    --query 'data.used' --raw-output 2>/dev/null)
+
+                if [[ "$USED" =~ ^[1-9] ]]; then
+                    echo "${RED}LIMIT${RESET}"
+                    echo
+                    echo "Kvóta je skutečně vyčerpaná: použito ${USED} jader z A1 přídělu,"
+                    echo "ale žádná instance jménem ${INSTANCE_NAME} neexistuje."
+                    echo "Podívej se, co ji drží:"
+                    echo "  oci compute instance list -c $COMPARTMENT_OCID --output table"
+                    echo
+                    die "Zastavuji — opakovat by nemělo smysl."
+                fi
+
+                echo "${YELLOW}kvóta dočasně blokovaná${RESET}"
+                echo "        ${DIM}(použito ${USED:-0} jader — rezervace po timeoutu, čekám déle)${RESET}"
+                sleep "$RETRY_INTERVAL"
             else
                 echo "${RED}CHYBA${RESET}"
                 echo
