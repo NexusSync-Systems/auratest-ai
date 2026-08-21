@@ -6,6 +6,28 @@ import AxeBuilder from '@axe-core/playwright';
 import geoip from 'geoip-lite';
 import { assertPublicHttpUrl } from './ssrf-guard.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, GENERATED_SCRIPTS_DIR, ensureDir, safeFileToken } from './paths.js';
+import { inspectTls, summarizeTls, PQC_GROUP } from './tls-audit.js';
+import { createSeededRandom, generateRunSeed } from './seeded-random.js';
+import { collectBundleEvidence, mergeFindings } from './sbom-fingerprint.js';
+import { normalizeSemver } from './semver.js';
+
+/**
+ * Argumenty navíc pro Chromium, z konfigurace serveru.
+ *
+ * Potřeba hlavně pro kontejnerová prostředí s malým /dev/shm (Cloud Run,
+ * některé CI runnery), kde Chromium jinak padá na „Target closed" —
+ * tam se nastavuje `BROWSER_ARGS=--disable-dev-shm-usage`.
+ *
+ * Bere se z prostředí, nikdy z requestu: argumenty prohlížeče umí vypnout
+ * sandbox, takže je klient ovlivňovat nesmí.
+ */
+const BROWSER_ARGS = (process.env.BROWSER_ARGS || '')
+  .split(',').map((a) => a.trim()).filter(Boolean);
+
+/** Sjednocené volby pro chromium.launch(). */
+function launchOptions(extra = {}) {
+  return { headless: true, ...extra, args: [...BROWSER_ARGS, ...(extra.args || [])] };
+}
 import {
   AI_DISCLAIMER_PATTERN,
   isAiApiUrl,
@@ -947,7 +969,7 @@ export function generatePlaywrightScript(steps, startUrl) {
 }
 
 export async function extractInternalLinks(startUrl) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch(launchOptions());
   const context = await browser.newContext();
   const page = await context.newPage();
   const internalLinks = [];
@@ -1193,7 +1215,7 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
 export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, sessionId = 'session_default') {
   let browser;
   try {
-    browser = await chromium.launch({ headless: llmConfig.headless !== false });
+    browser = await chromium.launch(launchOptions({ headless: llmConfig.headless !== false }));
     const videosDir = ensureDir(VIDEOS_DIR);
 
     const context = await browser.newContext({
@@ -1537,7 +1559,7 @@ export async function comparePages(url1, url2) {
   let error2 = null;
 
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     
     // ⚡ Bolt: Načítat obě stránky paralelně pomocí Promise.all pro zrychlení ~50%
@@ -1758,7 +1780,7 @@ export async function auditTranslations(url, dictionary, llmConfig) {
   let screenshot = '';
 
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     const page = await context.newPage();
 
@@ -1894,7 +1916,7 @@ DŮLEŽITÉ (EU AI Act): Ke každé navržené opravě nebo identifikované hroz
 export async function auditAccessibility(url) {
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(launchOptions());
     const context = await browser.newContext();
     const page = await context.newPage();
     
@@ -1956,7 +1978,14 @@ function hasStrongHsts(header) {
  */
 function hasMeaningfulCsp(header) {
   if (!header) return false;
-  const scriptSrc = /(?:^|;)\s*script-src([^;]*)/i.exec(header)?.[1] ?? header;
+  // Bez `script-src` I BEZ `default-src` politika o skriptech neříká nic.
+  // Dřív se v takovém případě testovala celá hlavička, takže
+  // `Content-Security-Policy: upgrade-insecure-requests` prošlo jako
+  // „smysluplná CSP" — neobsahuje unsafe-inline ani *, protože neobsahuje
+  // nic o skriptech.
+  const scriptSrc = /(?:^|;)\s*script-src([^;]*)/i.exec(header)?.[1]
+    ?? /(?:^|;)\s*default-src([^;]*)/i.exec(header)?.[1];
+  if (scriptSrc === undefined) return false;
   if (/'unsafe-inline'|'unsafe-eval'/i.test(scriptSrc)) return false;
   if (/(^|\s)\*(\s|$)/.test(scriptSrc)) return false;
   return true;
@@ -1965,7 +1994,7 @@ function hasMeaningfulCsp(header) {
 export async function auditNIS2AndPQC(url) {
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     const page = await context.newPage();
     
@@ -1984,35 +2013,156 @@ export async function auditNIS2AndPQC(url) {
     const headers = response.headers();
     const securityDetails = await response.securityDetails();
 
-    const nis2 = {
+    // Prohlížeč sleduje přesměrování sám, takže odpověď může pocházet
+    // z úplně jiného originu, než jaký prošel SSRF kontrolou. Bez tohohle
+    // ověření se do reportu dostaly hlavičky a údaje z certifikátu interní
+    // služby (CN, vydavatel, protokol) — jen jinou cestou než přes TLS sondu.
+    //
+    // Ověřuje se dřív, než se z odpovědi cokoli přečte.
+    await assertPublicHttpUrl(response.url());
+
+    const headerChecks = {
       hsts: hasStrongHsts(headers['strict-transport-security']),
       csp: hasMeaningfulCsp(headers['content-security-policy']),
       xContentTypeOptions: (headers['x-content-type-options'] || '').toLowerCase() === 'nosniff',
       // Moderní ekvivalent X-Frame-Options je CSP frame-ancestors.
-      xFrameOptions: Boolean(headers['x-frame-options']) ||
-        /frame-ancestors/i.test(headers['content-security-policy'] || ''),
-      referrerPolicy: Boolean(headers['referrer-policy']),
-      permissionsPolicy: Boolean(headers['permissions-policy']),
+      // Hodnota musí něco zakazovat — `ALLOWALL` ochranu neposkytuje.
+      xFrameOptions: /^\s*(deny|sameorigin)\s*$/i.test(headers['x-frame-options'] || '')
+        || /frame-ancestors/i.test(headers['content-security-policy'] || ''),
+      // `unsafe-url` a `no-referrer-when-downgrade` posílají referrer i na
+      // cizí weby — hlavička existuje, ale nechrání. Dřív se počítala
+      // pouhá přítomnost řetězce, takže „splněno" znamenalo jen „něco tam je".
+      referrerPolicy: /(no-referrer|same-origin|strict-origin|origin-when-cross-origin)/i
+        .test(headers['referrer-policy'] || '')
+        && !/unsafe-url/i.test(headers['referrer-policy'] || ''),
+      // Prázdná `Permissions-Policy:` nic neomezuje.
+      permissionsPolicy: (headers['permissions-policy'] || '').trim().length > 0,
+    };
+
+    const HEADER_LABELS = {
+      hsts: 'Strict-Transport-Security',
+      csp: 'Content-Security-Policy',
+      xContentTypeOptions: 'X-Content-Type-Options',
+      xFrameOptions: 'X-Frame-Options / frame-ancestors',
+      referrerPolicy: 'Referrer-Policy',
+      permissionsPolicy: 'Permissions-Policy',
+    };
+
+    const missingHeaders = Object.entries(headerChecks)
+      .filter(([, ok]) => !ok)
+      .map(([key]) => HEADER_LABELS[key]);
+
+    const nis2 = {
+      ...headerChecks,
+      // CLI i UI tahle dvě pole čekaly, ale agent je nikdy nevracel:
+      // `!undefined` je true, takže NIS2 audit v CLI VŽDY hlásil selhání
+      // a vypisoval prázdný seznam chybějících hlaviček.
+      missingHeaders,
+      headersComplete: missingHeaders.length === 0,
+      isCompliant: missingHeaders.length === 0,
+
+      // Poctivé vymezení rozsahu. Zákon č. 264/2025 Sb. žádné konkrétní HTTP
+      // hlavičky nepředepisuje — § 14 mluví o organizačních a technických
+      // opatřeních (řízení rizik, aktiv, přístupů, kontinuita činností…).
+      // Tohle je technický indikátor k opatření „aplikační bezpečnost",
+      // ne posouzení shody s NIS2.
+      scope: 'Kontrola bezpečnostních hlaviček a TLS. Nejde o posouzení shody s NIS2 jako celkem — zákon vyžaduje i organizační opatření, která externí sken ověřit nedokáže.',
     };
 
     const protocol = securityDetails?.protocol || '';
+
+    // ── Skutečné měření TLS vrstvy ────────────────────────────────────────
+    //
+    // Tenhle modul se jmenoval „NIS2 & Post-Quantum Cryptography", ale
+    // post-kvantová odolnost se neměřila vůbec — `isQuantumSafe` byla
+    // natvrdo zapsaná `false`. Teď se navazují skutečné handshaky
+    // (viz tls-audit.js) a výsledek je buď změřený, nebo označený jako
+    // neprůkazný. Nikdy se netvrdí nic, co sonda neověřila.
+    const finalUrl = new URL(response.url());
+    let tls = null;
+    if (finalUrl.protocol === 'https:') {
+      try {
+        // SSRF guard běžel jen na PŮVODNÍ URL. `response.url()` je adresa po
+        // přesměrováních, kterou ovládá cizí strana — bez opětovného ověření
+        // by šlo skener donutit otevřít TCP spojení na interní službu
+        // a její certifikát vrátit uživateli v odpovědi.
+        await assertPublicHttpUrl(finalUrl.href);
+        const port = finalUrl.port ? Number(finalUrl.port) : 443;
+        tls = summarizeTls(await inspectTls(finalUrl.hostname, port));
+      } catch (tlsErr) {
+        // Selhání sondy nesmí shodit celý audit — jen se to nedozvíme.
+        console.warn('TLS sonda neproběhla:', tlsErr.message);
+      }
+    }
+
+    // Prokázaná závada v TLS musí shodit i celkový verdikt.
+    //
+    // Dřív se `nis2.isCompliant` počítalo výhradně z hlaviček, takže server
+    // přijímající TLS 1.0 se všemi šesti hlavičkami dostal „splněno" —
+    // a CLI to propustilo do nasazení. Pole se přitom jmenuje `isCompliant`,
+    // ne `headersComplete`.
+    //
+    // TLS nálezy mají VLASTNÍ pole. Přetížit jimi `missingHeaders` znamenalo,
+    // že je CLI vypsalo jako „Chybí hlavička: Zastaralé verze TLS: TLSv1" —
+    // nepravdivý popis i nepravdivý počet chybějících hlaviček.
+    nis2.tlsFindings = [];
+    if (tls?.protocols?.deprecated?.length) {
+      nis2.isCompliant = false;
+      nis2.tlsFindings.push(`Server přijímá zastaralé verze TLS: ${tls.protocols.deprecated.join(', ')}.`);
+    }
+    if (tls?.issues?.length) {
+      nis2.isCompliant = false;
+      nis2.tlsFindings.push(...tls.issues);
+    }
+    if (nis2.tlsFindings.length === 0 && nis2.isCompliant === true && (!tls || tls.ok === null)) {
+      // Hlavičky sedí, ale TLS vrstvu se ověřit nepodařilo — na „splněno"
+      // to nestačí.
+      nis2.isCompliant = null;
+    }
+
     const pqc = {
-      secure: Boolean(securityDetails),
+      // Podle schématu finální URL, ne podle securityDetails: ty vracejí null
+      // i u https odpovědi obsloužené z cache, service workerem nebo 304.
+      // Dřív se v takovém případě hlásilo „běží to po čistém HTTP" u webu,
+      // jehož vlastní finalUrl začínala https://.
+      secure: finalUrl.protocol === 'https:',
       protocol: protocol || 'None',
       subjectName: securityDetails?.subjectName || 'None',
       issuer: securityDetails?.issuer || 'None',
-      isQuantumSafe: false, // ML-KEM/Kyber je zatím vzácné
+      // true / false / null — null znamená „sonda neproběhla", ne „nepodporuje".
+      isQuantumSafe: tls?.pqc?.supported ?? null,
+      pqcGroup: PQC_GROUP,
+      pqcRationale: tls?.pqc?.rationale || null,
+      // Změřené verze protokolu, ne odhad z názvu vyjednaného spojení.
+      protocolsEnabled: tls?.protocols?.enabled || null,
+      protocolsDeprecated: tls?.protocols?.deprecated || null,
+      protocolsUntested: tls?.protocols?.untested || null,
+      certificate: tls?.certificate || null,
+      tlsIssues: tls?.issues || [],
+      tlsNotes: tls?.notes || [],
       recommendation: ''
     };
 
-    if (!securityDetails) {
-      pqc.recommendation = "Spojení neběží přes TLS (čisté HTTP). Nasaďte HTTPS — bez něj nelze NIS2 požadavky splnit.";
-    } else if (protocol.includes('TLS 1.3') || protocol.includes('QUIC')) {
-      pqc.recommendation = "TLS 1.3 je vynikající základ. Doporučujeme sledovat implementaci ML-KEM (Kyber) na straně poskytovatele certifikátů pro plnou PQC odolnost.";
-    } else if (protocol.includes('TLS 1.2')) {
-      pqc.recommendation = "TLS 1.2 je přijatelné, ale pro budoucí PQC odolnost zvažte přechod na TLS 1.3.";
+    // Pozor na `tls.pqc`: při nedosažitelném serveru vrací summarizeTls
+    // OBJEKT s `pqc: null`, takže `!tls` tenhle případ nezachytí. Bez
+    // optional chainingu tu padal TypeError a celý NIS2 audit skončil
+    // výjimkou místo výsledku „neprůkazné".
+    if (finalUrl.protocol !== 'https:') {
+      pqc.recommendation = 'Spojení neběží přes TLS (čisté HTTP). Nasaďte HTTPS — bez něj nelze NIS2 požadavky splnit.';
+    } else if (!tls?.pqc) {
+      // https, ale sonda neproběhla. Že Playwright stránku načetl a přímý
+      // handshake selhal, o serveru nic nevypovídá — jen o naší sondě.
+      pqc.recommendation = `Vyjednáno ${protocol || 'neznámý protokol'}, ale přímou TLS sondu se nepodařilo provést — hlubší rozbor (post-kvantová výměna klíčů, zastaralé verze, certifikát) chybí.`;
+    } else if (tls.pqc.supported === true) {
+      pqc.recommendation = `Server přijímá hybridní post-kvantovou výměnu klíčů ${PQC_GROUP}. Provoz je chráněný proti strategii „sesbírej teď, dešifruj později".`;
+    } else if (tls.pqc.supported === false) {
+      pqc.recommendation = `Server nepřijal ${PQC_GROUP}. Dnes zachycený provoz půjde zpětně dešifrovat, až bude k dispozici dostatečně silný kvantový počítač. Podpora je v OpenSSL 3.5+, BoringSSL i u velkých CDN. Pozn.: testovala se tahle jedna skupina — server může podporovat jinou post-kvantovou.`;
     } else {
-      pqc.recommendation = `Zastaralý protokol (${protocol}). Aktualizujte konfiguraci serveru.`;
+      pqc.recommendation = tls.pqc.rationale;
+    }
+
+    if (tls?.protocols?.deprecated?.length) {
+      pqc.recommendation += ` Server navíc stále přijímá ${tls.protocols.deprecated.join(' a ')} — to je samostatná závada.`;
     }
 
     return {
@@ -2020,7 +2170,8 @@ export async function auditNIS2AndPQC(url) {
       url,
       finalUrl: response.url(),
       nis2,
-      pqc
+      pqc,
+      tls
     };
   } catch (err) {
     console.error('Chyba při auditu NIS2/PQC:', err);
@@ -2079,7 +2230,7 @@ function residencyWarning(locations, nonEULocations, cdnDomains) {
 export async function auditGreenAndResidency(url) {
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     const page = await context.newPage();
     
@@ -2213,16 +2364,49 @@ Formátuj výstup striktně v Markdownu s diff blokem.`;
   return await queryLLM(prompt, systemPrompt, llmConfig.provider, llmConfig.model, llmConfig.host);
 }
 
+/** Kolik stažených skriptů se prohledává. Chrání to před stránkou se stovkami chunků. */
+const MAX_SCRIPTS_SCANNED = 40;
+
 export async function auditCRA_SBOM(url) {
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     const page = await context.newPage();
-    
+
+    // Skripty se sbírají už při načítání stránky — po `goto` už jejich těla
+    // z Playwrightu nedostaneme.
+    const scriptResponses = [];
+    page.on('response', (response) => {
+      const type = response.request().resourceType();
+      if (type === 'script' && scriptResponses.length < MAX_SCRIPTS_SCANNED) {
+        scriptResponses.push(response);
+      }
+    });
+
     await page.goto(url, { waitUntil: 'networkidle' });
 
-    // Injekce skriptu do stránky pro detekci globálních proměnných známých frameworků
+    // ── Zdroj 1: obsah stažených skriptů ───────────────────────────────────
+    //
+    // Tohle je ta část, která dřív chyběla. Detekce přes `window` u bundlované
+    // aplikace nenajde nic, protože moderní bundler globály nevystavuje.
+    const {
+      findings: bundleFindings,
+      sourceMapPackages,
+      unreadable: scriptErrors,
+    } = await collectBundleEvidence(scriptResponses, {
+      // `redirect: 'manual'` je bezpečnostní požadavek, ne detail.
+      // S výchozím 'follow' by cizí server odpověděl na same-origin URL
+      // přesměrováním na 169.254.169.254 a obsah interní služby by skončil
+      // v reportu. Kontrolní vlna to předvedla funkčním PoC.
+      fetchMap: (mapUrl) => fetch(mapUrl, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(10000),
+      }),
+      assertUrlAllowed: assertPublicHttpUrl,
+    });
+
+    // ── Zdroj 2: runtime globály (původní detekce) ─────────────────────────
     const detectedLibraries = await page.evaluate(() => {
       const libs = [];
       
@@ -2261,10 +2445,50 @@ export async function auditCRA_SBOM(url) {
       return libs;
     });
 
+    // ── Sloučení ───────────────────────────────────────────────────────────
+    const { libraries, conflicts } = mergeFindings([
+      // Globály první: jejich verze je čtená přímo z běžícího objektu.
+      {
+        source: 'runtime-global',
+        findings: detectedLibraries.map((lib) => ({
+          ...lib,
+          npm: NPM_PACKAGE_NAMES[lib.name] || lib.name.toLowerCase(),
+          version: normalizeSemver(lib.version),
+          confidence: normalizeSemver(lib.version) ? 'version-detected' : 'presence-only',
+          evidence: `window.${lib.name}`,
+        })),
+      },
+      { source: 'bundle-fingerprint', findings: bundleFindings },
+      {
+        source: 'source-map',
+        findings: sourceMapPackages.map((pkg) => ({
+          name: pkg.npm,
+          npm: pkg.npm,
+          type: 'Dependency',
+          version: null, // Mapa udává balíček, ne verzi.
+          confidence: 'presence-only',
+          evidence: pkg.evidence,
+        })),
+      },
+    ]);
+
     return {
       success: true,
       url,
-      sbom: detectedLibraries,
+      sbom: libraries,
+      // Doložitelnost: z čeho SBOM vznikl a co se nepodařilo přečíst.
+      evidence: {
+        // `scriptsCaptured` = odchycené odpovědi, `scriptsScanned` = ty, jejichž
+        // tělo se opravdu podařilo přečíst a prohledat. Dřív se to jmenovalo
+        // stejně, takže číslo tvrdilo víc, než se stalo.
+        scriptsCaptured: scriptResponses.length,
+        scriptsScanned: scriptResponses.length - scriptErrors.length,
+        scriptsUnreadable: scriptErrors.length,
+        sourceMapPackages: sourceMapPackages.length,
+        truncated: scriptResponses.length >= MAX_SCRIPTS_SCANNED,
+      },
+      conflicts,
+      scope: 'SBOM sestavený zvenčí z běžících globálů, obsahu stažených skriptů a source map. Není to úplný kusovník podle nařízení (EU) 2024/2847 — ten sestavuje výrobce ze zdrojového kódu a musí obsahovat i závislosti, které se do prohlížeče nikdy nedostanou (backend, build nástroje, transitivní balíčky).',
       timestamp: new Date().toISOString()
     };
   } catch (err) {
@@ -2277,43 +2501,128 @@ export async function auditCRA_SBOM(url) {
   }
 }
 
-export async function runChaosTest(url) {
+/** Pravděpodobnosti injektáže. Vytažené ven, ať jsou v reportu doložitelné. */
+export const CHAOS_ABORT_PROBABILITY = 0.1;
+export const CHAOS_DELAY_PROBABILITY = 0.2;
+export const CHAOS_DELAY_MS = 3000;
+const CHAOS_RESOURCE_TYPES = ['script', 'fetch', 'xhr', 'image'];
+
+/** Strop na záznam injektáží. Stránka může vystřelit statisíce požadavků. */
+const MAX_CHAOS_INJECTIONS = 500;
+
+/** Jak dlouho se po načtení DOMu čeká na dopady injektovaných poruch. */
+export const CHAOS_OBSERVE_MS = CHAOS_DELAY_MS + 2000;
+
+/**
+ * @param {string} url
+ * @param {{ seed?: string|number }} [options]  Stejný seed = stejný běh.
+ */
+export async function runChaosTest(url, options = {}) {
   let browser;
+  // Bez seedu se stejný test nedá zopakovat — a co nejde zopakovat, nejde
+  // doložit. Seed se vrací ve výsledku, takže i „náhodný" běh je opakovatelný.
+  const seed = options.seed ?? generateRunSeed();
+
+  // Rozhodnutí se odvozuje z hashe SEED + URL, ne ze sekvenčního generátoru.
+  //
+  // Sekvence by byla deterministická jen zdánlivě: `random()` se konzumuje
+  // v pořadí, v jakém požadavky dorazí do handleru, a to pořadí prohlížeč mezi
+  // běhy nedodrží (paralelní stahování, cache, HTTP/2). Stejný seed by tedy
+  // zahodil jinou množinu URL. Hash z URL tuhle vazbu odstraní — každý
+  // požadavek dostane svoje číslo bez ohledu na pořadí.
+  const rollFor = (requestUrl) => createSeededRandom(`${seed}::${requestUrl}`)();
+
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(launchOptions());
+
+    // ── Baseline: stejná stránka BEZ injektáže ─────────────────────────────
+    //
+    // Bez referenčního běhu nejde tvrdit, že chyby způsobil chaos. Stránka,
+    // která hlásí chyby i za klidu, by jinak dostala „rozpadla se pod
+    // injektovanými poruchami" — závěr o kauzalitě, která se neměřila.
+    const baseline = { completed: false, consoleErrors: 0, pageCrashed: false, navigationFailed: false };
+    try {
+      const baseContext = await browser.newContext({ ignoreHTTPSErrors: true });
+      const basePage = await baseContext.newPage();
+      basePage.on('console', (msg) => { if (msg.type() === 'error') baseline.consoleErrors++; });
+      basePage.on('pageerror', () => { baseline.pageCrashed = true; });
+      await basePage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+        .catch(() => { baseline.navigationFailed = true; });
+      await basePage.waitForTimeout(CHAOS_OBSERVE_MS).catch(() => {});
+      baseline.completed = true;
+      await baseContext.close();
+    } catch (baselineErr) {
+      // Selhání baseline nesmí shodit audit — jen se výsledek stane neprůkazným.
+      console.warn('Baseline běh chaos testu selhal:', baselineErr.message);
+    }
+
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     const page = await context.newPage();
 
     let abortedRequests = 0;
     let delayedRequests = 0;
-    
+    // Záznam pro report: co přesně bylo zahozeno nebo zdrženo.
+    const injections = [];
+
     // Zapnutí request interception
     await page.route('**/*', async (route) => {
       const request = route.request();
       const resourceType = request.resourceType();
-      
+
       // Simulace výpadků pro skripty, API (fetch/xhr) a obrázky
-      if (['script', 'fetch', 'xhr', 'image'].includes(resourceType)) {
-        const random = Math.random();
-        if (random < 0.1) {
-          // 10% šance na zahození paketu (výpadek)
+      if (CHAOS_RESOURCE_TYPES.includes(resourceType)) {
+        const roll = rollFor(request.url());
+        if (roll < CHAOS_ABORT_PROBABILITY) {
           abortedRequests++;
+          abortedUrls.add(request.url());
+          if (injections.length < MAX_CHAOS_INJECTIONS) {
+            injections.push({ type: 'abort', resourceType, url: request.url() });
+          }
           return route.abort('failed');
-        } else if (random < 0.3) {
-          // 20% šance na simulaci obrovské latence (lag 3 sekundy)
+        }
+        if (roll < CHAOS_ABORT_PROBABILITY + CHAOS_DELAY_PROBABILITY) {
           delayedRequests++;
-          await new Promise(r => setTimeout(r, 3000));
-          return route.continue();
+          if (injections.length < MAX_CHAOS_INJECTIONS) {
+            injections.push({ type: 'delay', resourceType, url: request.url(), ms: CHAOS_DELAY_MS });
+          }
+          await new Promise(r => setTimeout(r, CHAOS_DELAY_MS));
+          return route.continue().catch(() => {}); // stránka se už mohla zavřít
         }
       }
-      return route.continue();
+      return route.continue().catch(() => {});
     });
 
     let pageCrashed = false;
     let consoleErrors = 0;
-    
-    page.on('console', msg => {
-      if (msg.type() === 'error') consoleErrors++;
+    // Chyby, které zalogoval sám prohlížeč kvůli našemu abortu — ne aplikace.
+    let browserNetworkErrors = 0;
+
+    // URL, které jsme zahodili. Prohlížeč na každou z nich zaloguje
+    // „Failed to load resource: net::ERR_FAILED".
+    const abortedUrls = new Set();
+
+    page.on('console', (msg) => {
+      if (msg.type() !== 'error') return;
+
+      // Tohle je klíčové rozlišení. Prohlížeč hlásí síťovou chybu i tehdy,
+      // když ji aplikace korektně odchytí a nahradí fallbackem. Počítat ji
+      // jako selhání aplikace znamená trestat právě to chování, které
+      // testujeme — a při 10% pravděpodobnosti abortu by se „odolná"
+      // u webu s deseti podzdroji nedalo dosáhnout vůbec.
+      const text = msg.text();
+      const location = msg.location?.()?.url || '';
+      const looksLikeNetworkError = /Failed to load resource|net::ERR_|ERR_FAILED/i.test(text);
+      // Přiřazení ke konkrétnímu zahozenému požadavku: buď sedí `location`,
+      // nebo je URL zmíněná v textu hlášky. Bez téhle vazby bychom odečítali
+      // i síťové chyby, které s injektáží nesouvisí.
+      const matchesAbortedRequest = abortedUrls.has(location)
+        || [...abortedUrls].some((u) => text.includes(u));
+
+      if (looksLikeNetworkError && matchesAbortedRequest) {
+        browserNetworkErrors++;
+        return;
+      }
+      consoleErrors++;
     });
     
     page.on('pageerror', () => {
@@ -2321,22 +2630,89 @@ export async function runChaosTest(url) {
     });
 
     // Timeout nastavíme delší kvůli simulaci latence
+    let navigationFailed = false;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {
-      pageCrashed = true;
+      navigationFailed = true;
     });
 
-    const isResilient = !pageCrashed && consoleErrors < 10; // Primitivní heuristika
+    // Bez tohohle čekání se verdikt počítal DŘÍV, než injektované poruchy
+    // stihly zapůsobit: `domcontentloaded` nastane před dokončením fetch/XHR
+    // a před uplynutím 3s zdržení. Měřilo se tedy „při načítání DOMu se nic
+    // nestalo", ne „aplikace přežila injektované poruchy".
+    await page.waitForTimeout(CHAOS_OBSERVE_MS).catch(() => {});
+
+    // ── Vyhodnocení ────────────────────────────────────────────────────────
+    //
+    // Verdikt se opírá o ROZDÍL proti baseline běhu, ne o absolutní čísla.
+    // Bez baseline se stránka, která sama od sebe hlásí 10 chyb v konzoli,
+    // označila za „rozpadla se pod injektovanými poruchami" — kauzalita se
+    // nikdy neměřila. Opačně: práh „< 10" propustil až 9 chyb způsobených
+    // právě injektáží jako „přežila bez pádu".
+    const injected = abortedRequests + delayedRequests;
+    const newConsoleErrors = Math.max(0, consoleErrors - baseline.consoleErrors);
+    // Pád, který nastal už bez injektáže, injektáži připsat nelze.
+    const newCrash = pageCrashed && !baseline.pageCrashed;
+    const newNavigationFailure = navigationFailed && !baseline.navigationFailed;
+
+    let isResilient;
+    let rating;
+    if (!baseline.completed) {
+      isResilient = null;
+      rating = 'NEPRŮKAZNÉ: baseline běh bez injektáže se nepodařilo provést, takže není proti čemu porovnávat.';
+    } else if (baseline.navigationFailed) {
+      isResilient = null;
+      rating = 'NEPRŮKAZNÉ: stránka se nenačetla ani bez injektáže — problém není v odolnosti.';
+    } else if (injected === 0) {
+      // Když se nic nezahodilo ani nezdrželo, stránka žádnou poruchu nezažila.
+      isResilient = null;
+      rating = 'NEPRŮKAZNÉ: žádná porucha se neinjektovala, odolnost se netestovala.';
+    } else if (newCrash || newNavigationFailure) {
+      isResilient = false;
+      rating = `Aplikace se pod ${injected} injektovanými poruchami rozpadla (oproti baseline běhu bez injektáže).`;
+    } else if (newConsoleErrors > 0) {
+      isResilient = false;
+      rating = `Injektáž ${injected} poruch vyvolala ${newConsoleErrors} nových chyb v konzoli oproti baseline (nepočítaje ${browserNetworkErrors} síťových hlášek prohlížeče). Aplikace výpadky neošetřuje.`;
+    } else {
+      isResilient = true;
+      rating = `Aplikace přežila ${injected} injektovaných poruch bez pádu a bez nových chyb oproti baseline. Síťové hlášky prohlížeče (${browserNetworkErrors}) se nezapočítávají — aplikace je zjevně ošetřila.`;
+    }
 
     return {
       success: true,
       url,
       chaos: {
+        // Se stejným seedem dostane stejná URL stejné rozhodnutí — roll se
+        // počítá z hashe seed+URL, ne z pořadí požadavků.
+        seed,
+        // Referenční běh bez injektáže. Bez něj nejde odlišit chyby, které
+        // stránka dělá sama, od těch, které způsobil chaos.
+        baseline: {
+          completed: baseline.completed,
+          consoleErrors: baseline.consoleErrors,
+          pageCrashed: baseline.pageCrashed,
+          navigationFailed: baseline.navigationFailed,
+        },
+        newConsoleErrors,
+        // Kolik chyb zalogoval prohlížeč kvůli našemu abortu. Nejsou to chyby
+        // aplikace, ale v reportu musí být vidět, že se odečetly.
+        browserNetworkErrors,
+        navigationFailed,
+        parameters: {
+          abortProbability: CHAOS_ABORT_PROBABILITY,
+          delayProbability: CHAOS_DELAY_PROBABILITY,
+          delayMs: CHAOS_DELAY_MS,
+          resourceTypes: CHAOS_RESOURCE_TYPES,
+        },
         abortedRequests,
         delayedRequests,
+        injections,
         consoleErrors,
         pageCrashed,
         isResilient,
-        rating: isResilient ? 'DORA Compliant (Resilient)' : 'Failed (Fragile)'
+        rating,
+        // Poctivé vymezení: DORA (nařízení EU 2022/2554) požaduje program
+        // testování digitální provozní odolnosti, ne jeden externí sken.
+        scope: 'Injektáž síťových poruch do prohlížeče, porovnaná s baseline během bez injektáže. Nejde o test podle čl. 25 nařízení DORA — ten předpokládá zdokumentovaný program testování, scénáře hrozeb a nápravná opatření.',
       }
     };
   } catch (err) {
@@ -2381,7 +2757,7 @@ export function getGridEnergyStatus() {
 export async function auditAIAct(url) {
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(launchOptions());
     const context = await browser.newContext();
     const page = await context.newPage();
 
@@ -2612,7 +2988,7 @@ const TRACKER_HOSTS = [
 export async function auditStrictCookies(url) {
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(launchOptions());
     // Důležité: Nemažeme cookies, ale startujeme čistý kontext
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -2707,24 +3083,27 @@ const NPM_PACKAGE_NAMES = {
   'Next.js': 'next',
 };
 
-/** Vrátí semver použitelný pro OSV, jinak null (např. z 'detekováno', '3.x'). */
-function normalizeSemver(raw) {
-  if (typeof raw !== 'string') return null;
-  const match = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(raw);
-  if (!match) return null;
-  return `${match[1]}.${match[2]}.${match[3] ?? '0'}`;
-}
-
 export async function auditCRAVulnerabilities(url) {
   // 1. Získáme SBOM
   const sbomReport = await auditCRA_SBOM(url);
   const libraries = sbomReport.sbom;
   
   // Prázdný SBOM se dřív vracel jako `isCompliant: true`. To je nejhorší druh
-  // false negative: "vše v pořádku", protože skener nic neviděl. A vidí toho
-  // málo — detekce stojí na globálních proměnných, které bundlovaná aplikace
-  // (Vite/webpack, ESM, tree-shaking) do window vůbec nevystaví.
+  // false negative: "vše v pořádku", protože skener nic neviděl.
   if (!libraries || libraries.length === 0) {
+    const ev = sbomReport.evidence || {};
+    // Důvod prázdného SBOM se liší — a v reportu musí být ten skutečný,
+    // ne obecná formulka.
+    let reason;
+    if (!ev.scriptsCaptured) {
+      reason = 'stránka nenačetla žádný externí skript';
+    } else if (ev.scriptsUnreadable >= ev.scriptsCaptured) {
+      reason = `žádný z ${ev.scriptsScanned} skriptů se nepodařilo přečíst`;
+    } else {
+      // `scriptsScanned` už nepřečtené NEobsahuje — odečítat je podruhé
+      // by číslo v reportu podhodnotilo.
+      reason = `v ${ev.scriptsScanned} prohledaných skriptech neodpovídala žádná známá signatura`;
+    }
     return {
       success: true,
       url,
@@ -2733,7 +3112,10 @@ export async function auditCRAVulnerabilities(url) {
         vulnerabilities: [],
         skipped: [],
         isCompliant: null, // null = neprůkazné, NE splněno
-        rating: 'NEPRŮKAZNÉ: SBOM se nepodařilo sestavit (bundlovaná aplikace nevystavuje knihovny do window). Ověřte závislosti ze zdrojového package.json.'
+        rating: `NEPRŮKAZNÉ: SBOM se nepodařilo sestavit — ${reason}. Ověřte závislosti ze zdrojového package.json.`,
+        evidence: sbomReport.evidence || null,
+        conflicts: sbomReport.conflicts || [],
+        scope: sbomReport.scope || null,
       }
     };
   }
@@ -2742,15 +3124,31 @@ export async function auditCRAVulnerabilities(url) {
   const skipped = [];
 
   // 2. Pro každou knihovnu zkontrolujeme zranitelnosti přes OSV API
-  for (const lib of libraries) {
-    const pkgName = NPM_PACKAGE_NAMES[lib.name] || lib.name.toLowerCase();
+  //
+  // Když si zdroje odporují ve verzi, ptáme se na VŠECHNY nalezené. Zeptat se
+  // jen na první znamenalo, že zranitelná druhá kopie (stránka může načítat
+  // dvě verze téže knihovny) prošla bez kontroly.
+  const queue = libraries.flatMap((lib) => [
+    lib,
+    ...(lib.alternateVersions || []).map((version) => ({ ...lib, version })),
+  ]);
+
+  for (const lib of queue) {
+    // `lib.npm` doplňuje fingerprinting i source mapa; tabulka je fallback
+    // pro nálezy z runtime globálů.
+    const pkgName = lib.npm || NPM_PACKAGE_NAMES[lib.name] || lib.name.toLowerCase();
     const version = normalizeSemver(lib.version);
 
     // Dřív se filtrovalo jen na přesnou rovnost s 'detekováno', takže React
     // s verzí 'detekováno (přes DevTools)' filtrem prošel a do OSV se poslal
     // prázdný řetězec. Vue '3.x' se očistilo na '3.' — taky neplatné.
     if (!version) {
-      skipped.push({ library: lib.name, reason: `Verze "${lib.version}" není použitelná pro dotaz do OSV.` });
+      // Knihovna je prokazatelně na stránce, ale bez verze se na CVE zeptat
+      // nejde. Do „prošlo" ji počítat nesmíme.
+      const reason = lib.confidence === 'presence-only'
+        ? `Knihovna detekována (${(lib.sources || []).join(', ') || 'neznámý zdroj'}), ale verzi se nepodařilo zjistit — bez ní nelze dotázat OSV.`
+        : `Verze "${lib.version}" není použitelná pro dotaz do OSV.`;
+      skipped.push({ library: lib.name, reason });
       continue;
     }
 
@@ -2784,7 +3182,26 @@ export async function auditCRAVulnerabilities(url) {
     }
   }
 
-  const checkedCount = libraries.length - skipped.length;
+  // Počítá se podle KNIHOVEN, ne podle dotazů: jedna knihovna se sporem verzí
+  // vyvolá dva dotazy, ale pořád je to jedna položka SBOM.
+  const skippedLibraries = new Set(skipped.map((s) => s.library));
+  const checkedCount = libraries.filter((lib) => !skippedLibraries.has(lib.name)).length;
+
+  // Slepá místa skenu. Bez nich by „PASS" tvrdil, že jsme viděli všechno —
+  // i když se polovina skriptů nepřečetla nebo se narazilo na limit.
+  const ev = sbomReport.evidence || {};
+  const blindSpots = [];
+  if (ev.scriptsUnreadable > 0) {
+    // Jmenovatel je počet ODCHYCENÝCH skriptů, ne prohledaných.
+    blindSpots.push(`${ev.scriptsUnreadable} z ${ev.scriptsCaptured} skriptů se nepodařilo přečíst`);
+  }
+  if (ev.truncated) {
+    blindSpots.push('dosažen limit prohledávaných skriptů, další se neanalyzovaly');
+  }
+  if ((sbomReport.conflicts || []).length > 0) {
+    blindSpots.push(`${sbomReport.conflicts.length}× si zdroje odporují ve verzi`);
+  }
+
   let isCompliant;
   let rating;
 
@@ -2794,17 +3211,36 @@ export async function auditCRAVulnerabilities(url) {
   } else if (checkedCount === 0) {
     isCompliant = null;
     rating = `NEPRŮKAZNÉ: Žádnou z ${libraries.length} detekovaných knihoven nešlo ověřit proti OSV.`;
+  } else if (skipped.length > 0) {
+    // Část knihoven zůstala neověřená → celkový verdikt nemůže být „splněno".
+    // Dřív to vycházelo jako PASS, takže nezkontrolovaná knihovna vypadala
+    // stejně dobře jako zkontrolovaná.
+    isCompliant = null;
+    rating = `ČÁSTEČNÉ: ${checkedCount} z ${libraries.length} knihoven bez známých CVE, ${skippedLibraries.size} se ověřit nepodařilo. Na celkový závěr to nestačí.`;
+  } else if (blindSpots.length > 0) {
+    // Knihovny, které jsme našli, jsou v pořádku — ale nevíme, kolik jsme
+    // jich neviděli. „PASS" by tvrdil úplnost, kterou sken nemá.
+    isCompliant = null;
+    rating = `ČÁSTEČNÉ: ${checkedCount} nalezených knihoven je bez známých CVE, ale sken nebyl úplný (${blindSpots.join('; ')}). Na celkový závěr to nestačí.`;
   } else {
     isCompliant = true;
-    rating = skipped.length > 0
-      ? `ČÁSTEČNÝ PASS: ${checkedCount} z ${libraries.length} knihoven bez známých CVE; ${skipped.length} se nepodařilo ověřit.`
-      : 'PASS: SBOM neobsahuje známé CVE zranitelnosti (CRA Compliant).';
+    rating = `PASS: všech ${checkedCount} detekovaných knihoven je bez známých CVE v databázi OSV.`;
   }
 
   return {
     success: true,
     url,
-    cra: { libraries, vulnerabilities, skipped, isCompliant, rating }
+    cra: {
+      libraries,
+      vulnerabilities,
+      skipped,
+      isCompliant,
+      rating,
+      // Doložitelnost: odkud SBOM pochází a co se nepodařilo přečíst.
+      evidence: sbomReport.evidence || null,
+      conflicts: sbomReport.conflicts || [],
+      scope: sbomReport.scope || null,
+    }
   };
 }
 
