@@ -13,6 +13,23 @@ COPY frontend/package.json frontend/package-lock.json* ./frontend/
 RUN cd frontend && npm ci
 
 COPY . .
+
+# Konfigurace Firebase se do frontendu zapéká PŘI BUILDU (Vite nahrazuje
+# `import.meta.env.*` konstantami). Bez těchhle ARG sáhne build po fallback
+# hodnotách zadrátovaných ve frontend/src/lib/firebase.js, takže se nasazení
+# mlčky připne na jeden konkrétní projekt a změna proměnné za běhu se nikde
+# neprojeví.
+#
+# Nejde o tajemství — web config Firebase je veřejný z principu a chrání ho
+# Firestore rules, ne utajení. Jde o to, aby bylo z konfigurace vidět, k jakému
+# projektu se instalace váže.
+ARG VITE_FIREBASE_PROJECT_ID
+ARG VITE_FIREBASE_API_KEY
+ARG VITE_FIREBASE_AUTH_DOMAIN
+ARG VITE_FIREBASE_APP_ID
+ARG VITE_FIREBASE_STORAGE_BUCKET
+ARG VITE_FIREBASE_MESSAGING_SENDER_ID
+
 RUN cd frontend && npm run build
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -33,6 +50,11 @@ COPY --from=builder /app/frontend/dist ./frontend/dist
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/bin ./bin
 COPY --from=builder /app/*.js ./
+# Smoke test běží PROTI NASAZENÉ instalaci, takže musí být uvnitř image —
+# jinak je příkaz v deploy/README.md slib, který skončí „Cannot find module".
+# Je to jediný způsob, jak po nasazení ověřit věci, které jednotkové testy
+# ověřit nedokážou: PQC sondu proti skutečnému serveru a SBOM z živých bundlů.
+COPY --from=builder /app/scripts/smoke-test.mjs ./scripts/
 
 # Adresáře pro artefakty musí patřit neprivilegovanému uživateli.
 RUN mkdir -p screenshots videos generated-scripts \

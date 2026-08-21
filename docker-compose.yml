@@ -1,8 +1,26 @@
 services:
   auratest-ai:
-    build: .
+    build:
+      context: .
+      # Konfigurace Firebase se zapéká do frontendu při buildu, ne za běhu.
+      # Prázdná hodnota = použije se fallback z frontend/src/lib/firebase.js.
+      args:
+        VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID:-}
+        VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY:-}
+        VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN:-}
+        VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID:-}
+        VITE_FIREBASE_STORAGE_BUCKET: ${VITE_FIREBASE_STORAGE_BUCKET:-}
+        VITE_FIREBASE_MESSAGING_SENDER_ID: ${VITE_FIREBASE_MESSAGING_SENDER_ID:-}
     container_name: auratest-ai
     restart: unless-stopped
+
+    # Bez stropu roste log kontejneru donekonečna a 50GB disk Oracle instance
+    # se dá zaplnit rychleji, než by člověk čekal.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
     # Vázáno na loopback — server patří za reverzní proxy, ne přímo do sítě.
     # Pro přímé vystavení změňte na "3001:3001".
