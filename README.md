@@ -11,7 +11,15 @@
 >
 > Druhý modul v pořadí: **AI Act registr** (plná použitelnost 2. 8. 2026).
 
-AuraGuard je absolutní evropská špička v **Compliance-as-a-Code** a automatizovaném QA testování. Kombinuje sílu umělé inteligence (LLM), Playwrightu a expertních statických analyzátorů k tomu, aby vaše webové aplikace splňovaly přísné technické, bezpečnostní a evropské normy ještě před nasazením do produkce (CI/CD) i dlouho po něm.
+AuraGuard je nástroj pro **Compliance-as-a-Code** a automatizované QA testování.
+Kombinuje LLM, Playwright a statické analyzátory a sbírá technické důkazy
+o webové aplikaci před nasazením (CI/CD) i po něm.
+
+> **Co nástroj je a co není.** Skenuje webovou vrstvu zvenčí. Evropské předpisy
+> ale z velké části požadují i organizační opatření — směrnice, role, školení,
+> testy obnovy — která externí sken ověřit nedokáže. Výsledky proto rozlišují
+> tři stavy: **splněno**, **nesplněno** a **neprůkazné**. „Neprůkazné" znamená,
+> že kontrolu nelze zvenčí provést; není to skryté „splněno".
 
 ---
 
@@ -22,17 +30,108 @@ Původní jádro systému se soustředí na funkční testování webu "lidským
 
 ## 🇪🇺 Fáze 2: Evropské směrnice & Resilence
 Nástroj se transformoval na ochránce evropské byrokracie a spolehlivosti.
-- **Evropský akt o přístupnosti (EAA)**: Integrovaný Axe-Core skener testuje kontrast, aria-labels a celkovou webovou přístupnost aplikací pro hendikepované (povinné v EU).
-- **NIS2 & Post-Quantum Cryptography**: Ověřuje připravenost aplikace na tvrdou bezpečnost, např. analyzuje zabezpečení TLS/SSL vrstvy.
-- **DORA Chaos Engineering**: Vkládá do sítě šumy a zpoždění (např. +1000ms na každé API volání) pro otestování frontendové odolnosti, jak vyžaduje nařízení DORA.
-- **Green-Aware Computing**: Optimalizační widget a backend endpoint varují před deployem v době špičky nebo ve chvíli, kdy elektrická síť využívá příliš mnoho fosilních paliv.
+- **Evropský akt o přístupnosti (EAA)**: Axe-Core skener s filtrem na pravidla
+  WCAG 2.1 A/AA. Vrací porušení i položky vyžadující ruční posouzení
+  (`incomplete`).
+  *Omezení:* automatizované nástroje pokrývají zhruba třetinu kritérií WCAG —
+  zbytek vyžaduje ruční test.
+- **Bezpečnostní hlavičky a TLS**: Kontroluje HSTS, CSP, X-Content-Type-Options,
+  X-Frame-Options, Referrer-Policy, Permissions-Policy a použitý TLS protokol.
+  *Rozsah:* jde o technický indikátor k opatření „aplikační bezpečnost" a
+  „kryptografické algoritmy" podle § 14 zákona č. 264/2025 Sb. **Není to
+  posouzení shody s NIS2** — zákon žádné konkrétní HTTP hlavičky nepředepisuje
+  a většina jeho požadavků je organizační.
+- **Post-kvantová výměna klíčů**: Nástroj naváže samostatný TLS handshake,
+  ve kterém nabídne **pouze** hybridní skupinu `X25519MLKEM768` (ML-KEM-768
+  podle FIPS 203 zkombinovaný s X25519). Projde-li handshake, server ji
+  prokazatelně podporuje.
+  *Omezení:* vyžaduje OpenSSL 3.5+ (Node 22+). Na starším buildu — a stejně
+  tak když se sonda k serveru vůbec nedostane — je výsledek **neprůkazný**,
+  ne „nepodporuje". Testuje se **tahle jedna skupina**: server může podporovat
+  jinou post-kvantovou (např. `SecP256r1MLKEM768`), takže odmítnutí není důkaz
+  obecné absence PQC. Testuje se výměna klíčů, ne podpis certifikátu — ten je
+  u dnešních CA stále klasický (ECDSA/RSA), což ale proti strategii „sesbírej
+  teď, dešifruj později" nevadí. Chybějící post-kvantová výměna klíčů je
+  **doporučení, ne závada** — do celkového verdiktu nevstupuje.
+- **Verze TLS protokolu**: Každá verze se zkouší zvlášť. TLS 1.0 a 1.1 se posílají
+  ručně sestaveným ClientHellem po holém TCP socketu, protože je moderní OpenSSL
+  odmítá už na straně klienta — a „náš klient to neumí" není totéž co „server to
+  odmítá". Když odpověď serveru přečíst nejde, výsledek je **netestováno**.
+- **Chaos test odolnosti**: Zahodí ~10 % požadavků a ~20 % zpozdí o 3 s
+  (skripty, fetch/XHR, obrázky) a sleduje, jestli se aplikace rozpadne.
+  O každém požadavku rozhoduje **hash ze seedu a URL**, takže stejný seed
+  zahodí přesně stejné požadavky. (Sekvenční generátor by nestačil: čísla by
+  se konzumovala v pořadí, v jakém požadavky dorazí, a to prohlížeč mezi běhy
+  nedodrží.) Seed se vrací ve výsledku a dá se poslat zpět v těle requestu
+  (`{ "seed": "..." }`). Výsledek obsahuje i seznam konkrétně zahozených
+  a zdržených požadavků.
+
+  Před injektáží proběhne **baseline běh bez poruch**. Verdikt se počítá
+  z rozdílu, ne z absolutních čísel — bez toho by stránka, která hlásí chyby
+  i za klidu, dostala „rozpadla se pod injektovanými poruchami", tedy závěr
+  o kauzalitě, která se neměřila.
+
+  *Omezení:* když se neinjektovala žádná porucha, nebo se nepodařil baseline,
+  je výsledek **neprůkazný**, ne „odolná". Inspirováno požadavky DORA na
+  testování odolnosti, ale nejde o formální test podle čl. 25 nařízení
+  (EU) 2022/2554 — ten předpokládá zdokumentovaný program testování, scénáře
+  hrozeb a nápravná opatření.
+- **Green-Aware Computing**: Widget a endpoint doporučují vhodnou dobu pro
+  náročné úlohy. **Data jsou simulovaná** podle denní doby — nejde o reálné
+  měření sítě. Odpověď to označuje polem `simulated: true`. Pro auditní účely
+  je potřeba napojení na ENTSO-E nebo Electricity Maps.
+- **Odhad uhlíkové stopy**: Z objemu přenesených dat, koeficientem 0,81 g CO₂/MB.
+  Jde o hrubý odhad podle jednoho zveřejněného modelu, ne o měření.
 
 ## 🏛️ Fáze 3: Kybernetická bezpečnost a Ochrana dat
 Plní další kritické body nutné k provozu webových služeb.
-- **AI Act Scanner**: Hledá odchozí LLM volání z aplikace a zjišťuje, zda je koncový uživatel transparentně informován, že s ním komunikuje AI.
-- **Striktní GDPR Cookie Auditor**: Tvrdý ePrivacy test – robot navštíví aplikaci a ignoruje cookie lištu. Pokud se před odsouhlasením naláduje Google Analytics nebo Meta Pixel do `localStorage` nebo cookies, systém zablokuje nasazení.
-- **Cyber Resilience Act (CRA) Scanner**: Generuje frontendový SBOM (seznam závislostí) a pinguje centrální Google OSV.dev (CVE) databázi. Nenechá projít jedinou známou veřejnou zranitelnost.
-- **Executive PDF Report**: Pomocí Print CSS exportuje celou záložku Audit do čistého PDF pro auditní orgány nebo management.
+- **AI Act — článek 50**: Posuzuje **čtyři samostatné povinnosti** zvlášť.
+  Povinnost 1 (informovat, že jde o AI) umí testovat dobře — z odchozích volání
+  AI API i z konverzačních prvků v UI. Povinnost 2 (strojově čitelné označení
+  syntetického obsahu) částečně, přes C2PA v metadatech obrázků. Povinnosti 3 a 4
+  (rozpoznávání emocí, deepfakes) jsou povinnosti provozovatele a externí sken
+  je posoudit nedokáže — hlásí se jako **mimo dosah nástroje**.
+  Celkový výsledek proto nikdy nevyjde jako „splněno", jen „nesplněno" nebo
+  „neprůkazné". *Účinnost: čl. 50 platí od 2. 8. 2026.*
+- **Striktní GDPR Cookie Auditor**: Robot navštíví aplikaci, cookie lištu
+  ignoruje a sleduje, co se uloží ještě před souhlasem — cookies (včetně
+  HttpOnly), localStorage, sessionStorage i odchozí volání na tracking domény.
+  Při nálezu CLI zablokuje nasazení.
+  *Omezení:* seznam trackerů (~25 prefixů, ~20 domén) není vyčerpávající —
+  „bez nálezu" proto neznamená prokázaný soulad.
+- **CRA — SBOM a známé zranitelnosti**: Sestaví frontendový SBOM ze **tří
+  zdrojů** a dotáže se databáze OSV.dev na známá CVE:
+  1. *source mapy* — pole `sources` obsahuje cesty `node_modules/<balíček>/…`,
+     tedy přímý seznam závislostí tak, jak je viděl bundler (nejsilnější
+     důkaz, ale bývá jen na testovacích buildech);
+  2. *verzní bannery v bundlu* — `/*! jQuery v3.6.0 …`, které minifikace
+     zachovává;
+  3. *runtime globály* — `window.jQuery`, `window._` a spol. (původní metoda).
+
+  Každá položka nese `confidence` (`version-detected` / `presence-only`)
+  a `sources` — z čeho konkrétně vznikla. Když se zdroje neshodnou na verzi,
+  rozpor se vypíše místo tichého výběru jedné.
+
+  *Omezení:* knihovna bez banneru, bez source mapy a bez charakteristického
+  řetězce zůstane neviditelná — prázdný SBOM znamená „nenašli jsme", ne „nic
+  tam není". Inline `<script>` bloky se neskenují (sbírají se jen externí
+  soubory). Verze se čte jen z běhového kódu; deklarovaný rozsah z package.json
+  (`"react": "^18.2.0"`) se za nasazenou verzi nevydává, protože `^18.2.0` se
+  běžně resolvuje na něco jiného. Chybějící patch verze se **nedoplňuje** —
+  z „2.6" se nedělá „2.6.0", aby se na domyšlené číslo neptalo OSV.
+
+  Knihovna rozpoznaná bez verze se do OSV dotázat nedá a končí mezi
+  **neověřenými**. Celkový výsledek je **neprůkazný** (ne „splněno"), jakmile
+  zbyde neověřená knihovna, nepodaří se přečíst některý skript, narazí se na
+  limit prohledávaných skriptů, nebo si zdroje odporují ve verzi.
+
+  A hlavně: tohle **není kusovník podle nařízení (EU) 2024/2847** — ten
+  sestavuje výrobce ze zdrojového kódu a obsahuje i závislosti, které se do
+  prohlížeče nikdy nedostanou (backend, build nástroje, tranzitivní balíčky).
+- **Executive PDF Report**: Přes Print CSS exportuje výsledky auditů do PDF
+  pro management. *Pozn.:* exportuje jen ty audity, které v daném běhu proběhly,
+  a nejde o doložitelný auditní spis — chybí neměnný záznam, verzování pravidel
+  a časová razítka.
 
 ## 🟢 Fáze 4: Kontinuální Uptime & Form Monitoring
 Slouží k provoznímu hlídání. Funguje bez těžkopádného Playwrightu, aby mohl aplikace kontrolovat bleskovou rychlostí každou minutu.

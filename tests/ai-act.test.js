@@ -212,3 +212,36 @@ describe('Souhrn', () => {
     expect(summary.isCompliant).toBeNull();
   });
 });
+
+describe('Tříhodnotový výsledek v CLI', () => {
+  // CLI dřív používalo `if (!report.isCompliant)`. `!null` je true, takže
+  // neprůkazný výsledek spadl do větve SELHÁNÍ a zablokoval nasazení
+  // s hláškou o porušení a prázdným seznamem nálezů.
+  const classify = (isCompliant) => {
+    if (isCompliant === true) return 'pass';
+    if (isCompliant === false) return 'fail';
+    return 'inconclusive';
+  };
+
+  it('neprůkazné není totéž co nesplněno', () => {
+    expect(classify(null)).toBe('inconclusive');
+    expect(classify(false)).toBe('fail');
+    expect(classify(true)).toBe('pass');
+  });
+
+  it('naivní negace by neprůkazné vyhodnotila jako selhání', () => {
+    // Doklad chyby, kterou tenhle vzor nahrazuje.
+    expect(!null).toBe(true);
+    expect(classify(null)).not.toBe('fail');
+  });
+
+  it('reálný výsledek AI Actu je neprůkazný, ne selhání', () => {
+    const obligations = [
+      evaluateInteractionObligation({ aiApiCalls: [] }),
+      evaluateSyntheticMarkingObligation({ dom: { images: { total: 0, sampled: 0, withC2pa: 0 } } }),
+      ...evaluateOutOfScopeObligations({}),
+    ];
+    const { isCompliant } = summarizeObligations(obligations);
+    expect(classify(isCompliant)).toBe('inconclusive');
+  });
+});
