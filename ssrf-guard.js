@@ -37,6 +37,7 @@ const BLOCKED_V4 = [
   '192.0.2.0/24',
   '192.168.0.0/16',  // private
   '198.18.0.0/15',
+  '192.88.99.0/24',  // 6to4 anycast relay (RFC 7526, vyřazeno)
   '198.51.100.0/24',
   '203.0.113.0/24',
   '224.0.0.0/4',     // multicast
@@ -47,14 +48,78 @@ function isBlockedV4(ip) {
   return BLOCKED_V4.some((cidr) => inRange(ip, cidr));
 }
 
+/**
+ * Rozvine IPv6 adresu na osm skupin. Vrací null, když to není platná adresa.
+ *
+ * Potřebujeme to kvůli IPv4-mapped adresám: `http://[::ffff:127.0.0.1]/`
+ * si WHATWG URL znormalizuje na `[::ffff:7f00:1]`, tedy do HEXA tvaru.
+ * Porovnávat jen tečkový zápis by loopback propustilo.
+ */
+function expandV6(ip) {
+  let v = ip.toLowerCase();
+
+  // Koncový IPv4 zápis (::ffff:1.2.3.4) přepíšeme na dvě hexa skupiny.
+  const tail = v.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (tail) {
+    const octets = tail[1].split('.').map(Number);
+    if (octets.some((o) => o > 255)) return null;
+    const hex = [
+      ((octets[0] << 8) | octets[1]).toString(16),
+      ((octets[2] << 8) | octets[3]).toString(16),
+    ];
+    v = v.slice(0, -tail[1].length) + hex.join(':');
+  }
+
+  const [head, rest, extra] = v.split('::');
+  if (extra !== undefined) return null; // '::' smí být jen jednou
+
+  const left = head ? head.split(':').filter(Boolean) : [];
+  const right = rest ? rest.split(':').filter(Boolean) : [];
+
+  let groups;
+  if (rest === undefined) {
+    groups = left;
+  } else {
+    const fill = 8 - left.length - right.length;
+    if (fill < 0) return null;
+    groups = [...left, ...new Array(fill).fill('0'), ...right];
+  }
+  if (groups.length !== 8) return null;
+  return groups.map((g) => parseInt(g, 16));
+}
+
 function isBlockedV6(ip) {
-  const v = ip.toLowerCase();
-  if (v === '::1' || v === '::') return true;            // loopback / unspecified
-  if (v.startsWith('fe80')) return true;                 // link-local
-  if (v.startsWith('fc') || v.startsWith('fd')) return true; // unique local (fc00::/7)
-  // IPv4-mapped (::ffff:a.b.c.d) → ověř jako IPv4
-  const mapped = v.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) return isBlockedV4(mapped[1]);
+  const g = expandV6(ip);
+  if (!g) return true; // nerozluštitelné → raději blokovat
+
+  // ::1 loopback, :: unspecified
+  const allZeroButLast = g.slice(0, 7).every((x) => x === 0);
+  if (allZeroButLast && (g[7] === 1 || g[7] === 0)) return true;
+
+  // IPv4-mapped ::ffff:0:0/96 a IPv4-compatible ::/96 → posuď jako IPv4.
+  const isMapped = g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff;
+  const isCompat = g.slice(0, 6).every((x) => x === 0);
+  // IPv4-translated ::ffff:0:0:0/96 (RFC 6052/SIIT) — jiný tvar téhož.
+  const isTranslated = g.slice(0, 4).every((x) => x === 0) && g[4] === 0xffff && g[5] === 0;
+  if (isMapped || isCompat || isTranslated) {
+    const v4 = [g[6] >> 8, g[6] & 0xff, g[7] >> 8, g[7] & 0xff].join('.');
+    return isBlockedV4(v4);
+  }
+
+  // 6to4 (2002::/16) nese cílovou IPv4 ve druhé a třetí skupině. Bez tohohle
+  // by `2002:7f00:1::` propašovalo loopback.
+  if (g[0] === 0x2002) {
+    const v4 = [g[1] >> 8, g[1] & 0xff, g[2] >> 8, g[2] & 0xff].join('.');
+    return isBlockedV4(v4);
+  }
+
+  if ((g[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((g[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
+  if ((g[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+  // 64:ff9b::/96 NAT64 — překládá se na libovolnou IPv4, včetně interní.
+  if (g[0] === 0x64 && g[1] === 0xff9b) return true;
+  if (g[0] === 0x2001 && g[1] === 0x0db8) return true; // dokumentační 2001:db8::/32
+
   return false;
 }
 
@@ -85,7 +150,12 @@ export async function assertPublicHttpUrl(rawUrl) {
     throw new Error('Povoleno je pouze schéma http nebo https.');
   }
 
-  const hostname = parsed.hostname;
+  // WHATWG URL vrací IPv6 hostname VČETNĚ hranatých závorek
+  // (`http://[::1]/` → `[::1]`). `net.isIP()` na to vrací 0, takže literál
+  // spadl do DNS větve a celá logika isBlockedV6 byla pro přímé literály mrtvá.
+  // Prakticky to selhávalo bezpečně (dns.lookup('[::1]') vždy skončí chybou),
+  // ale náhodou, ne záměrem — a legitimní IPv6 cíle to blokovalo taky.
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
 
   // Když je hostname přímo IP, ověř ji rovnou.
   if (net.isIP(hostname)) {

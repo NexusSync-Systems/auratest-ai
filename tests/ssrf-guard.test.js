@@ -32,3 +32,75 @@ describe('ssrf-guard — povolení veřejných cílů', () => {
     await expect(assertPublicHttpUrl('https://1.1.1.1/')).resolves.toBeTruthy();
   });
 });
+
+/**
+ * IPv6 literály.
+ *
+ * WHATWG URL vrací IPv6 hostname včetně hranatých závorek, takže `net.isIP()`
+ * na něj vracelo 0 a literál spadl do DNS větve — celá logika `isBlockedV6`
+ * byla pro přímé literály mrtvá. Selhávalo to bezpečně, ale náhodou:
+ * `dns.lookup('[::1]')` vždy skončí chybou.
+ *
+ * Po opravě se závorky odstraňují. Tím se ale odkryla druhá past:
+ * `http://[::ffff:127.0.0.1]/` si URL znormalizuje na `[::ffff:7f00:1]`,
+ * tedy do hexa tvaru. Porovnání jen tečkového zápisu by loopback propustilo.
+ */
+describe('assertPublicHttpUrl — IPv6', () => {
+  const blocked = [
+    ['http://[::1]/', 'loopback'],
+    ['http://[::]/', 'unspecified'],
+    ['http://[::ffff:127.0.0.1]/', 'IPv4-mapped loopback, tečkový zápis'],
+    ['http://[::ffff:7f00:1]/', 'IPv4-mapped loopback, hexa zápis'],
+    ['http://[::ffff:169.254.169.254]/', 'IPv4-mapped cloud metadata'],
+    ['http://[::ffff:10.0.0.1]/', 'IPv4-mapped privátní rozsah'],
+    ['http://[::127.0.0.1]/', 'IPv4-compatible loopback'],
+    ['http://[fe80::1]/', 'link-local'],
+    ['http://[fc00::1]/', 'unique local'],
+    ['http://[fd00::1]/', 'unique local'],
+    ['http://[ff02::1]/', 'multicast'],
+    ['http://[64:ff9b::7f00:1]/', 'NAT64 na loopback'],
+    ['http://[gggg::1]/', 'nerozluštitelná adresa'],
+  ];
+
+  for (const [url, why] of blocked) {
+    it(`blokuje ${url} (${why})`, async () => {
+      await expect(assertPublicHttpUrl(url)).rejects.toThrow();
+    });
+  }
+
+  it('veřejnou IPv6 adresu propustí', async () => {
+    // Jinak by oprava blokovala legitimní cíle.
+    await expect(assertPublicHttpUrl('http://[2606:4700:4700::1111]/')).resolves.toBeTruthy();
+  });
+});
+
+describe('assertPublicHttpUrl — doplněné rozsahy', () => {
+  it('blokuje 192.88.99.0/24 (6to4 relay, RFC 7526)', async () => {
+    await expect(assertPublicHttpUrl('http://192.88.99.1/')).rejects.toThrow();
+  });
+});
+
+/**
+ * Přechodové mechanismy IPv6→IPv4.
+ *
+ * Adresa vypadá jako veřejná IPv6, ale nese v sobě IPv4 cíl. Bez rozbalení
+ * by `2002:7f00:1::` propašovalo loopback.
+ */
+describe('assertPublicHttpUrl — přechodové IPv6 mechanismy', () => {
+  it('blokuje 6to4 s vnořeným loopbackem', async () => {
+    await expect(assertPublicHttpUrl('http://[2002:7f00:1::]/')).rejects.toThrow();
+  });
+
+  it('blokuje 6to4 s vnořenou adresou cloud metadat', async () => {
+    await expect(assertPublicHttpUrl('http://[2002:a9fe:a9fe::]/')).rejects.toThrow();
+  });
+
+  it('blokuje IPv4-translated ::ffff:0:0:0/96', async () => {
+    await expect(assertPublicHttpUrl('http://[::ffff:0:127.0.0.1]/')).rejects.toThrow();
+  });
+
+  it('6to4 s veřejnou IPv4 uvnitř propustí', async () => {
+    // Blokovat celý 2002::/16 by zablokovalo i legitimní cíle.
+    await expect(assertPublicHttpUrl('http://[2002:0808:0808::]/')).resolves.toBeTruthy();
+  });
+});
