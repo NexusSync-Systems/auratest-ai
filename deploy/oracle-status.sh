@@ -21,13 +21,22 @@ RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; DIM=$'\e[2m'; RESET=$'\e[0m'
 
 # ── 1. běží smyčka? ──────────────────────────────────────────────────────────
 printf 'Smyčka:   '
-if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    PID=$(cat "$PID_FILE")
-    # etime = jak dlouho proces žije; užitečnější než čas startu
-    UPTIME=$(ps -o etime= -p "$PID" 2>/dev/null | tr -d ' ')
-    echo "${GREEN}běží${RESET} (PID $PID, ${UPTIME:-?})"
-else
+# Ptáme se procesů, ne PID souboru — ten po osiřelém běhu lže.
+PIDS=$(pgrep -f "[o]racle-retry-launch.sh" 2>/dev/null)
+COUNT=$(echo "$PIDS" | grep -cE '^[0-9]+$')
+
+if [[ "$COUNT" -eq 0 ]]; then
     echo "${RED}neběží${RESET} — spusť: bash deploy/oracle-retry-mac.sh"
+elif [[ "$COUNT" -eq 1 ]]; then
+    # etime = jak dlouho proces žije; užitečnější než čas startu
+    UPTIME=$(ps -o etime= -p "$PIDS" 2>/dev/null | tr -d ' ')
+    echo "${GREEN}běží${RESET} (PID $PIDS, ${UPTIME:-?})"
+else
+    # Víc než jedna smyčka si navzájem drží rezervaci kvóty a vyrábí
+    # falešné „service limits exceeded". Není to kosmetická vada.
+    echo "${RED}BĚŽÍ ${COUNT}× SOUČASNĚ${RESET} (PID $(echo "$PIDS" | tr '\n' ' '))"
+    echo "          ${YELLOW}Zastav vše a spusť jednu:${RESET}"
+    echo "          bash deploy/oracle-retry-mac.sh --stop && bash deploy/oracle-retry-mac.sh"
 fi
 
 # ── 2. existuje instance? ────────────────────────────────────────────────────

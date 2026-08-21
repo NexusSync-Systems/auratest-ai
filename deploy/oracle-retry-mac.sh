@@ -30,16 +30,42 @@ RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; DIM=$'\e[2m'; RESET=$'\e[0m'
 die() { echo "${RED}✘${RESET} $*" >&2; exit 1; }
 ok()  { echo "${GREEN}✔${RESET} $*"; }
 
+# Zdrojem pravdy je běžící proces, ne PID soubor.
+#
+# `--stop` dřív zabíjel jen `caffeinate`, jehož PID se ukládal. Vnitřní bash
+# se smyčkou to přežil, osiřel — a protože PID soubor po sobě zmizel, další
+# spuštění ho nemělo jak odhalit. Výsledkem byly dvě smyčky střílející naráz,
+# které si navzájem držely rezervaci kvóty a vyráběly „service limits
+# exceeded" na účtu, kde bylo `used: 0`.
+#
+# Hranaté závorky ve vzoru brání tomu, aby `pgrep` našel sám sebe.
+running_pids() { pgrep -f "[o]racle-retry-launch.sh" 2>/dev/null; }
+
 # ── zastavení ────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--stop" ]]; then
-    [[ -f "$PID_FILE" ]] || die "Neběží (nenašel jsem $PID_FILE)."
-    PID=$(cat "$PID_FILE")
-    if kill "$PID" 2>/dev/null; then
-        ok "Zastaveno (PID $PID)."
-    else
-        echo "${YELLOW}Proces $PID už neběžel.${RESET}"
+    PIDS=$(running_pids)
+    [[ -f "$PID_FILE" ]] && PIDS="$PIDS $(cat "$PID_FILE" 2>/dev/null)"
+    PIDS=$(echo "$PIDS" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u)
+
+    if [[ -z "$PIDS" ]]; then
+        echo "${YELLOW}Nic neběží.${RESET}"
+        rm -f "$PID_FILE"
+        exit 0
     fi
+
+    for p in $PIDS; do
+        kill "$p" 2>/dev/null && echo "  ukončen PID $p"
+    done
+    sleep 2
+
+    # Co nepovolilo po TERM, dostane KILL. Osiřelá smyčka je horší
+    # než tvrdé ukončení — tichého duplicitního běhu si nikdo nevšimne.
+    for p in $(running_pids); do
+        kill -9 "$p" 2>/dev/null && echo "  vynuceně ukončen PID $p"
+    done
+
     rm -f "$PID_FILE"
+    ok "Zastaveno."
     exit 0
 fi
 
@@ -81,8 +107,9 @@ Nejčastější příčina: veřejný klíč není nahraný v konzoli
 (Profile → My profile → API keys → Add API key)."
 ok "Přístup funguje."
 
-if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    die "Už běží (PID $(cat "$PID_FILE")). Zastavíš přes:
+ALREADY=$(running_pids)
+if [[ -n "$ALREADY" ]]; then
+    die "Už běží (PID $(echo "$ALREADY" | tr '\n' ' ')). Zastavíš přes:
   bash $0 --stop"
 fi
 
