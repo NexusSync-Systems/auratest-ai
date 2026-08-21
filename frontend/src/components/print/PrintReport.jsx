@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { IMPACT_TRANSLATIONS, RULE_TRANSLATIONS, TEST_TYPES } from '../../constants/testTypes.js';
-import { complianceBadgeClass, complianceLabel, obligationLabel } from '../../lib/compliance.js';
+import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel } from '../../lib/compliance.js';
 
 /**
  * Tiskový report (Executive Summary) pro export do PDF přes Print CSS.
@@ -14,6 +14,7 @@ import { complianceBadgeClass, complianceLabel, obligationLabel } from '../../li
  * bundlu se nedostane vůbec.
  */
 export default function PrintReport({
+  chaosResult,
   user,
   agentUrl,
   liveLogs,
@@ -106,6 +107,46 @@ export default function PrintReport({
         </div>
       )}
 
+      {/* DORA Chaos — v tiskovém reportu úplně chyběl, přestože README
+          slibuje export "celé záložky Audit". */}
+      {chaosResult && chaosResult.chaos && (
+        <div className="print-section">
+          <h3>DORA — Chaos Engineering</h3>
+          <div className={`print-badge ${complianceBadgeClass(chaosResult.chaos.isResilient)}`}>
+            {`[${complianceLabel(chaosResult.chaos.isResilient)}] `}
+            {chaosResult.chaos.rating}
+          </div>
+          <table className="print-table" style={{ marginTop: '15px' }}>
+            <tbody>
+              <tr><td>Zahozené požadavky</td><td>{chaosResult.chaos.abortedRequests}</td></tr>
+              <tr><td>Zpožděné požadavky</td><td>{chaosResult.chaos.delayedRequests}</td></tr>
+              <tr><td>Chyb v konzoli</td><td>{chaosResult.chaos.consoleErrors}</td></tr>
+              {/* Rozdíl proti baseline je to, co jde připsat injektáži. */}
+              {chaosResult.chaos.baseline && (
+                <>
+                  <tr>
+                    <td>Chyb v konzoli bez injektáže (baseline)</td>
+                    <td>{chaosResult.chaos.baseline.consoleErrors}</td>
+                  </tr>
+                  <tr>
+                    <td>Nových chyb způsobených injektáží</td>
+                    <td>{chaosResult.chaos.newConsoleErrors}</td>
+                  </tr>
+                </>
+              )}
+              <tr><td>Stránka se zhroutila</td><td>{chaosResult.chaos.pageCrashed ? 'ano' : 'ne'}</td></tr>
+              {/* Bez seedu není běh opakovatelný, a tedy ani doložitelný. */}
+              {chaosResult.chaos.seed && (
+                <tr><td>Seed běhu (pro zopakování)</td><td>{chaosResult.chaos.seed}</td></tr>
+              )}
+            </tbody>
+          </table>
+          <p style={{ fontSize: '0.85em', color: '#475569' }}>
+            {chaosResult.chaos.scope}
+          </p>
+        </div>
+      )}
+
       {/* AI Act */}
       {aiActResult && (
         <div className="print-section">
@@ -154,10 +195,30 @@ export default function PrintReport({
             <tbody>
               <tr><th style={{ width: '30%' }}>HSTS:</th><td>{nis2Result.nis2.hsts ? 'Aktivní' : 'Chybí'}</td></tr>
               <tr><th>CSP:</th><td>{nis2Result.nis2.csp ? 'Aktivní' : 'Chybí'}</td></tr>
-              <tr><th>PQC Protokol:</th><td>{nis2Result.pqc.protocol}</td></tr>
-              <tr><th>PQC Autorita:</th><td>{nis2Result.pqc.issuer}</td></tr>
+              <tr><th>Vyjednaný protokol:</th><td>{nis2Result.pqc.protocol}</td></tr>
+              <tr>
+                <th>Post-kvantová výměna klíčů:</th>
+                <td>
+                  {pqcLabel(nis2Result.pqc.isQuantumSafe)}
+                  {nis2Result.pqc.pqcGroup ? ` (${nis2Result.pqc.pqcGroup})` : ''}
+                </td>
+              </tr>
+              {nis2Result.pqc.protocolsEnabled?.length > 0 && (
+                <tr><th>Přijímané verze TLS:</th><td>{nis2Result.pqc.protocolsEnabled.join(', ')}</td></tr>
+              )}
+              <tr><th>Certifikační autorita:</th><td>{nis2Result.pqc.issuer}</td></tr>
             </tbody>
           </table>
+          {nis2Result.pqc.tlsIssues?.length > 0 && (
+            <ul>
+              {nis2Result.pqc.tlsIssues.map((issue) => <li key={issue}>{issue}</li>)}
+            </ul>
+          )}
+          {nis2Result.pqc.tlsNotes?.length > 0 && (
+            <ul>
+              {nis2Result.pqc.tlsNotes.map((note) => <li key={note}>{note}</li>)}
+            </ul>
+          )}
         </div>
       )}
 
@@ -170,18 +231,31 @@ export default function PrintReport({
           </div>
           <table className="print-table">
             <thead>
-              <tr><th style={{ width: '40%' }}>Název</th><th>Typ</th><th>Verze</th></tr>
+              {/* Zdroj důkazu patří do reportu — bez něj se nedá posoudit,
+                  jak spolehlivá která položka je. */}
+              <tr><th style={{ width: '35%' }}>Název</th><th>Typ</th><th>Verze</th><th>Zdroj</th></tr>
             </thead>
             <tbody>
               {craResult.sbom.map((lib, i) => (
                 <tr key={i}>
                   <td><strong>{lib.name}</strong></td>
                   <td>{lib.type}</td>
-                  <td>{lib.version}</td>
+                  <td>{lib.version || 'neznámá'}</td>
+                  <td>{(lib.sources || []).join(', ')}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {craResult.evidence && (
+            <p style={{ fontSize: '0.8rem' }}>
+              Prohledáno {craResult.evidence.scriptsScanned} skriptů
+              {craResult.evidence.sourceMapPackages > 0
+                && `, ze source map ${craResult.evidence.sourceMapPackages} balíčků`}
+              {craResult.evidence.scriptsUnreadable > 0
+                && `, ${craResult.evidence.scriptsUnreadable} skriptů se nepodařilo přečíst`}.
+            </p>
+          )}
+          {craResult.scope && <p style={{ fontSize: '0.8rem' }}>{craResult.scope}</p>}
         </div>
       )}
 

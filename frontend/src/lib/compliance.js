@@ -61,6 +61,25 @@ export function obligationColor(status) {
   return complianceColor(obligationToCompliance(status));
 }
 
+/**
+ * Post-kvantová výměna klíčů má vlastní škálu.
+ *
+ * Její absence dnes NENÍ porušení žádného předpisu — je to doporučení proti
+ * strategii „sesbírej teď, dešifruj později". Vybarvit ji červeně jako
+ * „Nesplněno" bylo přísnější než CLI, které u téhož čísla hlásí „DOPORUČENÍ",
+ * a v compliance reportu to vypadalo jako závada.
+ */
+export function pqcLabel(supported) {
+  if (supported === true) return 'Nasazeno';
+  if (supported === false) return 'Doporučeno nasadit';
+  return 'Neprůkazné';
+}
+
+export function pqcColor(supported) {
+  if (supported === true) return '#10b981';
+  return '#f59e0b'; // false i null jsou jantarové — ani jedno není závada
+}
+
 /** Krátký textový štítek — informace nesmí být nesena jen barvou. */
 export function complianceLabel(isCompliant) {
   switch (complianceState(isCompliant)) {

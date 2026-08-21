@@ -26,7 +26,7 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, on
 import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
-import { complianceColor, complianceLabel, obligationColor, obligationLabel } from './lib/compliance.js';
+import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
 const PrintReport = lazy(() => import('./components/print/PrintReport.jsx'));
 import {
   TEST_TYPES, IMPACT_COLORS, IMPACT_TRANSLATIONS, RULE_TRANSLATIONS,
@@ -70,6 +70,11 @@ export default function App() {
   const [testPassword, setTestPassword] = useState('');
   const [agentGoal, setAgentGoal] = useState('Najdi jakékoliv chyby, zkus kliknout na "new" a vyhledej vyhledávací pole');
   const [testMode, setTestMode] = useState('ai'); // 'ai' or 'monkey'
+  // Co tahle instalace umí. Načítá se ze serveru — bez toho by UI nabízelo
+  // AI režimy i tam, kde žádný jazykový model neběží, a uživatel by se to
+  // dozvěděl až selháním testu.
+  const [capabilities, setCapabilities] = useState(null);
+  const llmConfigured = capabilities?.llmConfigured !== false;
   const [isRunning, setIsRunning] = useState(false);
   const [liveLogs, setLiveLogs] = useState([]);
   const [liveProgress, setLiveProgress] = useState('');
@@ -138,6 +143,8 @@ export default function App() {
   // DORA Chaos State
   const [chaosLoading, setChaosLoading] = useState(false);
   const [chaosResult, setChaosResult] = useState(null);
+  // Seed pro zopakování konkrétního běhu chaos testu. Prázdné = nový běh.
+  const [chaosSeed, setChaosSeed] = useState('');
 
   // Grid-Aware State
   const [gridStatus, setGridStatus] = useState(null);
@@ -336,7 +343,29 @@ export default function App() {
     }
   };
 
-  const handleRunChaosTest = async () => {
+  // Schopnosti se načtou jednou při startu. Když LLM chybí, výchozí režim
+  // se přepne na monkey, aby první kliknutí neskončilo chybou.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/capabilities')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setCapabilities(data);
+        if (data.llmConfigured === false) setTestMode('monkey');
+      })
+      .catch(() => {
+        // Nedostupné schopnosti nejsou důvod blokovat UI — chová se pak
+        // jako dřív, tedy jako by LLM k dispozici bylo.
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleRunChaosTest = async (skipClear = false, seedOverride = null) => {
+    // Jako jediný z handlerů dřív nečistil předchozí výsledky, takže po
+    // samostatném spuštění DORA testu zůstaly na obrazovce viset staré
+    // výsledky NIS2/CRA/GDPR — případně proti úplně jiné URL.
+    if (skipClear !== true) clearAllResults();
     if (!agentUrl) {
       alert('Zadejte URL pro DORA Chaos test.');
       return;
@@ -346,7 +375,13 @@ export default function App() {
       const response = await authFetch('/api/auraguard/chaos-test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: agentUrl })
+        // Seed umožní zopakovat konkrétní běh. Prázdný = server vygeneruje nový.
+        // `seedOverride` je potřeba proto, že setState se v témže ticku
+        // do `chaosSeed` ještě nepropíše.
+        body: JSON.stringify((() => {
+          const seed = seedOverride || chaosSeed;
+          return seed ? { url: agentUrl, seed } : { url: agentUrl };
+        })())
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
@@ -1320,12 +1355,22 @@ export default function App() {
                             value={testMode}
                             onChange={(e) => setTestMode(e.target.value)}
                           >
-                            <option value="ai">Cílený (AI Agent)</option>
-                            <option value="crawler">Spider (Prohledat web s AI)</option>
-                            <option value="smart_monkey">Chytrý průzkum s AI (Smart Monkey)</option>
+                            {/* Režimy závislé na LLM se nabízejí jen tam, kde
+                                nějaký běží. Nabízet je jinak znamená slíbit
+                                funkci, která skončí chybou spojení. */}
+                            {llmConfigured && <option value="ai">Cílený (AI Agent)</option>}
+                            {llmConfigured && <option value="crawler">Spider (Prohledat web s AI)</option>}
+                            {llmConfigured && <option value="smart_monkey">Chytrý průzkum s AI (Smart Monkey)</option>}
                             <option value="smoke_test">Automatický Smoke Test</option>
                             <option value="monkey">Náhodný (Monkey Test bez AI)</option>
                           </select>
+                          {!llmConfigured && (
+                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '8px' }}>
+                              Tahle instalace nemá nakonfigurovaný jazykový model, takže AI režimy
+                              nejsou k dispozici. Compliance skenery (NIS2/PQC, CRA, AI Act, GDPR,
+                              EAA, DORA) fungují bez omezení.
+                            </p>
+                          )}
                         </div>
                         <div className="form-group">
                           <label htmlFor="goal">Cíl testování (Zadání pro AI)</label>
@@ -1615,12 +1660,43 @@ export default function App() {
                              <strong>CSP</strong>: {nis2Result.nis2.csp ? 'Aktivní' : 'Chybí'}
                            </div>
                          </div>
-                         <div style={{ background: 'rgba(0,0,0,0.2)', padding: '16px', borderRadius: '8px' }}>
-                           <strong>PQC (Kvantová bezpečnost)</strong>
+                         {/*
+                           Dřív tahle karta ukazovala jen název protokolu a vydavatele
+                           certifikátu — o post-kvantové odolnosti neříkala nic, přestože
+                           se tak jmenovala. Teď zobrazuje skutečně změřený výsledek sondy,
+                           včetně stavu „neprůkazné", když sonda proběhnout nemohla.
+                         */}
+                         <div style={{
+                           background: 'rgba(0,0,0,0.2)', padding: '16px', borderRadius: '8px',
+                           borderLeft: `4px solid ${pqcColor(nis2Result.pqc.isQuantumSafe)}`,
+                         }}>
+                           {/* Vlastní škála: chybějící PQC není porušení předpisu. */}
+                           <strong style={{ color: pqcColor(nis2Result.pqc.isQuantumSafe) }}>
+                             {`Post-kvantová výměna klíčů [${pqcLabel(nis2Result.pqc.isQuantumSafe)}]`}
+                           </strong>
                            <div style={{ color: 'var(--text-secondary)', marginTop: '8px' }}>
-                             Protokol: <span style={{ color: '#10b981' }}>{nis2Result.pqc.protocol}</span><br />
+                             Testovaná skupina: {nis2Result.pqc.pqcGroup || '—'}<br />
+                             Vyjednaný protokol: {nis2Result.pqc.protocol}<br />
+                             {nis2Result.pqc.protocolsEnabled?.length > 0 && (
+                               <>Server přijímá: {nis2Result.pqc.protocolsEnabled.join(', ')}<br /></>
+                             )}
                              Autorita: {nis2Result.pqc.issuer}
                            </div>
+                           {nis2Result.pqc.recommendation && (
+                             <p style={{ color: 'var(--text-secondary)', marginBottom: 0, marginTop: '10px' }}>
+                               {nis2Result.pqc.recommendation}
+                             </p>
+                           )}
+                           {nis2Result.pqc.tlsIssues?.length > 0 && (
+                             <ul style={{ color: '#ef4444', paddingLeft: '20px', marginBottom: 0, marginTop: '10px' }}>
+                               {nis2Result.pqc.tlsIssues.map((issue) => <li key={issue}>{issue}</li>)}
+                             </ul>
+                           )}
+                           {nis2Result.pqc.tlsNotes?.length > 0 && (
+                             <ul style={{ color: '#f59e0b', paddingLeft: '20px', marginBottom: 0, marginTop: '10px' }}>
+                               {nis2Result.pqc.tlsNotes.map((note) => <li key={note}>{note}</li>)}
+                             </ul>
+                           )}
                          </div>
                        </div>
                      )}
@@ -1730,12 +1806,43 @@ export default function App() {
                          </div>
                          <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: '8px', padding: '16px' }}>
                            {craResult.sbom.map((lib, i) => (
-                             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', padding: '8px 0' }}>
+                             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', borderBottom: '1px solid rgba(255,255,255,0.1)', padding: '8px 0' }}>
                                <strong style={{ color: 'white' }}>{lib.name} ({lib.type})</strong>
-                               <span style={{ color: 'var(--text-secondary)' }}>v{lib.version}</span>
+                               <span style={{ color: 'var(--text-secondary)', textAlign: 'right' }}>
+                                 {/*
+                                   „Verze neznámá" je poctivější než `v undefined`.
+                                   Knihovnu bez verze nejde ověřit proti databázi CVE.
+                                 */}
+                                 {lib.version ? `v${lib.version}` : 'verze neznámá'}
+                                 {lib.sources?.length > 0 && (
+                                   <span style={{ display: 'block', fontSize: '0.75rem', opacity: 0.7 }}>
+                                     zdroj: {lib.sources.join(', ')}
+                                   </span>
+                                 )}
+                               </span>
                              </div>
                            ))}
                          </div>
+                         {craResult.conflicts?.length > 0 && (
+                           <ul style={{ color: '#f59e0b', paddingLeft: '20px', marginTop: '10px' }}>
+                             {craResult.conflicts.map((c) => (
+                               <li key={c.library}>{c.library}: zdroje hlásí {c.versions.join(' vs ')} — {c.note}</li>
+                             ))}
+                           </ul>
+                         )}
+                         {craResult.evidence && (
+                           <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 0 }}>
+                             Prohledáno {craResult.evidence.scriptsScanned} skriptů
+                             {craResult.evidence.sourceMapPackages > 0
+                               && `, ze source map ${craResult.evidence.sourceMapPackages} balíčků`}
+                             {craResult.evidence.scriptsUnreadable > 0
+                               && `, ${craResult.evidence.scriptsUnreadable} skriptů se nepodařilo přečíst`}
+                             {craResult.evidence.truncated && ' (dosažen limit prohledávaných skriptů)'}.
+                           </p>
+                         )}
+                         {craResult.scope && (
+                           <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>{craResult.scope}</p>
+                         )}
                        </div>
                      )}
 
@@ -1791,7 +1898,35 @@ export default function App() {
                            <li>Zpožděné požadavky: {chaosResult.chaos.delayedRequests}</li>
                            <li>Chyb v konzoli: {chaosResult.chaos.consoleErrors}</li>
                            <li>Stránka se zhroutila: {chaosResult.chaos.pageCrashed ? 'ano' : 'ne'}</li>
+                           {chaosResult.chaos.baseline && (
+                             <li>
+                               Z toho nových oproti baseline běhu bez injektáže:{' '}
+                               <strong>{chaosResult.chaos.newConsoleErrors}</strong>
+                               {' '}(baseline sám hlásil {chaosResult.chaos.baseline.consoleErrors})
+                             </li>
+                           )}
+                           {/* Seed je to, co dělá z náhodného pokusu opakovatelný test. */}
+                           {chaosResult.chaos.seed && (
+                             <li>Seed běhu: <code>{chaosResult.chaos.seed}</code></li>
+                           )}
                          </ul>
+                         {chaosResult.chaos.seed && (
+                           <button
+                             type="button"
+                             onClick={() => {
+                               setChaosSeed(chaosResult.chaos.seed);
+                               handleRunChaosTest(true, chaosResult.chaos.seed);
+                             }}
+                             style={{ marginBottom: '10px' }}
+                           >
+                             Zopakovat se stejným seedem
+                           </button>
+                         )}
+                         {chaosResult.chaos.scope && (
+                           <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                             {chaosResult.chaos.scope}
+                           </p>
+                         )}
                        </div>
                      )}
 
@@ -2840,6 +2975,7 @@ export default function App() {
           monitorPageResult={monitorPageResult}
           monitorFormResult={monitorFormResult}
           securityAnalysisResult={securityAnalysisResult}
+          chaosResult={chaosResult}
           selectedTestType={selectedTestType}
           authEmail={authEmail}
         />
