@@ -320,12 +320,40 @@ function urlGuard(pick = (req) => req.body?.url) {
 // výhradně z konfigurace serveru; klient smí zvolit jen provider a model.
 // ─────────────────────────────────────────────────────────────────────────────
 const DEFAULT_LLM_HOST = process.env.LLM_HOST || 'http://localhost:11434';
-const ALLOWED_LLM_HOSTS = (process.env.ALLOWED_LLM_HOSTS || DEFAULT_LLM_HOST)
+const ALLOWED_LLM_HOSTS = (process.env.ALLOWED_LLM_HOSTS ?? DEFAULT_LLM_HOST)
   .split(',').map((s) => s.trim()).filter(Boolean);
+
+/**
+ * Je v týhle instalaci vůbec nějaký LLM?
+ *
+ * `ALLOWED_LLM_HOSTS=` (prázdné) znamená VYPNUTO — proto `??` místo `||`,
+ * které by prázdný řetězec přepsalo výchozím localhostem.
+ *
+ * Bez tohohle rozlišení skončilo nasazení bez Ollamy tak, že každý běh
+ * agenta v AI režimu spadl na odmítnuté spojení na localhost:11434.
+ * Uživatel dostal „fetch failed" a neměl šanci poznat, že jde o chybějící
+ * konfiguraci, ne o chybu testovaného webu.
+ */
+export const isLlmConfigured = () => ALLOWED_LLM_HOSTS.length > 0;
+
+/** Režimy agenta, které se bez LLM obejdou. */
+const LLM_FREE_MODES = new Set(['monkey', 'smoke_test']);
 
 function resolveLlmHost(requested) {
   if (!requested) return DEFAULT_LLM_HOST;
   return ALLOWED_LLM_HOSTS.includes(requested) ? requested : DEFAULT_LLM_HOST;
+}
+
+/**
+ * Vrátí chybovou hlášku, pokud zvolený režim potřebuje LLM a žádný není.
+ * Jinak null.
+ */
+function llmUnavailableFor(mode) {
+  if (LLM_FREE_MODES.has(mode) || isLlmConfigured()) return null;
+  return 'Tahle instalace nemá nakonfigurovaný jazykový model, takže režimy '
+    + 'závislé na LLM nejsou k dispozici. Použijte režim "monkey" (náhodná '
+    + 'interakce) nebo "smoke_test". Compliance skenery (NIS2/PQC, CRA, AI Act, '
+    + 'GDPR, EAA, DORA) fungují bez LLM v plném rozsahu.';
 }
 
 function sanitizeLlmConfig(raw = {}) {
@@ -388,6 +416,29 @@ app.get('/api/mock-translations', (req, res) => {
   });
 });
 
+/**
+ * Co tahle konkrétní instalace umí.
+ *
+ * Frontend si podle toho nastaví výchozí režim a schová volby, které by
+ * stejně skončily chybou. Bez toho uživatel klikne na AI režim, počká
+ * a dostane „fetch failed".
+ *
+ * Bez autentizace schválně: přihlašovací obrazovka potřebuje vědět, co
+ * nabídnout, ještě než se kdokoli přihlásí. Nevrací nic citlivého — jen
+ * příznaky funkcí, žádné hosty ani tokeny.
+ */
+app.get('/api/capabilities', (req, res) => {
+  res.json({
+    llmConfigured: isLlmConfigured(),
+    // Režimy, které jsou v týhle instalaci reálně použitelné.
+    agentModes: isLlmConfigured()
+      ? ['ai', 'smart_monkey', 'monkey', 'smoke_test']
+      : ['monkey', 'smoke_test'],
+    // Compliance skenery na LLM nezávisí — běží vždycky.
+    complianceAudits: ['nis2', 'cra', 'cve', 'eaa', 'ai-act', 'gdpr', 'dora', 'green'],
+  });
+});
+
 // 1. Run Autonomous Test
 app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (req, res) => {
   const { goal, model, headless, maxSteps, mode, provider, testLogin, testPassword } = req.body;
@@ -395,6 +446,14 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
 
   if (mode !== 'monkey' && mode !== 'smart_monkey' && !goal) {
     return res.status(400).json({ error: 'Chybí cíl testu.' });
+  }
+
+  // Chybějící LLM se musí ohlásit TEĎ, ne až selháním spojení uvnitř agenta.
+  // Kontrola je před založením session, aby po sobě nezůstávala mrtvá session
+  // ve stavu "running".
+  const llmError = llmUnavailableFor(mode || 'ai');
+  if (llmError) {
+    return res.status(503).json({ error: llmError, llmConfigured: false });
   }
 
   // Nepredikovatelné ID: `session_${Date.now()}` šlo uhodnout (odposlech cizího
@@ -606,13 +665,19 @@ app.post('/api/trigger-test', triggerLimiter, requireTriggerSecret, browserSlotG
     return res.status(400).json({ error: `Nepovolená cílová URL: ${err.message}` });
   }
 
+  // Host se bere z konfigurace serveru, ne natvrdo. Dřív tu byl zadrátovaný
+  // localhost:11434 bez ohledu na LLM_HOST i na allowlist.
+  const ciMode = mode || 'smoke_test';
+  const ciLlmError = llmUnavailableFor(ciMode);
+  if (ciLlmError) {
+    return res.status(503).json({ success: false, error: ciLlmError, llmConfigured: false });
+  }
+
   const llmConfig = {
-    provider: 'ollama',
-    model: 'llama3',
-    host: 'http://localhost:11434',
+    ...sanitizeLlmConfig({}),
     headless: headless !== false,
     maxSteps: parseInt(maxSteps) || 10,
-    mode: mode || 'smoke_test',
+    mode: ciMode,
     testLogin: testLogin || '',
     testPassword: testPassword || ''
   };
@@ -1009,10 +1074,25 @@ const URL_AUDITS = {
   'cra-vuln-audit': auditCRAVulnerabilities,
 };
 
+/**
+ * Volitelné parametry auditů. Tělo requestu se sem nepředává celé — jen to,
+ * co je výslovně vyjmenované, aby nešlo protlačit do agenta cokoli.
+ */
+const AUDIT_OPTIONS = {
+  // Seed umožní zopakovat konkrétní běh chaos testu. Bez toho by šlo
+  // o jednorázový náhodný pokus, ne o doložitelný test.
+  'chaos-test': (body) => (
+    typeof body?.seed === 'string' && body.seed.length > 0 && body.seed.length <= 128
+      ? { seed: body.seed }
+      : {}
+  ),
+};
+
 for (const [slug, auditFn] of Object.entries(URL_AUDITS)) {
   app.post(`/api/auraguard/${slug}`, authenticateToken, heavyLimiter, browserSlotGuard, urlGuard(), async (req, res) => {
     try {
-      res.json(await auditFn(req.safeUrl));
+      const options = AUDIT_OPTIONS[slug] ? AUDIT_OPTIONS[slug](req.body) : undefined;
+      res.json(await auditFn(req.safeUrl, options));
     } catch (err) {
       console.error(`Audit ${slug} selhal:`, err);
       res.status(500).json({ error: `Audit ${slug} selhal.` });
@@ -1502,11 +1582,16 @@ app.post('/api/audit-translations', authenticateToken, heavyLimiter, browserSlot
       dictionary = await fetchTranslations(translationSource);
     }
 
-    const llmConfig = {
-      provider: provider || 'ollama',
-      model: model || 'llama3',
-      host: host || 'http://localhost:11434'
-    };
+    // Audit překladů LLM potřebuje vždycky — bez něj nemá smysl ho spouštět.
+    if (!isLlmConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Audit překladů vyžaduje jazykový model, který v téhle instalaci není nakonfigurovaný.',
+        llmConfigured: false,
+      });
+    }
+
+    const llmConfig = sanitizeLlmConfig({ provider, model, host });
 
     const auditResult = await auditTranslations(safeUrl, dictionary, llmConfig);
     res.json({
