@@ -65,8 +65,23 @@ console.log(`\n🛡️  AuraGuard CI/CD Zabezpečení 🛡️`);
 console.log(`Cílové URL: ${url}`);
 console.log(`Spouštím audit: ${auditType.toUpperCase()}\n`);
 
+/**
+ * Skenery vracejí tříhodnotový výsledek: true / false / null (neprůkazné).
+ *
+ * CLI dřív používalo `if (!report.isCompliant)`, jenže `!null` je `true` —
+ * neprůkazný výsledek tak spadl do větve SELHÁNÍ a zablokoval nasazení
+ * s hláškou o porušení a prázdným seznamem nálezů. Blokovat pipeline kvůli
+ * tomu, že skener nic nezjistil, je horší než nic nehlásit.
+ */
+function classify(isCompliant) {
+  if (isCompliant === true) return 'pass';
+  if (isCompliant === false) return 'fail';
+  return 'inconclusive';
+}
+
 async function runCLI() {
   let hasErrors = false;
+  const inconclusive = [];
   let failedAudits = [];
 
   try {
@@ -74,16 +89,34 @@ async function runCLI() {
       console.log('Spouštím: NIS2 & PQC Audit...');
       const nis2Report = await auditNIS2AndPQC(url);
       
-      if (!nis2Report.nis2.isCompliant) {
-        console.error('❌ SELHÁNÍ: Aplikace nesplňuje požadavky směrnice NIS2!');
-        const missing = nis2Report.nis2.missingHeaders || [];
+      const missing = nis2Report.nis2.missingHeaders || [];
+      if (classify(nis2Report.nis2.isCompliant) === 'fail') {
+        console.error(`❌ SELHÁNÍ: Chybí ${missing.length} bezpečnostních hlaviček.`);
         missing.forEach(h => console.error(`   - Chybí hlavička: ${h}`));
         hasErrors = true;
-        failedAudits.push(`*NIS2 & PQC*: Chybí hlavičky (${missing.join(', ')})`);
+        failedAudits.push(`*Bezpečnostní hlavičky*: chybí ${missing.join(', ')}`);
       } else {
-        console.log('✅ PASS: NIS2 Compliance');
+        console.log('✅ PASS: Bezpečnostní hlavičky nastavené');
       }
-      console.log(`   PQC Status: ${nis2Report.pqc.protocol}\n`);
+      // Post-kvantová odolnost se skutečně měří — sonda nabídne serveru
+      // pouze hybridní skupinu a čeká, jestli handshake projde.
+      const pqcState = classify(nis2Report.pqc.isQuantumSafe);
+      const PQC_MARK = { pass: '✅ PASS', fail: '⚠️  DOPORUČENÍ', inconclusive: '➖ NEPRŮKAZNÉ' };
+      console.log(`${PQC_MARK[pqcState]}: post-kvantová výměna klíčů (${nis2Report.pqc.pqcGroup})`);
+      console.log(`   ${nis2Report.pqc.recommendation}`);
+
+      // Nálezy v TLS vrstvě jsou samostatná, prokázaná závada — proto mají
+      // vlastní pole a nemíchají se mezi chybějící hlavičky.
+      for (const finding of nis2Report.nis2.tlsFindings || []) {
+        console.error(`❌ SELHÁNÍ: ${finding}`);
+        hasErrors = true;
+        failedAudits.push(`*TLS*: ${finding}`);
+      }
+      for (const note of nis2Report.pqc.tlsNotes || []) console.log(`   ➖ ${note}`);
+
+      // Poctivé vymezení: kontrola hlaviček není posouzení shody s NIS2.
+      console.log(`   Rozsah: ${nis2Report.nis2.scope}`);
+      console.log(`   TLS: ${nis2Report.pqc.protocol}\n`);
     }
 
     if (['cra', 'all'].includes(auditType)) {
@@ -92,7 +125,13 @@ async function runCLI() {
       
       if (craReport.sbom.length > 0) {
         console.log('✅ PASS: SBOM úspěšně vygenerován.');
-        craReport.sbom.forEach(lib => console.log(`   - Detekováno: ${lib.name} (${lib.version})`));
+        // `version` je u nálezů z fingerprintingu často null — knihovnu jsme
+        // našli, ale verzi ne. `(null)` ve výpisu vypadalo jako chyba nástroje.
+        craReport.sbom.forEach((lib) => {
+          const version = lib.version ? `v${lib.version}` : 'verze neznámá';
+          const sources = (lib.sources || []).join(', ');
+          console.log(`   - Detekováno: ${lib.name} (${version})${sources ? ` [${sources}]` : ''}`);
+        });
       } else {
         console.log('⚠️ UPOZORNĚNÍ: Nebyly detekovány žádné klientské knihovny.\n');
       }
@@ -116,13 +155,20 @@ async function runCLI() {
       console.log('Spouštím: EU AI Act Scanner...');
       const aiReport = await auditAIAct(url);
       
-      if (!aiReport.aiAct.isCompliant) {
-        console.error('❌ SELHÁNÍ: AI Act Violation! Detekováno LLM API bez transparentního upozornění.');
+      const aiVerdict = classify(aiReport.aiAct.isCompliant);
+      if (aiVerdict === 'fail') {
+        console.error('❌ SELHÁNÍ: AI Act čl. 50 — detekováno volání AI API bez upozornění uživatele.');
         aiReport.aiAct.apisDetected.forEach(api => console.error(`   - Voláno API: ${api}`));
         hasErrors = true;
-        failedAudits.push(`*AI Act*: Chybí disclaimery pro volání AI (${aiReport.aiAct.apisDetected.join(', ')})`);
+        failedAudits.push(`*AI Act*: Chybí upozornění na AI (${aiReport.aiAct.apisDetected.join(', ')})`);
+      } else if (aiVerdict === 'inconclusive') {
+        console.warn('⚠️  NEPRŮKAZNÉ: AI Act čl. 50 nelze externím skenem posoudit.');
+        (aiReport.aiAct.obligations || []).forEach((ob) => {
+          if (ob.status === 'inconclusive') console.warn(`   - ${ob.id}: ${ob.rationale}`);
+        });
+        inconclusive.push('AI Act čl. 50');
       } else {
-        console.log('✅ PASS: AI Act Compliance\n');
+        console.log('✅ PASS: AI Act čl. 50\n');
       }
     }
 
@@ -144,14 +190,20 @@ async function runCLI() {
       console.log('Spouštím: CRA Vulnerability Scanner (OSV.dev)...');
       const vulnReport = await auditCRAVulnerabilities(url);
       
-      if (!vulnReport.cra.isCompliant) {
-        console.error(`❌ SELHÁNÍ: CRA Violation! Nalezeno ${vulnReport.cra.vulnerabilities.length} zranitelností (CVE).`);
+      const craVerdict = classify(vulnReport.cra.isCompliant);
+      if (craVerdict === 'fail') {
+        console.error(`❌ SELHÁNÍ: Nalezeno ${vulnReport.cra.vulnerabilities.length} zranitelností (CVE).`);
         vulnReport.cra.vulnerabilities.forEach(v => console.error(`   - ${v.cve} (${v.severity}): ${v.library} ${v.version}`));
         hasErrors = true;
         const cves = vulnReport.cra.vulnerabilities.map(v => v.cve).join(', ');
         failedAudits.push(`*CRA Zranitelnosti*: Nalezeno CVE (${cves})`);
+      } else if (craVerdict === 'inconclusive') {
+        // Bundlovaná aplikace nevystavuje knihovny do window, takže SBOM
+        // zůstane prázdný. „0 CVE" by tu znamenalo „nic jsem neviděl".
+        console.warn(`⚠️  NEPRŮKAZNÉ: ${vulnReport.cra.rating}`);
+        inconclusive.push('CRA zranitelnosti');
       } else {
-        console.log('✅ PASS: Cyber Resilience Act (0 CVE found)\n');
+        console.log(`✅ PASS: ${vulnReport.cra.rating}\n`);
       }
     }
 
@@ -182,6 +234,11 @@ async function runCLI() {
     console.error(`❌ Kritická chyba při provádění auditu: ${err.message}`);
     if (err.stack) console.error(err.stack);
     process.exit(EXIT_INTERNAL);
+  }
+
+  if (inconclusive.length > 0) {
+    console.warn(`\n⚠️  ${inconclusive.length} kontrol skončilo jako NEPRŮKAZNÉ: ${inconclusive.join(', ')}.`);
+    console.warn('   Nezpůsobují selhání pipeline, ale shodu z nich vyvodit nelze — posuďte ručně.');
   }
 
   if (hasErrors) {
@@ -243,7 +300,9 @@ async function runCLI() {
 
     process.exit(EXIT_COMPLIANCE_FAILED);
   } else {
-    console.log(`\n🎉 ZÁVĚR: Aplikace prošla všemi EU audity. Nasazení povoleno!`);
+    console.log(inconclusive.length > 0
+      ? `\n✅ ZÁVĚR: Žádné prokazatelné porušení. Pozor: ${inconclusive.length} kontrol bylo neprůkazných — nejde o potvrzení shody.`
+      : `\n🎉 ZÁVĚR: Žádné prokazatelné porušení v ověřovaných kontrolách. Nasazení povoleno.`);
     process.exit(EXIT_OK);
   }
 }

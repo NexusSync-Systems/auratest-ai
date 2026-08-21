@@ -50,10 +50,13 @@ function check(name, ok, detail = '') {
   results.push({ name, ok, detail });
   console.log(`${ok ? '  ✅' : '  ❌'} ${name}${detail ? ` — ${detail}` : ''}`);
 }
+// `fail` = prokázaná závada webu, `warn`/`review` = k posouzení, `ok` = v pořádku.
+// Nic z toho neovlivňuje exit kód — ten řídí jen kontroly NÁSTROJE (`check`).
+const FINDING_MARKS = { fail: '  ⚠️ ', warn: '  ➖ ', review: '  ➖ ', ok: '  ·  ' };
+
 function finding(severity, area, message) {
   findings.push({ severity, area, message });
-  const mark = severity === 'fail' ? '  ⚠️ ' : '  ·  ';
-  console.log(`${mark}${area}: ${message}`);
+  console.log(`${FINDING_MARKS[severity] || '  ·  '}${area}: ${message}`);
 }
 function info(msg) {
   console.log(`     ${msg}`);
@@ -180,6 +183,43 @@ try {
   for (const [key, label] of Object.entries(headerLabels)) {
     if (nis2.nis2[key] === false) finding('fail', 'NIS2', `chybí nebo je nedostatečná hlavička ${label}`);
   }
+
+  // ── TLS sonda ──
+  // Kontrola nástroje: sonda proběhla a vrátila tříhodnotový výsledek.
+  // Nález o webu: jestli je post-kvantová výměna klíčů nasazená.
+  check(
+    'post-kvantová sonda vrátila tříhodnotový výsledek',
+    [true, false, null].includes(nis2.pqc.isQuantumSafe),
+    `${nis2.pqc.pqcGroup} → ${String(nis2.pqc.isQuantumSafe)}`
+  );
+  // U čistě HTTP cíle je `protocolsEnabled` legitimně null — sonda se nemá
+  // kam připojit. Chyba nástroje by to byla jen u https.
+  check(
+    'verze TLS se změřily (u https cíle)',
+    !nis2.pqc.secure || (Array.isArray(nis2.pqc.protocolsEnabled) && nis2.pqc.protocolsEnabled.length > 0),
+    `secure=${nis2.pqc.secure}, přijímá: ${(nis2.pqc.protocolsEnabled || []).join(', ') || '—'}`
+  );
+  check(
+    'doporučení k PQC odpovídá naměřenému stavu',
+    nis2.pqc.isQuantumSafe === true
+      ? /přijímá hybridní/i.test(nis2.pqc.recommendation)
+      : !/přijímá hybridní/i.test(nis2.pqc.recommendation),
+    nis2.pqc.recommendation.slice(0, 70)
+  );
+
+  if (nis2.pqc.isQuantumSafe === true) {
+    finding('ok', 'TLS', `server přijímá ${nis2.pqc.pqcGroup}`);
+  } else if (nis2.pqc.isQuantumSafe === false) {
+    finding('warn', 'TLS', `server nepřijímá ${nis2.pqc.pqcGroup} — provoz půjde zpětně dešifrovat`);
+  } else {
+    finding('warn', 'TLS', `post-kvantovou podporu se nepodařilo změřit (${nis2.pqc.pqcRationale || 'bez detailu'})`);
+  }
+  for (const version of nis2.pqc.protocolsDeprecated || []) {
+    finding('fail', 'TLS', `server přijímá zastaralé ${version}`);
+  }
+  for (const issue of nis2.pqc.tlsIssues || []) finding('fail', 'TLS', issue);
+  for (const note of nis2.pqc.tlsNotes || []) info(note);
+
   info(`finální URL: ${nis2.finalUrl}`);
 } catch (err) {
   check('auditNIS2AndPQC doběhl', false, err.message);
@@ -238,14 +278,50 @@ try {
     `knihoven=${libs}, isCompliant=${cra.cra.isCompliant}`
   );
   info(cra.cra.rating.slice(0, 90));
+
+  // SBOM teď vzniká i z obsahu bundlů, ne jen z window globálů. Kontrola
+  // nástroje: skripty se skutečně stáhly a prohledaly.
+  check(
+    'skripty se stáhly a prohledaly',
+    (cra.cra.evidence?.scriptsCaptured ?? 0) > 0,
+    `odchyceno ${cra.cra.evidence?.scriptsCaptured ?? 0}, prohledáno ${cra.cra.evidence?.scriptsScanned ?? 0}, `
+    + `${cra.cra.evidence?.sourceMapPackages ?? 0} balíčků ze source map`
+  );
+  check(
+    'každá položka SBOM uvádí, odkud pochází',
+    cra.cra.libraries.every((lib) => Array.isArray(lib.sources) && lib.sources.length > 0),
+    cra.cra.libraries.map((l) => `${l.name}[${(l.sources || []).join('+')}]`).join(', ').slice(0, 90) || '—'
+  );
+  check(
+    'knihovna bez verze se nepočítá jako ověřená',
+    cra.cra.libraries
+      .filter((lib) => lib.confidence === 'presence-only')
+      .every((lib) => cra.cra.skipped.some((s) => s.library === lib.name)),
+    `bez verze: ${cra.cra.libraries.filter((l) => l.confidence === 'presence-only').length}`
+  );
+
+  for (const lib of cra.cra.libraries) {
+    info(`  • ${lib.name}${lib.version ? `@${lib.version}` : ' (verze neznámá)'} — ${(lib.sources || []).join(', ')}`);
+  }
   if (cra.cra.vulnerabilities.length > 0) {
     finding('fail', 'CRA', `${cra.cra.vulnerabilities.length} známých zranitelností v knihovnách`);
     cra.cra.vulnerabilities.slice(0, 5).forEach((v) => info(`  • ${v.library}@${v.version}: ${v.cve}`));
   }
-  if (cra.cra.isCompliant === null) {
-    finding('review', 'CRA', 'SBOM se nepodařilo sestavit — soulad nelze potvrdit ani vyvrátit');
+  for (const conflict of cra.cra.conflicts || []) {
+    finding('warn', 'CRA', `${conflict.library}: zdroje hlásí verze ${conflict.versions.join(' vs ')}`);
   }
-  if (cra.cra.skipped?.length) info(`neověřeno: ${cra.cra.skipped.length} knihoven`);
+  if (cra.cra.isCompliant === null) {
+    finding('warn', 'CRA', cra.cra.libraries.length === 0
+      ? 'SBOM se nepodařilo sestavit — soulad nelze potvrdit ani vyvrátit'
+      : `${cra.cra.skipped.length} knihoven nešlo ověřit — na celkový závěr to nestačí`);
+  }
+  if (cra.cra.evidence?.scriptsUnreadable) {
+    info(`nečitelných skriptů: ${cra.cra.evidence.scriptsUnreadable}`);
+  }
+  if (cra.cra.skipped?.length) {
+    info(`neověřeno: ${cra.cra.skipped.length} knihoven`);
+    cra.cra.skipped.slice(0, 5).forEach((s) => info(`  • ${s.library}: ${s.reason}`));
+  }
 } catch (err) {
   check('auditCRAVulnerabilities doběhl', false, err.message);
 }
