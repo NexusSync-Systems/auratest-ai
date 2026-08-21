@@ -1,0 +1,15 @@
+[Unit]
+Description=Denní úklid artefaktů AuraGuard
+
+[Timer]
+# Ve 3:30 ráno. Rozptyl 30 minut, aby to nekolidovalo s jinými nočními
+# úlohami na stejném stroji.
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=30m
+
+# Když byl stroj vypnutý, dožene se to po startu. Bez toho by se u instance,
+# kterou Oracle uspí, neuklidilo nikdy.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

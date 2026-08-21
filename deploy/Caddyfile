@@ -1,0 +1,86 @@
+# Reverzní proxy pro AuraGuard.
+#
+# Caddy vyřídí certifikát od Let's Encrypt sám. Podmínka: doména musí mít
+# A záznam na veřejnou IP instance UŽ PŘED prvním startem, jinak ACME výzva
+# neprojde a Caddy skončí chybou.
+#
+# Nasazení:
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo sed -i 's/auraguard.example.com/tvoje.domena.cz/' /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Ověření konfigurace bez restartu:
+#   caddy validate --config /etc/caddy/Caddyfile
+
+auraguard.example.com {
+	# Aplikace poslouchá jen na loopbacku (viz docker-compose.yml), takže
+	# tudy vede jediná cesta zvenčí.
+	reverse_proxy 127.0.0.1:3001 {
+		# Audity běží dlouho: chaos test dělá baseline i chaos běh, každý
+		# s 30s timeoutem a 5s pozorováním. Výchozích 30 s by ho useklo
+		# uprostřed a uživatel by dostal 504 místo výsledku.
+		transport http {
+			read_timeout 180s
+			write_timeout 180s
+		}
+
+		# WebSocket (živé logy agenta) Caddy proxuje sám, bez extra
+		# konfigurace — hlavičky Upgrade/Connection předává automaticky.
+
+		# Aplikace čte req.ip kvůli rate limitingu a má TRUST_PROXY=1.
+		# Caddy posílá X-Forwarded-For i X-Forwarded-Proto ve výchozím
+		# stavu; kdyby je přeposlal klient, Caddy je přepíše, ne přidá.
+	}
+
+	# ── Bezpečnostní hlavičky ────────────────────────────────────────────
+	#
+	# Server je sám nenastavuje. U nástroje, který cizím webům vytýká
+	# chybějící HSTS a CSP, je to přinejmenším nepříjemné — a hlavně jsou
+	# to hlavičky, které tady dávají smysl: aplikace za přihlášením, která
+	# zobrazuje obsah cizích webů.
+	header {
+		# Rok, včetně subdomén. Preload záměrně NE — je to prakticky
+		# nevratné a na pilotní instalaci se to nehodí.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+		X-Content-Type-Options "nosniff"
+
+		# frame-ancestors 'none' je moderní ekvivalent X-Frame-Options: DENY.
+		# Obojí schválně — starší prohlížeče CSP frame-ancestors neznají.
+		X-Frame-Options "DENY"
+
+		Referrer-Policy "strict-origin-when-cross-origin"
+
+		# Aplikace nepotřebuje kameru, mikrofon ani geolokaci.
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+		# CSP:
+		# - 'unsafe-inline' u stylů je nutné, Vite injektuje inline styly
+		# - connect-src 'self' pokrývá i wss:// na stejném původu
+		# - img-src data: kvůli náhledům screenshotů
+		# - frame-ancestors 'none' brání vložení do cizího rámu
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
+		# Neprozrazovat, co pod tím běží.
+		-Server
+		-X-Powered-By
+	}
+
+	# ── Komprese ─────────────────────────────────────────────────────────
+	encode zstd gzip
+
+	# ── Logy ─────────────────────────────────────────────────────────────
+	#
+	# Bez rotace zaplní 50GB disk instance. Caddy rotuje sám, ale výchozí
+	# hodnoty jsou štědré.
+	log {
+		output file /var/log/caddy/auraguard.log {
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 720h
+		}
+		# URL skenovaných webů jsou v query stringu a v tělech requestů.
+		# Do access logu patří jen to nutné.
+		format json
+	}
+}
