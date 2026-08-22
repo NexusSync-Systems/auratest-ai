@@ -50,13 +50,15 @@ running_pids() {
     done
 
     # Osiřelé běhy, které do PID souboru nikdy nezapsaly — třeba proto, že
-    # startovaly ještě starou verzí skriptu. Filtruje se na skutečné vyvolání
-    # skriptu; `caffeinate` a obalový `bash -c` mají jeho jméno taky
-    # v argumentech a počítaly by se navíc.
-    ps -axo pid=,command= 2>/dev/null \
+    # startovaly ještě starou verzí skriptu.
+    #
+    # Stejnou příkazovou řádku mají i `caffeinate`, obalový `bash -c`
+    # a každý podproces vzniklý z `$(oci ...)`. První dva vyřadí grep,
+    # podprocesy se poznají podle rodiče — tím je ta smyčka sama.
+    ps -axo pid=,ppid=,command= 2>/dev/null \
         | grep 'oracle-retry-launch\.sh' \
         | grep -v -e ' -c ' -e 'caffeinate' -e 'grep' \
-        | awk '{print $1}'
+        | awk '{pid[$1]=$2} END {for (p in pid) if (!(pid[p] in pid)) print p}'
 }
 
 # ── zastavení ────────────────────────────────────────────────────────────────

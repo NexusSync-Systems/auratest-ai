@@ -38,13 +38,19 @@ fi
 # Nezávislá kontrola na osiřelé běhy.
 #
 # PID soubor zná jen tu poslední smyčku — starší běh, který přežil vadný
-# `--stop`, do něj nikdy nezapsal. A `pgrep -f` na jméno skriptu nestačí:
-# stejný řetězec mají v argumentech `caffeinate` i obalový `bash -c`.
-# Proto se filtruje na skutečné vyvolání skriptu.
-ALL_LOOPS=$(ps -axo pid=,command= 2>/dev/null \
+# `--stop`, do něj nikdy nezapsal. Hledat proces podle jména ale není
+# přímočaré, protože stejnou příkazovou řádku mají tři další věci:
+#
+#   1. `caffeinate` a obalový `bash -c` — mají jméno skriptu v argumentech
+#   2. každé `$(oci ...)` — bash pro command substitution forkne podproces
+#      s IDENTICKOU příkazovou řádkou
+#
+# První dva vyřadí grep. Ten třetí ne — pozná se podle rodiče: podproces
+# má za rodiče tu smyčku, samostatný běh nikoli.
+ALL_LOOPS=$(ps -axo pid=,ppid=,command= 2>/dev/null \
     | grep 'oracle-retry-launch\.sh' \
     | grep -v -e ' -c ' -e 'caffeinate' -e 'grep' \
-    | awk '{print $1}')
+    | awk '{pid[$1]=$2} END {for (p in pid) if (!(pid[p] in pid)) print p}')
 LOOP_COUNT=$(echo "$ALL_LOOPS" | grep -cE '^[0-9]+$')
 
 if [[ "$LOOP_COUNT" -gt 1 ]]; then
