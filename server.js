@@ -19,6 +19,7 @@ import { resolveSpaFallback } from './spa-fallback.js';
 import { appendRecord, verifyChain, recordsForSession, readLedger } from './audit-ledger.js';
 import { buildCaseFile, renderCaseFileHtml } from './case-file.js';
 import { renderCaseFilePdf } from './case-file-pdf.js';
+import { accessWarnings } from './access-control.js';
 
 // Global error handlers to prevent unhandled rejections from crashing the process
 // Po nezachycené výjimce je proces v nedefinovaném stavu (viselé Playwright
@@ -1853,6 +1854,9 @@ app.use((err, req, res, next) => {
 if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, () => {
     console.log(`AuraTest AI server běží na http://localhost:${PORT}`);
+    // Neomezený přístup se musí ozvat. Tichá otevřenost je horší než
+    // hlučná — provozovatel jinak netuší, že si účet může založit kdokoli.
+    accessWarnings().forEach((line) => console.warn(`  ${line}`));
   });
 }
 
