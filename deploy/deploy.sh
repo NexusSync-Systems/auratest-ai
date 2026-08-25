@@ -71,6 +71,31 @@ else
     ok "Volné místo: ${FREE_GB} GB"
 fi
 
+# Adresáře pro artefakty musí existovat a patřit uživateli z kontejneru.
+#
+# Kontejner běží jako `pwuser` (UID 1000), ne jako root — viz Dockerfile.
+# Když adresáře předem neexistují, Docker je při bind mountu založí jako
+# root:root a aplikace do nich nezapíše. Projeví se to až za běhu jako
+# „EACCES: permission denied" u screenshotů a videí, tedy dávno po tom, co
+# nasazení nahlásí úspěch.
+echo
+echo "▶ Adresáře pro artefakty"
+CONTAINER_UID=1000
+for d in screenshots videos generated-scripts; do
+    mkdir -p "$d"
+    OWNER="$(stat -c '%u' "$d" 2>/dev/null || echo '?')"
+    if [[ "$OWNER" != "$CONTAINER_UID" ]]; then
+        if sudo chown -R "${CONTAINER_UID}:${CONTAINER_UID}" "$d" 2>/dev/null; then
+            ok "$d — vlastník opraven na UID ${CONTAINER_UID}"
+        else
+            warn "$d patří UID ${OWNER}, kontejner běží jako ${CONTAINER_UID}. Sprav ručně:
+       sudo chown -R ${CONTAINER_UID}:${CONTAINER_UID} $d"
+        fi
+    else
+        ok "$d"
+    fi
+done
+
 echo
 echo "▶ Sestavení image (${PLATFORM})"
 # --platform explicitně: kdyby se stavělo na jiné architektuře, vznikl by
