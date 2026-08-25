@@ -50,12 +50,28 @@ const finding = (severity, id, cookie, message) => ({
 });
 
 /**
+ * Je cookie z domény auditovaného webu, nebo od třetí strany?
+ *
+ * Cookie vloženého přehrávače nebo widgetu nastavuje někdo jiný a
+ * provozovatel s jejími příznaky nic nenadělá. Hlásit mu ji jako vadu
+ * jeho aplikace je nález, který nemá jak opravit.
+ */
+export function isFirstParty(cookieDomain, siteHost) {
+  if (!siteHost) return true; // Neznáme cíl → neodhadujeme, bereme jako vlastní.
+  const cookie = String(cookieDomain || '').replace(/^\./, '').toLowerCase();
+  const site = String(siteHost).toLowerCase();
+  if (!cookie) return true;
+  return site === cookie || site.endsWith(`.${cookie}`) || cookie.endsWith(`.${site}`);
+}
+
+/**
  * @param {Array} cookies z `context.cookies()` Playwrightu
  * @param {object} [options]
  * @param {boolean} [options.https] běží web po HTTPS?
+ * @param {string} [options.host] hostitel auditovaného webu
  * @returns {{ok: boolean|null, total: number, findings: Array, rationale: string}}
  */
-export function auditCookieFlags(cookies, { https = true } = {}) {
+export function auditCookieFlags(cookies, { https = true, host = null } = {}) {
   const list = Array.isArray(cookies) ? cookies : [];
 
   if (list.length === 0) {
@@ -73,8 +89,20 @@ export function auditCookieFlags(cookies, { https = true } = {}) {
   }
 
   const findings = [];
+  let thirdParty = 0;
 
   for (const cookie of list) {
+    // Vadný záznam nesmí shodit celý audit — cookie bez jména je nanejvýš
+    // nezajímavá, ne důvod přijít o výsledek.
+    if (!cookie || typeof cookie !== 'object') continue;
+
+    // Cookies třetích stran se ZAPOČÍTAJÍ, ale nehodnotí: provozovatel
+    // auditovaného webu je nenastavuje a nemůže je opravit.
+    if (!isFirstParty(cookie.domain, host)) {
+      thirdParty += 1;
+      continue;
+    }
+
     const sensitive = looksLikeSessionCookie(cookie.name);
 
     // Secure má smysl posuzovat jen u HTTPS. Na http:// prohlížeč cookie
@@ -108,9 +136,10 @@ export function auditCookieFlags(cookies, { https = true } = {}) {
       );
     }
 
-    // Playwright vrací 'Strict' | 'Lax' | 'None'. Chybějící atribut hlásí
-    // jako 'None' u starších verzí, jinak jako 'Lax' podle výchozího
-    // chování prohlížeče — proto se posuzuje jen skutečně slabá hodnota.
+    // Playwright vrací 'Strict' | 'Lax' | 'None' a chybějící atribut mapuje
+    // na 'Lax', což odpovídá výchozímu chování Chromia. Rozlišit „výchozí
+    // Lax" od „výslovně nastaveného Lax" proto nejde — a ani není potřeba,
+    // protože obojí chrání stejně. Posuzuje se jen skutečně slabá hodnota.
     const sameSite = String(cookie.sameSite || '');
     if (sameSite === 'None' && !cookie.secure) {
       findings.push(
@@ -136,14 +165,38 @@ export function auditCookieFlags(cookies, { https = true } = {}) {
   }
 
   const high = findings.filter((f) => f.severity === 'high').length;
+  const own = list.length - thirdParty;
+  const thirdPartyNote = thirdParty > 0
+    ? ` ${thirdParty} cookies nastavila třetí strana (vložený obsah) — ty se ` +
+      'neposuzují, protože je provozovatel webu nemá jak změnit.'
+    : '';
+
+  if (own === 0) {
+    // Všechny cookies přišly od třetích stran. O aplikaci samotné z toho
+    // neplyne nic.
+    return {
+      ok: null,
+      total: list.length,
+      firstParty: 0,
+      thirdParty,
+      findings: [],
+      rationale:
+        `Všech ${list.length} nalezených cookies nastavila třetí strana ` +
+        '(vložený obsah). Příznaky vlastních cookies aplikace tak nebylo ' +
+        'na čem posoudit.',
+    };
+  }
 
   return {
     ok: high === 0,
     total: list.length,
+    firstParty: own,
+    thirdParty,
     findings,
     rationale:
-      high > 0
-        ? `Z ${list.length} cookies má ${high} závažný nedostatek v příznacích.`
-        : `Zkontrolováno ${list.length} cookies, žádný závažný nedostatek v příznacích.`,
+      (high > 0
+        ? `Z ${own} vlastních cookies má ${high} závažný nedostatek v příznacích.`
+        : `Zkontrolováno ${own} vlastních cookies, žádný závažný nedostatek v příznacích.`)
+      + thirdPartyNote,
   };
 }

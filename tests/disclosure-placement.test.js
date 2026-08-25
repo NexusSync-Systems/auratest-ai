@@ -72,15 +72,43 @@ describe('souhrn přes všechny výskyty', () => {
     expect(result.occurrences).toBe(2);
   });
 
-  test('žádný výskyt', () => {
+  test('žádný výskyt při úspěšném hledání = NONE', () => {
     expect(assessDisclosurePlacement([]).placement).toBe(PLACEMENT.NONE);
-    expect(assessDisclosurePlacement(null).placement).toBe(PLACEMENT.NONE);
+  });
+
+  test('neproběhlé měření NENÍ totéž co nenalezeno', () => {
+    // REGRESE: `null` (čtení stránky selhalo) se dřív vyhodnotilo stejně
+    // jako prázdné pole, tedy jako prokázané porušení. Nález na webu, který
+    // je v pořádku, je stejně vážná chyba jako přehlédnuté porušení.
+    const result = assessDisclosurePlacement(null);
+    expect(result.placement).toBe(PLACEMENT.UNMEASURED);
+    expect(result.occurrences).toBeNull();
+    expect(placementToStatus(result.placement)).toBe('inconclusive');
+  });
+
+  test('text na stránce je, ale prvek se nenašel → neprůkazné', () => {
+    // Zmínka rozdělená přes víc značek: <p>Používáme umělou <em>inteligenci</em></p>
+    const result = assessDisclosurePlacement([], { textMatched: true });
+    expect(result.placement).toBe(PLACEMENT.UNMEASURED);
+    expect(placementToStatus(result.placement)).toBe('inconclusive');
+  });
+
+  test('vložený widget, kam sken nevidí → neprůkazné', () => {
+    // Upozornění bývá právě uvnitř iframu chatu. Hlásit porušení proto,
+    // že jsme se nedostali tam, kde má být, je nález bez měření.
+    const result = assessDisclosurePlacement([], { hasEmbeddedWidget: true });
+    expect(result.placement).toBe(PLACEMENT.UNMEASURED);
+    expect(placementToStatus(result.placement)).toBe('inconclusive');
   });
 
   test('každý výsledek nese odůvodnění', () => {
     for (const input of [[], [at()], [at({ inFooter: true })], [at({ rendered: false })]]) {
       expect(assessDisclosurePlacement(input).rationale.length).toBeGreaterThan(30);
     }
+    expect(assessDisclosurePlacement(null).rationale.length).toBeGreaterThan(30);
+    expect(
+      assessDisclosurePlacement([], { hasEmbeddedWidget: true }).rationale.length
+    ).toBeGreaterThan(30);
   });
 });
 

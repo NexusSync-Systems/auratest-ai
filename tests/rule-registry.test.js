@@ -33,10 +33,10 @@ describe('registr pravidel', () => {
   });
 
   test('ruleRef doplní verzi', () => {
-    // CSP je na v2 od doplnění rozboru obsahu politiky. Test na konkrétní
-    // číslo je záměr: zvýšení verze má být vědomé rozhodnutí, ne vedlejší
-    // efekt úpravy textu.
-    expect(ruleRef('nis2.headers.csp')).toBe('nis2.headers.csp.v2');
+    // CSP je na v3 od doplnění strict-dynamic a průniku více politik. Test
+    // na konkrétní číslo je záměr: zvýšení verze má být vědomé rozhodnutí,
+    // ne vedlejší efekt úpravy textu.
+    expect(ruleRef('nis2.headers.csp')).toBe('nis2.headers.csp.v3');
     expect(ruleRef('nis2.headers.hsts')).toBe('nis2.headers.hsts.v1');
   });
 

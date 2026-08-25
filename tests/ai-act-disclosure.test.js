@@ -1,4 +1,8 @@
-import { evaluateInteractionObligation, OBLIGATION_STATUS } from '../ai-act.js';
+import {
+  evaluateInteractionObligation,
+  isAiApiUrl,
+  OBLIGATION_STATUS,
+} from '../ai-act.js';
 import { PLACEMENT } from '../disclosure-placement.js';
 
 /**
@@ -83,5 +87,37 @@ describe('bez prokázaného použití AI', () => {
       disclosure: placement(PLACEMENT.NONE),
     });
     expect(result.status).toBe(OBLIGATION_STATUS.INCONCLUSIVE);
+  });
+});
+
+describe('rozpoznání AI API podle hostitele (regrese kontrolní vlny)', () => {
+  test('shoda musí být na hostiteli, ne kdekoli v adrese', () => {
+    // REGRESE: vzor se dřív hledal v celé URL, takže avatar načtený
+    // z `https://cdn.example.com/img?ref=huggingface.co` znamenal
+    // „použití AI je prokázané" — a z toho pak plynulo porušení čl. 50.
+    expect(isAiApiUrl('https://cdn.example.com/img?ref=huggingface.co')).toBe(false);
+    expect(isAiApiUrl('https://example.com/blog/api.openai.com-jak-na-to')).toBe(false);
+  });
+
+  test('skutečné volání AI API se pozná', () => {
+    expect(isAiApiUrl('https://api.openai.com/v1/chat/completions')).toBe(true);
+    expect(isAiApiUrl('https://api.anthropic.com/v1/messages')).toBe(true);
+  });
+
+  test('subdoména ano, podobně vypadající doména ne', () => {
+    expect(isAiApiUrl('https://eu.api.openai.com/v1/chat')).toBe(true);
+    expect(isAiApiUrl('https://api.openai.com.evil.example/v1')).toBe(false);
+    expect(isAiApiUrl('https://notapi.openai.com.attacker.cz/')).toBe(false);
+  });
+
+  test('regionální hostitel Bedrocku se pozná přes vzor', () => {
+    expect(isAiApiUrl('https://bedrock-runtime.eu-central-1.amazonaws.com/model/x')).toBe(true);
+    expect(isAiApiUrl('https://s3.eu-central-1.amazonaws.com/bucket/soubor')).toBe(false);
+  });
+
+  test('neparsovatelná adresa se nepočítá jako důkaz', () => {
+    for (const value of [null, undefined, '', 'nesmysl', '//bez-schematu']) {
+      expect(isAiApiUrl(value)).toBe(false);
+    }
   });
 });

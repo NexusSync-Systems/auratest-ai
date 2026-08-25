@@ -41,25 +41,37 @@ const RULE_LIST = [
   },
   {
     id: 'nis2.headers.csp',
-    version: 2,
+    version: 3,
     title: 'Content-Security-Policy — obsah politiky',
     method:
       'Politika se rozebere na direktivy a posoudí se, co skutečně zakazuje. ' +
-      'Hledá se zejména `default-src *` nebo `https:` u skriptů, ' +
-      "`'unsafe-inline'` bez nonce či hashe, `'unsafe-eval'`, a chybějící " +
-      '`base-uri` a `frame-ancestors` — ty se z `default-src` NEdědí, ' +
-      'na rozdíl od `script-src` a `object-src`.',
+      'Hledá se `*`, `https:`, `http:`, `data:` a `https://*` u skriptů, ' +
+      "`'unsafe-inline'` bez nonce, hashe či `'strict-dynamic'`, " +
+      "`'unsafe-eval'`, a chybějící `base-uri`, `frame-ancestors`, " +
+      '`object-src` a hlášení porušení. Posuzují se i `script-src-elem` ' +
+      'a `script-src-attr`, které `script-src` pro své kontexty přebíjejí. ' +
+      'Když hlavička obsahuje víc politik (oddělených čárkou), vyhodnocuje ' +
+      'se jejich průnik — stejně jako to dělá prohlížeč.',
     limits:
       'Posuzuje se text politiky, ne její účinek na konkrétní stránce. ' +
-      "Politika s nonce a zároveň `'unsafe-inline'` se nehlásí jako vada — " +
-      'prohlížeče od CSP Level 2 tuhle hodnotu při přítomnosti nonce ' +
-      'ignorují. Za splněné se považuje politika bez závažného nálezu; ' +
-      'střední a nízké se vypisují, ale verdikt neshazují.',
+      'Klíčová slova se porovnávají bez ohledu na velikost písmen. ' +
+      "Politika s nonce, hashem nebo `'strict-dynamic'` vedle " +
+      "`'unsafe-inline'` se NEhlásí jako vada — prohlížeče od CSP Level 2 " +
+      'tuhle hodnotu ignorují; v seznamu se objeví jen jako poznámka. ' +
+      'Hlavička `Content-Security-Policy-Report-Only` se nečte vůbec, ' +
+      'protože nic nevynucuje. Za splněné se považuje politika bez ' +
+      'závažného nálezu; střední a nízké se vypisují, ale verdikt neshazují.',
     changelog: {
       2:
         'Doplněn rozbor obsahu. Verze 1 posuzovala jen script-src na ' +
         'unsafe-inline a hvězdičku, takže politika bez base-uri nebo ' +
         'frame-ancestors procházela bez poznámky.',
+      3:
+        "Doplněno `'strict-dynamic'`, průnik více politik v jedné hlavičce, " +
+        'porovnávání klíčových slov bez ohledu na velikost písmen, tvary ' +
+        'typu `https://*` a direktivy `script-src-elem` a `script-src-attr`. ' +
+        "Verze 2 hlásila doporučenou přísnou politiku s `'strict-dynamic'` " +
+        'jako závažnou díru — falešný nález u nejlépe zabezpečených webů.',
     },
   },
   {
@@ -143,9 +155,15 @@ const RULE_LIST = [
       'neprůkazné, nikoli splněné ani porušené. ' +
       'Posuzuje se umístění, NE formulace: rozlišit „tento chat používá AI" ' +
       'od marketingové zmínky o AI automaticky nelze. ' +
+      'Měření vidí jen hlavní rámec a světlý DOM — do vloženého widgetu ' +
+      '(iframe) ani do shadow DOM nedohlédne, a právě tam bývá upozornění ' +
+      'umístěné. Když je takový widget na stránce a upozornění se nenajde, ' +
+      'výsledek je neprůkazný, ne porušení. Totéž platí, když se čtení ' +
+      'stránky nezdaří. ' +
       'Upozornění pouze v patičce se hodnotí jako neprůkazné — jestli splňuje ' +
       '„nejpozději při první interakci", je právní výklad, ne měření. ' +
-      'Za porušení se považuje jen upozornění, které se vůbec nevykresluje.',
+      'Za porušení se považuje jen upozornění, které se prokazatelně ' +
+      'nevykresluje.',
     changelog: {
       2:
         'Verze 1 považovala za splnění pouhý výskyt slova „AI" kdekoli ' +
@@ -159,17 +177,21 @@ const RULE_LIST = [
     version: 2,
     title: 'Strojově čitelné označení syntetického obsahu (čl. 50 odst. 2)',
     method:
-      'Ve vzorku obrázků se stáhne začátek souboru a hledá se manifest C2PA. ' +
-      'Z manifestu se čte typ zdroje podle slovníku IPTC, takže se rozliší ' +
-      'obsah hlásící se jako vytvořený generativním modelem od obsahu ' +
-      'hlásícího se jako pořízený zařízením.',
+      'Ve vzorku obrázků se stáhne prvních 64 kB souboru a hledá se v nich ' +
+      'obal JUMBF spolu se značkou C2PA. Z manifestu se čte typ zdroje ' +
+      'podle slovníku IPTC, takže se rozliší obsah hlásící se jako vytvořený ' +
+      'generativním modelem od obsahu hlásícího se jako pořízený zařízením.',
     limits:
       'PODPIS MANIFESTU SE NEOVĚŘUJE. Manifest tvrdí, co tvrdí; jeho pravost ' +
       'by vyžadovala kryptografické ověření proti důvěryhodnému kořeni. ' +
+      'Manifest se hledá jen v prvních 64 kB, takže u souborů s velkým ' +
+      'náhledem může typ zdroje ležet mimo načtenou část. Pokryta je jen ' +
+      'část slovníku IPTC — nepřečtený typ se počítá jako NEPRŮKAZNÝ, ' +
+      'nikoli jako „není to AI". ' +
       'Chybějící manifest neznamená, že obsah je syntetický a neoznačený — ' +
-      'většina fotografií žádné pověření nemá a bez znalosti toho, co systém ' +
-      'generuje, z toho porušení neplyne. Vzorkuje se jen část obrázků a ' +
-      'report uvádí, kolik jich zůstalo neprozkoumaných.',
+      'většina fotografií žádné pověření nemá. Vzorkuje se jen část obrázků ' +
+      'a report uvádí, kolik jich zůstalo neprozkoumaných; obrázky, které ' +
+      'se nepodařilo stáhnout, se do vzorku nepočítají.',
     changelog: {
       2:
         'Verze 1 uměla jen zjistit, že pověření existuje. Nově se čte typ ' +
@@ -253,7 +275,11 @@ const RULE_LIST = [
       'Posuzují se jen cookies vzniklé bez přihlášení a bez interakce. ' +
       'Ty, které aplikace nastaví až po přihlášení, sken nevidí — ' +
       'nenalezení proto neznamená, že žádné rizikové neexistují. ' +
-      'Druh cookie se odhaduje z názvu.',
+      'Druh cookie se odhaduje z názvu. ' +
+      'Cookies nastavené třetí stranou (vložený přehrávač, widget) se ' +
+      'započítají, ale nehodnotí: provozovatel je nemá jak změnit. ' +
+      'Příznak Secure se na nešifrovaném spojení neposuzuje vůbec, protože ' +
+      'tam ho prohlížeč stejně nepřijme.',
   },
   {
     id: 'gdpr.residency.geoip',

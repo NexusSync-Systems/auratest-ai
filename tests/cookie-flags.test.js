@@ -132,3 +132,62 @@ describe('souhrn', () => {
     expect(result.findings[0]).toMatchObject({ cookie: 'session_id', domain: '.klient.cz' });
   });
 });
+
+describe('cizí cookies (regrese kontrolní vlny)', () => {
+  const vlastni = cookie({ name: 'session_id', domain: 'klient.cz' });
+  const cizi = cookie({
+    name: 'YSC',
+    domain: '.youtube.com',
+    secure: false,
+    httpOnly: false,
+  });
+
+  test('cookie třetí strany se nehlásí jako vada auditovaného webu', () => {
+    // Provozovatel příznaky vloženého přehrávače nezmění. Nález, který
+    // nemá jak opravit, je jen šum snižující důvěru v ostatní zjištění.
+    const result = auditCookieFlags([vlastni, cizi], { https: true, host: 'klient.cz' });
+    expect(result.findings).toHaveLength(0);
+    expect(result.thirdParty).toBe(1);
+    expect(result.firstParty).toBe(1);
+    expect(result.ok).toBe(true);
+  });
+
+  test('jen cizí cookies → neprůkazné, ne v pořádku', () => {
+    // O aplikaci samotné z toho neplyne nic, takže ani „splněno".
+    const result = auditCookieFlags([cizi], { https: true, host: 'klient.cz' });
+    expect(result.ok).toBeNull();
+    expect(result.rationale).toMatch(/třetí strana/);
+  });
+
+  test('subdoména auditovaného webu je vlastní cookie', () => {
+    const naSubdomene = cookie({
+      name: 'session_id',
+      domain: '.klient.cz',
+      httpOnly: false,
+    });
+    const result = auditCookieFlags([naSubdomene], { https: true, host: 'www.klient.cz' });
+    expect(result.firstParty).toBe(1);
+    expect(result.findings.some((f) => f.id === 'cookie.httponly.missing')).toBe(true);
+  });
+
+  test('bez znalosti hostitele se nic za cizí nepovažuje', () => {
+    // Neznáme-li cíl, odhadovat původ by znamenalo tiše zamlčet nálezy.
+    const result = auditCookieFlags([cizi], { https: true });
+    expect(result.thirdParty).toBe(0);
+  });
+
+  test('Secure se na nešifrovaném spojení neposuzuje', () => {
+    // Prohlížeč cookie s příznakem Secure po http:// stejně nepřijme,
+    // takže jeho absence není volba provozovatele.
+    const result = auditCookieFlags([cookie({ secure: false })], {
+      https: false,
+      host: 'klient.cz',
+    });
+    expect(result.findings.some((f) => f.id === 'cookie.secure.missing')).toBe(false);
+  });
+
+  test('nesmyslný záznam v poli neshodí audit', () => {
+    const result = auditCookieFlags([null, vlastni, 'x'], { https: true, host: 'klient.cz' });
+    expect(result.ok).not.toBeUndefined();
+  });
+});

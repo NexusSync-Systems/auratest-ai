@@ -33,6 +33,15 @@ export const PLACEMENT = {
   HIDDEN: 'hidden',
   /** Nenalezeno. */
   NONE: 'none',
+  /**
+   * Nezměřeno.
+   *
+   * Čtení DOM selhalo, nebo se výsledky rozcházejí (text na stránce je,
+   * ale nepodařilo se najít prvek, který ho nese). Vydávat to za „nenalezeno"
+   * by znamenalo hlásit prokázané porušení tam, kde měření neproběhlo —
+   * přesně to, čemu se celý nástroj vyhýbá.
+   */
+  UNMEASURED: 'unmeasured',
 };
 
 /**
@@ -48,6 +57,7 @@ const RANK = {
   [PLACEMENT.FOOTER_ONLY]: 2,
   [PLACEMENT.HIDDEN]: 1,
   [PLACEMENT.NONE]: 0,
+  [PLACEMENT.UNMEASURED]: 0,
 };
 
 /**
@@ -75,10 +85,49 @@ export function classifyOccurrence(o) {
  * @param {Array} occurrences
  * @returns {{placement: string, rationale: string, occurrences: number}}
  */
-export function assessDisclosurePlacement(occurrences) {
+export function assessDisclosurePlacement(occurrences, context = {}) {
+  // `null` znamená, že měření neproběhlo — na rozdíl od prázdného pole,
+  // které znamená „hledali jsme a nic nenašli".
+  if (occurrences == null) {
+    return {
+      placement: PLACEMENT.UNMEASURED,
+      occurrences: null,
+      rationale:
+        'Umístění upozornění se nepodařilo změřit (čtení stránky selhalo). ' +
+        'Z toho neplyne, že upozornění chybí.',
+    };
+  }
+
   const list = Array.isArray(occurrences) ? occurrences : [];
 
   if (list.length === 0) {
+    // Dva případy, kdy „nenašli jsme" NENÍ totéž co „není tam":
+    //
+    // 1. Text na stránce je (`hasDisclaimer`), ale rozpadá se přes víc
+    //    prvků — `<p>Používáme umělou <em>inteligenci</em></p>`. Vzor se
+    //    pak nechytne na žádném jednotlivém uzlu.
+    // 2. Chat běží v iframu nebo shadow DOM, kam čtení nedohlédne. Tam bývá
+    //    upozornění umístěné právě u toho widgetu.
+    if (context.textMatched) {
+      return {
+        placement: PLACEMENT.UNMEASURED,
+        occurrences: 0,
+        rationale:
+          'Text na stránce zmínku o AI obsahuje, ale nepodařilo se určit, ' +
+          'který prvek ji nese — nejspíš je rozdělená mezi víc značek. ' +
+          'Umístění proto nelze posoudit.',
+      };
+    }
+    if (context.hasEmbeddedWidget) {
+      return {
+        placement: PLACEMENT.UNMEASURED,
+        occurrences: 0,
+        rationale:
+          'Na stránce je vložený konverzační widget (iframe nebo samostatný ' +
+          'komponent), do kterého sken nevidí. Upozornění bývá umístěné právě ' +
+          'v něm, takže z jeho nenalezení na hlavní stránce nic neplyne.',
+      };
+    }
     return {
       placement: PLACEMENT.NONE,
       occurrences: 0,
@@ -104,8 +153,8 @@ export function assessDisclosurePlacement(occurrences) {
       'chce informování nejpozději při první interakci; jestli patička tuhle ' +
       'podmínku splňuje, externí sken rozhodnout nedokáže.',
     [PLACEMENT.HIDDEN]:
-      'Zmínka o AI je v HTML, ale nevykresluje se (skrytý prvek nebo nulová ' +
-      'velikost). Uživatele informovat nemůže.',
+      'Zmínka o AI je v HTML, ale nevykresluje se (skrytý prvek, nulová ' +
+      'velikost, oříznutí nebo poloha mimo plátno). Uživatele informovat nemůže.',
   };
 
   return {
@@ -137,6 +186,7 @@ export function placementToStatus(placement) {
     case PLACEMENT.HIDDEN:
     case PLACEMENT.NONE:
       return 'fail';
+    // UNMEASURED, BELOW_FOLD, FOOTER_ONLY i cokoli neznámého → neprůkazné.
     default:
       return 'inconclusive';
   }

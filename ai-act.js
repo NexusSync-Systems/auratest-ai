@@ -38,11 +38,32 @@ export const OBLIGATION_STATUS = {
 
 /** Volání AI API viditelná z prohlížeče. Seznam je nutně neúplný. */
 export const AI_API_HOST_PATTERNS = [
-  'api.openai.com', 'anthropic.com', 'generativelanguage.googleapis',
-  'huggingface.co', 'openai.azure.com', 'api.cohere', 'api.mistral.ai',
-  'api.replicate.com', 'bedrock-runtime', 'aiplatform.googleapis',
-  'api.perplexity.ai', 'api.together.xyz', 'api.groq.com',
-  'api.deepseek.com', 'api.x.ai', 'api.anthropic.com',
+  'api.openai.com',
+  'api.anthropic.com',
+  'generativelanguage.googleapis.com',
+  'aiplatform.googleapis.com',
+  'openai.azure.com',
+  'api-inference.huggingface.co',
+  'api.cohere.ai',
+  'api.cohere.com',
+  'api.mistral.ai',
+  'api.replicate.com',
+  'api.perplexity.ai',
+  'api.together.xyz',
+  'api.groq.com',
+  'api.deepseek.com',
+  'api.x.ai',
+];
+
+/**
+ * Hostitelé, u kterých rozhoduje tvar adresy, ne jen doména.
+ *
+ * `bedrock-runtime` je regionální služba AWS (`bedrock-runtime.eu-central-1
+ * .amazonaws.com`); prostá shoda podřetězce by chytila i obrázek
+ * pojmenovaný `bedrock-runtime-diagram.png`.
+ */
+export const AI_API_HOST_REGEXPS = [
+  /^bedrock-runtime[.-][a-z0-9-]+\.amazonaws\.com$/i,
 ];
 
 /**
@@ -94,18 +115,45 @@ export const AI_DISCLAIMER_PATTERN = new RegExp(
   'i'
 );
 
-/** Vrátí true, když hostname odpovídá některému vzoru. */
-function matchesAny(value, patterns) {
-  const haystack = String(value || '').toLowerCase();
-  return patterns.some((p) => haystack.includes(p));
+/**
+ * Porovnává HOSTITELE, ne celou adresu.
+ *
+ * Dřív se hledalo v celé URL přes `includes`. Na tenhle nález stačil
+ * načtený avatar z `huggingface.co`, obrázek s názvem
+ * `bedrock-runtime-diagram.png` nebo odkaz na blog uvedený v parametru
+ * dotazu. Z toho pak plynulo „o použití AI není pochyb" — a v kombinaci
+ * s chybějícím upozorněním verdikt PROKAZATELNĚ NESPLNĚNO na webu, který
+ * žádnou AI nepoužívá.
+ *
+ * Shoda je na celý hostitel nebo na jeho subdoménu, aby `evilhuggingface.co`
+ * neprošlo jako `huggingface.co`.
+ */
+function hostMatches(url, patterns) {
+  let host;
+  try {
+    host = new URL(String(url)).hostname.toLowerCase();
+  } catch {
+    // Neparsovatelná adresa se nepočítá. Radši nic než falešný důkaz.
+    return false;
+  }
+  return patterns.some((pattern) => {
+    const p = pattern.toLowerCase();
+    return host === p || host.endsWith(`.${p}`);
+  });
 }
 
 export function isAiApiUrl(url) {
-  return matchesAny(url, AI_API_HOST_PATTERNS);
+  if (hostMatches(url, AI_API_HOST_PATTERNS)) return true;
+  try {
+    const host = new URL(String(url)).hostname;
+    return AI_API_HOST_REGEXPS.some((re) => re.test(host));
+  } catch {
+    return false;
+  }
 }
 
 export function isChatWidgetUrl(url) {
-  return matchesAny(url, CHAT_WIDGET_HOSTS);
+  return hostMatches(url, CHAT_WIDGET_HOSTS);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

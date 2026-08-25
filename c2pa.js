@@ -40,8 +40,11 @@ export const SOURCE_TYPE = {
 /**
  * Identifikátory IPTC, jak se v manifestu vyskytují.
  *
- * Pořadí rozhoduje: `compositeWithTrainedAlgorithmicMedia` obsahuje jako
- * podřetězec `trainedAlgorithmicMedia`, takže se musí zkoušet dřív.
+ * Pořadí je od nejužšího k nejširšímu. Delší identifikátory se zkoušejí
+ * dřív, aby kratší podřetězec nepřebil přesnější shodu.
+ *
+ * Seznam NENÍ úplný — slovník IPTC má přes deset hodnot. Co v něm není,
+ * skončí jako `UNKNOWN`, tedy neprůkazné, ne jako „není to AI".
  */
 const SOURCE_MARKERS = [
   ['compositeWithTrainedAlgorithmicMedia', SOURCE_TYPE.AI_COMPOSITE],
@@ -52,13 +55,21 @@ const SOURCE_MARKERS = [
 ];
 
 /**
- * Značky kontejneru JUMBF, ve kterém je manifest uložený.
+ * Obal, ve kterém manifest leží (JUMBF).
  *
- * Vyžadují se DVĚ nezávislé, ne jedna. Čtyřznakový řetězec jako `c2pa`
- * se v obrazových datech může vyskytnout náhodou; shoda dvou různých značek
- * je nepravděpodobná natolik, že falešný nález prakticky vylučuje.
+ * `jumb` je superbox a `jumd` jeho popisný box — vyskytují se VŽDY spolu
+ * v každém kontejneru JUMBF, i takovém, který s C2PA nesouvisí. Jsou to
+ * dva zápisy jednoho signálu, ne dva nezávislé důkazy.
  */
-const CONTAINER_MARKERS = ['jumb', 'c2pa', 'c2ma', 'contentauth', 'jumd'];
+const CONTAINER_MARKERS = ['jumb', 'jumd'];
+
+/**
+ * Značky, které ukazují přímo na C2PA.
+ *
+ * Vyžaduje se obal A ZÁROVEŇ aspoň jedna z těchto — jinak by za manifest
+ * prošel jakýkoli kontejner JUMBF, i cizí.
+ */
+const C2PA_MARKERS = ['c2pa', 'c2ma', 'contentauth'];
 
 /**
  * Prozkoumá načtené bajty obrázku.
@@ -78,8 +89,17 @@ export function inspectImageBytes(bytes) {
           bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
         );
 
-  const markers = CONTAINER_MARKERS.filter((m) => text.includes(m));
-  const hasManifest = markers.length >= 2;
+  const container = CONTAINER_MARKERS.filter((m) => text.includes(m));
+  const specific = C2PA_MARKERS.filter((m) => text.includes(m));
+  const markers = [...container, ...specific];
+
+  // Vyžaduje se ÚPLNÝ obal (`jumb` i `jumd`, které se v reálném souboru
+  // vyskytují vždy spolu) a k tomu značka C2PA.
+  //
+  // Volnější podmínka propouštěla souvislý text: článek o formátu obsahuje
+  // slova „jumb" i „c2pa", a prošel by jako obrázek s manifestem.
+  const hasManifest =
+    container.length === CONTAINER_MARKERS.length && specific.length > 0;
 
   if (!hasManifest) {
     return { hasManifest: false, sourceType: SOURCE_TYPE.NONE, markers };
@@ -109,6 +129,11 @@ export function summarizeC2pa(results, totalImages) {
       (r) => r.sourceType === SOURCE_TYPE.AI_GENERATED || r.sourceType === SOURCE_TYPE.AI_COMPOSITE
     ).length,
     declaredCapture: list.filter((r) => r.sourceType === SOURCE_TYPE.CAPTURE).length,
+    // Manifest je, ale typ zdroje se nepodařilo přečíst. Počítat ho mezi
+    // „nehlásí se jako AI" by znamenalo tvrdit něco, co se nezměřilo:
+    // seznam identifikátorů IPTC je delší, než co pokrýváme, a typ může
+    // ležet za hranicí načtených 64 kB.
+    unknownSource: list.filter((r) => r.sourceType === SOURCE_TYPE.UNKNOWN).length,
   };
 
   let rationale;
@@ -126,10 +151,22 @@ export function summarizeC2pa(results, totalImages) {
       'hlásí jako vytvořené generativním modelem — označení tedy existuje. ' +
       'Podpis manifestu se neověřuje, takže jde o tvrzení obsažené v souboru, ' +
       'ne o prokázaný původ.';
-  } else {
+  } else if (counts.unknownSource === counts.withManifest) {
+    // Všechny nalezené manifesty mají nepřečtený typ zdroje — o povaze
+    // obsahu tedy nevíme nic.
     rationale =
       `${counts.withManifest} z ${counts.sampled} zkoumaných obrázků nese Content ` +
-      'Credentials, ale žádný se nehlásí jako vytvořený AI. Podpis se neověřuje.';
+      'Credentials, ale typ zdroje se v načtené části souboru nepodařilo ' +
+      'přečíst. Zda jde o syntetický obsah, z toho neplyne ani tak, ani onak. ' +
+      'Podpis manifestu se navíc neověřuje.';
+  } else {
+    const unknownNote = counts.unknownSource > 0
+      ? ` U ${counts.unknownSource} se typ zdroje přečíst nepodařilo.`
+      : '';
+    rationale =
+      `${counts.withManifest} z ${counts.sampled} zkoumaných obrázků nese Content ` +
+      'Credentials, žádný z přečtených se nehlásí jako vytvořený AI.' +
+      `${unknownNote} Podpis se neověřuje.`;
   }
 
   return {
