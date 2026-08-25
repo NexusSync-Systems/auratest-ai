@@ -77,7 +77,12 @@ const cra = await run('CRA / SBOM', () => auditCRAVulnerabilities(TARGET));
 const green = await run('Green Deal / rezidence', () => auditGreenAndResidency(TARGET));
 const a11y = await run('Přístupnost (EAA)', () => auditAccessibility(TARGET));
 const cookies = await run('Cookies (GDPR)', () => auditStrictCookies(TARGET));
-const monitor = await run('Dostupnost', () => checkPage(TARGET));
+// `checkPage` bere objekt monitoru, ne holou URL. S řetězcem se `target.url`
+// vyhodnotí jako undefined a funkce vrátí „Chybí nebo neplatná URL" — což
+// vypadá jako nedostupný web, ačkoli šlo o špatné volání.
+const monitor = await run('Dostupnost', () =>
+  checkPage({ url: TARGET, name: 'Ukázkový cíl' })
+);
 
 const report = {
   // Datum je součást výsledku, ne dekorace: stav cizího webu se mění

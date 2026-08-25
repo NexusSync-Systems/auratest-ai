@@ -1425,3 +1425,49 @@ button:focus-visible,
 .public-page-auth .sample-back {
   align-self: flex-start;
 }
+
+/* Fakta v ukázkovém reportu: dvousloupcový popis, ať jde očima porovnávat. */
+.sample-facts {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) 1fr;
+  gap: 6px 16px;
+  margin: 12px 0 0;
+  font-size: 0.9rem;
+}
+
+.sample-facts dt {
+  color: var(--text-dark);
+}
+
+.sample-facts dd {
+  margin: 0;
+  color: var(--text-main);
+}
+
+.sample-label {
+  margin: 16px 0 6px;
+  font-size: 0.8rem;
+  color: var(--text-dark);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sample-list {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.sample-dim {
+  color: var(--text-dark);
+}
+
+.sample-section h3 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}

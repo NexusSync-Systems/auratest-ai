@@ -1,0 +1,109 @@
+import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import SampleReport from './SampleReport.jsx';
+import sampleReport from '../../../public/sample-report.json';
+
+/**
+ * Ukázkový report se renderuje proti SKUTEČNÝM datům.
+ *
+ * Motivace: první verze komponenty četla `data.tls.pqc.supported`, ale
+ * skener vrací `data.pqc.isQuantumSafe`. Nic nespadlo — stránka jen tiše
+ * zobrazila prázdné karty. Test proto pracuje s tímtéž souborem, který
+ * se nasazuje, takže změna tvaru výstupu skenerů se ozve tady.
+ */
+
+function mockFetchOk(payload) {
+  global.fetch = vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => 'application/json' },
+    json: async () => payload,
+  }));
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('SampleReport', () => {
+  test('vykreslí naměřený cíl a datum', async () => {
+    mockFetchOk(sampleReport);
+    render(<SampleReport onBack={() => {}} />);
+    expect(await screen.findByText(sampleReport.target)).toBeInTheDocument();
+  });
+
+  test('zobrazí výsledek post-kvantové sondy, ne prázdno', async () => {
+    mockFetchOk(sampleReport);
+    render(<SampleReport onBack={() => {}} />);
+
+    const pqc = sampleReport.sections.nis2.data.pqc;
+    // Právě tohle první verze komponenty minula: četla jiné pole.
+    expect(await screen.findByText(pqc.pqcGroup)).toBeInTheDocument();
+
+    // Doména se v reportu objevuje víckrát (cíl skenu, subjekt certifikátu),
+    // takže hledáme konkrétně tu v tabulce faktů.
+    const facts = document.querySelector('.sample-facts');
+    expect(facts.textContent).toContain(pqc.subjectName);
+    expect(facts.textContent).toContain(pqc.protocol);
+  });
+
+  test('vypíše všechny čtyři povinnosti čl. 50 i s odůvodněním', async () => {
+    mockFetchOk(sampleReport);
+    render(<SampleReport onBack={() => {}} />);
+
+    const obligations = sampleReport.sections.aiAct.data.aiAct.obligations;
+    expect(obligations).toHaveLength(4);
+    for (const o of obligations) {
+      expect(await screen.findByText(o.title)).toBeInTheDocument();
+    }
+  });
+
+  test('u knihovny bez verze to řekne, místo aby verzi vynechala', async () => {
+    mockFetchOk(sampleReport);
+    render(<SampleReport onBack={() => {}} />);
+
+    const libs = sampleReport.sections.cra.data.cra.libraries;
+    const withoutVersion = libs.filter((l) => !l.version);
+    if (withoutVersion.length > 0) {
+      const labels = await screen.findAllByText(/verze nezjištěna/);
+      expect(labels.length).toBe(withoutVersion.length);
+    }
+  });
+
+  test('každá změřená sekce má vlastní kartu', async () => {
+    mockFetchOk(sampleReport);
+    const { container } = render(<SampleReport onBack={() => {}} />);
+
+    const measured = Object.values(sampleReport.sections).filter((s) => s.data && !s.error);
+    await waitFor(() =>
+      expect(container.querySelectorAll('.sample-section').length).toBe(measured.length)
+    );
+  });
+
+  test('chybějící ukázka se nevydává za prázdný výsledek', async () => {
+    // Server u chybějícího souboru vracel index.html se stavem 200.
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/html' },
+      json: async () => {
+        throw new Error('neměl by se volat');
+      },
+    }));
+
+    render(<SampleReport onBack={() => {}} />);
+    expect(await screen.findByText(/nebyla vygenerována/)).toBeInTheDocument();
+  });
+
+  test('404 se ohlásí srozumitelně, ne technickou hláškou', async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 404,
+      headers: { get: () => 'application/json' },
+      json: async () => ({}),
+    }));
+
+    render(<SampleReport onBack={() => {}} />);
+    expect(await screen.findByText(/nebyla vygenerována/)).toBeInTheDocument();
+  });
+});
