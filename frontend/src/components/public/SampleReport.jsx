@@ -188,6 +188,9 @@ function A11y({ data }) {
         {violations.map((v) => (
           <li key={v.id}>
             <strong>{v.impact}</strong> — {v.help}
+            {v.nodeCount > 0 && (
+              <span className="sample-dim"> · {v.nodeCount} prvků</span>
+            )}
           </li>
         ))}
       </ul>
@@ -200,7 +203,12 @@ function A11y({ data }) {
           <p className="sample-label">Vyžaduje ruční posouzení</p>
           <ul className="sample-list">
             {incomplete.map((v) => (
-              <li key={v.id}>{v.help}</li>
+              <li key={v.id}>
+                {v.help}
+                {v.nodeCount > 0 && (
+                  <span className="sample-dim"> · {v.nodeCount} prvků</span>
+                )}
+              </li>
             ))}
           </ul>
         </>

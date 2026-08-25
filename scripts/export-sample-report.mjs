@@ -84,6 +84,33 @@ const monitor = await run('Dostupnost', () =>
   checkPage({ url: TARGET, name: 'Ukázkový cíl' })
 );
 
+/**
+ * Vyhodit z nálezů přístupnosti výpis DOM uzlů.
+ *
+ * axe u každého porušení vrací `nodes[]` s HTML dotčených prvků. V ukázce
+ * to dělá 60 z 66 kB, nic z toho se nezobrazuje — a je to doslova kus cizí
+ * stránky, který bychom veřejně přeposílali bez důvodu.
+ *
+ * Počet zůstává: „89 prvků k posouzení" nese tutéž informaci jako jejich
+ * výpis, jen bez balastu. Zahodit i počet by znamenalo ubrat na obsahu.
+ */
+function stripAxeNodes(section) {
+  if (!section.data) return section;
+  const trim = (items) =>
+    (items || []).map(({ nodes, ...rest }) => ({
+      ...rest,
+      nodeCount: (nodes || []).length,
+    }));
+  return {
+    ...section,
+    data: {
+      ...section.data,
+      violations: trim(section.data.violations),
+      incomplete: trim(section.data.incomplete),
+    },
+  };
+}
+
 const report = {
   // Datum je součást výsledku, ne dekorace: stav cizího webu se mění
   // a report starý půl roku tvrdí něco o minulosti.
@@ -92,7 +119,7 @@ const report = {
   note:
     'Naměřeno skutečným během nástroje, ne ručně sestaveno. ' +
     'Nálezy popisují stav cílového webu v uvedený čas.',
-  sections: { nis2, aiAct, cra, green, a11y, cookies, monitor },
+  sections: { nis2, aiAct, cra, green, a11y: stripAxeNodes(a11y), cookies, monitor },
 };
 
 fs.mkdirSync(path.dirname(OUT), { recursive: true });

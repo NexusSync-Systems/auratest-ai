@@ -80,6 +80,24 @@ describe('SampleReport', () => {
     );
   });
 
+  test('u přístupnosti se uvádí počet dotčených prvků', async () => {
+    // Výpis DOM uzlů se z ukázky vyhazuje (60 z 66 kB cizího HTML, které se
+    // stejně nezobrazuje), ale počet nést musí — jinak by se z „89 prvků
+    // k posouzení" stalo jen „něco k posouzení".
+    mockFetchOk(sampleReport);
+    render(<SampleReport onBack={() => {}} />);
+
+    const items = [
+      ...sampleReport.sections.a11y.data.violations,
+      ...sampleReport.sections.a11y.data.incomplete,
+    ];
+    for (const item of items) {
+      expect(item.nodes).toBeUndefined();
+      expect(typeof item.nodeCount).toBe('number');
+    }
+    expect(await screen.findAllByText(/prvků/)).not.toHaveLength(0);
+  });
+
   test('chybějící ukázka se nevydává za prázdný výsledek', async () => {
     // Server u chybějícího souboru vracel index.html se stavem 200.
     global.fetch = vi.fn(async () => ({
