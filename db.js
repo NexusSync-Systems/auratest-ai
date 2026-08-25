@@ -161,6 +161,22 @@ export async function getSessions(userId) {
   return list.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 }
 
+/**
+ * Běhy včetně nálezů a varování.
+ *
+ * `getSessions()` vrací jen souhrn (počty), což stačí do seznamu v UI, ale
+ * ne do spisu — kontrolor potřebuje vidět konkrétní nálezy. Načítat je
+ * jedním dotazem na session je stovky dotazů navíc.
+ */
+export async function getSessionsDetailed(userId) {
+  const snapshot = await firestore.collection('sessions')
+    .where('userId', '==', userId)
+    .get();
+  const list = [];
+  snapshot.forEach((doc) => list.push({ id: doc.id, ...doc.data() }));
+  return list.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+}
+
 export async function getSession(sessionId) {
   const doc = await firestore.collection('sessions').doc(sessionId).get();
   if (!doc.exists) return null;
