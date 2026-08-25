@@ -2651,7 +2651,7 @@ export default function App() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {monitors.length === 0 ? (
                       <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '16px' }}>
-                        Žány aktivní monitory. Přidejte monitor pro periodickou kontrolu webů na pozadí.
+                        Žádné aktivní monitory. Přidejte monitor pro periodickou kontrolu webů na pozadí.
                       </div>
                     ) : (
                       monitors.map((mon) => {
