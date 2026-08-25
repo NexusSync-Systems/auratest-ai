@@ -12,23 +12,9 @@ import { collectBundleEvidence, mergeFindings } from './sbom-fingerprint.js';
 import { normalizeSemver } from './semver.js';
 import { classifyActionFailure } from './action-failure.js';
 
-/**
- * Argumenty navíc pro Chromium, z konfigurace serveru.
- *
- * Potřeba hlavně pro kontejnerová prostředí s malým /dev/shm (Cloud Run,
- * některé CI runnery), kde Chromium jinak padá na „Target closed" —
- * tam se nastavuje `BROWSER_ARGS=--disable-dev-shm-usage`.
- *
- * Bere se z prostředí, nikdy z requestu: argumenty prohlížeče umí vypnout
- * sandbox, takže je klient ovlivňovat nesmí.
- */
-const BROWSER_ARGS = (process.env.BROWSER_ARGS || '')
-  .split(',').map((a) => a.trim()).filter(Boolean);
-
-/** Sjednocené volby pro chromium.launch(). */
-function launchOptions(extra = {}) {
-  return { headless: true, ...extra, args: [...BROWSER_ARGS, ...(extra.args || [])] };
-}
+// Volby pro Chromium jsou ve vlastním modulu — potřebuje je i generátor PDF
+// spisu a duplikát by se jednou opravil jen na jednom místě.
+import { launchOptions } from './browser-options.js';
 import {
   AI_DISCLAIMER_PATTERN,
   isAiApiUrl,
