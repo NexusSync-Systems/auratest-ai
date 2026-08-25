@@ -1471,3 +1471,52 @@ button:focus-visible,
   gap: 12px;
   flex-wrap: wrap;
 }
+
+/* ── Doložitelnost: spis a stav záznamu ─────────────────────────────────── */
+
+.case-file-panel {
+  display: grid;
+  gap: 20px;
+  max-width: 760px;
+}
+
+.card-note {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  margin: 0 0 16px;
+}
+
+.case-file-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.case-file-ok {
+  color: var(--success);
+  font-size: 0.9rem;
+  margin: 12px 0 0;
+}
+
+.case-file-error {
+  color: var(--error);
+  font-size: 0.9rem;
+  margin: 12px 0 0;
+}
+
+.case-file-problems {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+/* Tlačítko na opětovné ověření patří k nadpisu, ne pod obsah — ověřuje se
+   stav uvedený hned vedle. */
+.case-file-refresh {
+  margin-left: auto;
+  padding: 4px 8px;
+}

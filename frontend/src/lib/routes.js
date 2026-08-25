@@ -28,6 +28,7 @@ export const TAB_TO_PATH = {
   compare: '/porovnani-verzi',
   audit: '/audit-prekladu',
   auraguard: '/hub',
+  evidence: '/dolozitelnost',
   settings: '/nastaveni',
 };
 

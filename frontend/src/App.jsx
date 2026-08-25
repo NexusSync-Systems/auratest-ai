@@ -30,6 +30,7 @@ import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
 import { useRoutedTab } from './hooks/useRoutedTab.js';
 import LandingPage from './components/public/LandingPage.jsx';
+import CaseFilePanel from './components/CaseFilePanel.jsx';
 
 // Ukázkový report si tahá vlastní JSON a v běžném provozu ho nikdo neotevře —
 // do hlavního bundlu nepatří.
@@ -1228,7 +1229,15 @@ export default function App() {
             <Activity size={16} />
             <span>AuraAuraGuard Hub</span>
           </button>
-          <button 
+          <button
+            className={`nav-item ${activeTab === 'evidence' ? 'active' : ''}`}
+            aria-current={activeTab === 'evidence' ? 'page' : undefined}
+            onClick={() => { setActiveTab('evidence'); }}
+          >
+            <FileText size={16} />
+            <span>Doložitelnost</span>
+          </button>
+          <button
             className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}
             aria-current={activeTab === 'settings' ? 'page' : undefined}
             onClick={() => { setActiveTab('settings'); }}
@@ -1312,6 +1321,7 @@ export default function App() {
               {activeTab === 'compare' && 'Porovnávání stránek (Prod vs Preview)'}
               {activeTab === 'audit' && 'Audit překladů a lokalizace'}
               {activeTab === 'auraguard' && 'AuraAuraGuard Hub'}
+              {activeTab === 'evidence' && 'Doložitelnost auditů'}
               {activeTab === 'settings' && 'Globální nastavení'}
             </h1>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
@@ -1319,6 +1329,7 @@ export default function App() {
               {activeTab === 'compare' && 'Porovnává textový a vizuální obsah mezi dvěma verzemi webu'}
               {activeTab === 'audit' && 'Kontrola překladů na webu proti databázi nebo nadefinovanému slovníku'}
               {activeTab === 'auraguard' && 'Plánovaný syntetický monitoring a sběr klientských chyb v reálném čase'}
+              {activeTab === 'evidence' && 'Spis za období a neporušenost záznamu — podklad pro kontrolu'}
               {activeTab === 'settings' && 'Konfigurace lokální Ollama instance a výchozí nastavení prohlížeče'}
             </p>
           </div>
@@ -2380,6 +2391,10 @@ export default function App() {
           )}
 
           {/* Tab 4: Settings */}
+          {user && activeTab === 'evidence' && (
+            <CaseFilePanel getToken={() => firebaseAuth.currentUser.getIdToken()} />
+          )}
+
           {user && activeTab === 'settings' && (
             <>
               <div className="card" style={{ marginBottom: '24px' }}>
