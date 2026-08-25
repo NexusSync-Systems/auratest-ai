@@ -50,11 +50,22 @@ COPY --from=builder /app/frontend/dist ./frontend/dist
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/bin ./bin
 COPY --from=builder /app/*.js ./
-# Smoke test běží PROTI NASAZENÉ instalaci, takže musí být uvnitř image —
-# jinak je příkaz v deploy/README.md slib, který skončí „Cannot find module".
-# Je to jediný způsob, jak po nasazení ověřit věci, které jednotkové testy
-# ověřit nedokážou: PQC sondu proti skutečnému serveru a SBOM z živých bundlů.
-COPY --from=builder /app/scripts/smoke-test.mjs ./scripts/
+# Provozní skripty běží PROTI NASAZENÉ instalaci, takže musí být uvnitř
+# image — jinak jsou příkazy v deploy/README.md slib, který skončí
+# „Cannot find module".
+#
+# Kopíruje se vzor `*.mjs`, ne vyjmenované soubory. Původně tu stál jen
+# `smoke-test.mjs` a při přidání `export-sample-report.mjs` se na to
+# zapomnělo; chyba se ukázala až na serveru. Nový provozní skript se teď
+# přibere sám.
+#
+# Celý adresář ne: jsou v něm i vývojové `commit-*.sh`, které v produkčním
+# image nemají co dělat.
+#
+# Tohle jsou jediné způsoby, jak po nasazení ověřit věci, které jednotkové
+# testy ověřit nedokážou: PQC sondu proti skutečnému serveru a SBOM
+# z živých bundlů.
+COPY --from=builder /app/scripts/*.mjs ./scripts/
 
 # Adresáře pro artefakty musí patřit neprivilegovanému uživateli.
 RUN mkdir -p screenshots videos generated-scripts \
