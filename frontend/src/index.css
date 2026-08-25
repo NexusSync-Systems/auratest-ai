@@ -1201,3 +1201,213 @@ button:focus-visible,
   color: inherit;
   background: none;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Veřejné stránky (úvod, ukázkový report)
+   
+   Stojí mimo `.app-container` — nemají postranní menu, protože návštěvník
+   bez účtu na ty sekce stejně nemá přístup a rozhraní, které nikam nevede,
+   je jen matoucí. Proměnné jsou stejné jako ve zbytku aplikace, aby přechod
+   po přihlášení nebyl skok do jiného produktu.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.public-page {
+  min-height: 100vh;
+  background: var(--bg-primary);
+  color: var(--text-main);
+  padding: 48px 24px 64px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.public-hero {
+  text-align: center;
+  padding: 32px 0 40px;
+}
+
+.public-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--accent);
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+
+.public-hero h1 {
+  font-size: clamp(1.6rem, 4vw, 2.4rem);
+  line-height: 1.25;
+  margin: 0 0 16px;
+}
+
+.public-lead {
+  color: var(--text-muted);
+  font-size: 1.05rem;
+  line-height: 1.65;
+  max-width: 62ch;
+  margin: 0 auto 24px;
+}
+
+.public-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.public-section {
+  padding: 40px 0;
+  border-top: 1px solid var(--border);
+}
+
+.public-section h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.3rem;
+  margin: 0 0 24px;
+}
+
+.public-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.public-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 20px;
+}
+
+.public-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1rem;
+  margin: 0 0 6px;
+  color: var(--text-main);
+}
+
+.public-card-ref {
+  color: var(--text-dark);
+  font-size: 0.8rem;
+  margin: 0 0 12px;
+}
+
+.public-card p {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* Oddíl o mezích nástroje je zvýrazněný schválně: je to jeho hlavní
+   vlastnost, ne drobné písmo pod čarou. */
+.public-section-limits {
+  background: var(--warning-bg);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: var(--radius-lg);
+  padding: 32px 28px;
+  margin: 24px 0;
+}
+
+.public-section-limits h2 {
+  color: var(--warning);
+}
+
+.public-limits {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+.public-limits li {
+  margin-bottom: 12px;
+}
+
+.public-footer {
+  padding-top: 32px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dark);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+/* ── Ukázkový report ─────────────────────────────────────────────────────── */
+
+.sample-back {
+  margin-bottom: 16px;
+}
+
+.sample-provenance {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--warning-bg);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  margin-bottom: 28px;
+}
+
+.sample-section {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.sample-section h3 {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+}
+
+.sample-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #0b1120;
+}
+
+.sample-obligations {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.sample-obligations li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 12px;
+  align-items: start;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.sample-obligations em {
+  grid-column: 2;
+  color: var(--text-dark);
+  font-size: 0.85rem;
+  font-style: normal;
+}
+
+.sample-summary {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  margin: 12px 0 0;
+}
+
+.sample-error {
+  color: var(--error);
+}

@@ -16,9 +16,15 @@ vi.mock('./lib/firebase.js', () => ({
   firebaseDb: {},
 }));
 
+// Přihlášeného uživatele si test nastaví sám.
+//
+// Menu aplikace se odhlášenému nezobrazuje — vedlo by na zamčené sekce.
+// Testy, které menu zkoumají, proto musí renderovat jako přihlášený.
+let authUser = null;
+
 vi.mock('firebase/auth', () => ({
   onAuthStateChanged: (_auth, cb) => {
-    cb(null);
+    cb(authUser);
     return () => {};
   },
   signInWithEmailAndPassword: vi.fn(),
@@ -37,6 +43,13 @@ vi.mock('firebase/firestore', () => ({
 const App = (await import('./App.jsx')).default;
 
 beforeEach(() => {
+  authUser = null;
+
+  // Na `/` je od zavedení veřejné části úvodní stránka, ne aplikace. Tyhle
+  // testy zkoumají přihlašovací obrazovku a rozhraní aplikace, takže si
+  // adresu musí nastavit — jinak by prověřovaly marketingový text.
+  window.history.replaceState({}, '', '/prihlaseni');
+
   global.fetch = vi.fn(async () => ({
     ok: true,
     status: 200,
@@ -81,6 +94,8 @@ describe('Přístupnost', () => {
   });
 
   it('interaktivní prvky navigace jsou tlačítka, ne divy s onClick', () => {
+    authUser = { uid: 'test-uid', email: 'test@example.com' };
+    window.history.replaceState({}, '', '/hub');
     const { container } = render(<App />);
 
     const nav = container.querySelector('.nav-menu');
@@ -97,8 +112,15 @@ describe('Přístupnost', () => {
   });
 
   it('aktivní záložka je označená aria-current, ne jen barvou', () => {
+    authUser = { uid: 'test-uid', email: 'test@example.com' };
+    window.history.replaceState({}, '', '/hub');
     const { container } = render(<App />);
     expect(container.querySelector('.nav-item[aria-current="page"]')).toBeTruthy();
+  });
+
+  it('odhlášenému se menu nezobrazuje — vedlo by na zamčené sekce', () => {
+    const { container } = render(<App />);
+    expect(container.querySelector('.nav-menu')).toBeNull();
   });
 
   it('přihlašovacím formulářem lze projít klávesnicí', async () => {

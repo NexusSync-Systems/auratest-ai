@@ -42,6 +42,10 @@ const App = (await import('./App.jsx')).default;
 
 beforeEach(() => {
   authCallback = null;
+
+  // Na `/` je od zavedení veřejné části úvodní stránka, ne aplikace.
+  window.history.replaceState({}, '', '/prihlaseni');
+
   global.fetch = vi.fn(async () => ({
     ok: true,
     status: 200,

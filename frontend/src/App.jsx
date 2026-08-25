@@ -28,6 +28,11 @@ import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
 import { useRoutedTab } from './hooks/useRoutedTab.js';
+import LandingPage from './components/public/LandingPage.jsx';
+
+// Ukázkový report si tahá vlastní JSON a v běžném provozu ho nikdo neotevře —
+// do hlavního bundlu nepatří.
+const SampleReport = lazy(() => import('./components/public/SampleReport.jsx'));
 const PrintReport = lazy(() => import('./components/print/PrintReport.jsx'));
 import {
   TEST_TYPES, IMPACT_COLORS, IMPACT_TRANSLATIONS, RULE_TRANSLATIONS,
@@ -56,7 +61,10 @@ export default function App() {
   // Sekce se promítá do adresního řádku (/hub, /audit-prekladu, …), takže na
   // ni jde poslat odkaz a Zpět v prohlížeči přepíná sekce místo odchodu
   // z aplikace. Rozhraní je stejné jako u useState.
-  const [activeTab, setActiveTab] = useRoutedTab();
+  //
+  // Hook zároveň hlídá, že odhlášený uživatel neuvízne na zamčené sekci
+  // a přihlášený na úvodní stránce.
+  const [activeTab, setActiveTab] = useRoutedTab(!!user);
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const [activeSession, setActiveSession] = useState(null);
@@ -1124,6 +1132,28 @@ export default function App() {
     || craVulnLoading || monitorPageLoading || monitorFormLoading || securityAnalysisLoading
     || cookieLoading || aiActLoading || chaosLoading;
 
+  // Veřejné obrazovky se vykreslují MÍSTO aplikace, ne uvnitř ní.
+  //
+  // Cizí návštěvník dřív viděl kompletní postranní menu a nad ním přihlašovací
+  // kartu — tedy rozhraní, na které nemá přístup, plus žádné vysvětlení, co ta
+  // aplikace vlastně dělá. Landing a ukázka proto stojí samostatně.
+  if (activeTab === 'landing') {
+    return (
+      <LandingPage
+        onLogin={() => setActiveTab('login')}
+        onSample={() => setActiveTab('sample')}
+      />
+    );
+  }
+
+  if (activeTab === 'sample') {
+    return (
+      <Suspense fallback={<div className="public-page">Načítám ukázku…</div>}>
+        <SampleReport onBack={() => setActiveTab(user ? 'auraguard' : 'landing')} />
+      </Suspense>
+    );
+  }
+
   return (
     <div className="app-container">
       {/* Sidebar navigation */}
@@ -1135,8 +1165,13 @@ export default function App() {
           <span className="logo-text">AuraTest AI</span>
         </div>
 
+        {/* Menu se odhlášenému nezobrazuje.
+            Všechny položky vedou na zamčené sekce, takže kliknutí jen odrazí
+            zpátky na přihlášení — rozhraní, které nikam nevede, je horší než
+            žádné. */}
+        {user && (
         <nav className="nav-menu">
-          <button 
+          <button
             className={`nav-item ${activeTab === 'agent' ? 'active' : ''}`}
             aria-current={activeTab === 'agent' ? 'page' : undefined}
             onClick={() => { setActiveTab('agent'); }}
@@ -1177,6 +1212,7 @@ export default function App() {
             <span>Nastavení</span>
           </button>
         </nav>
+        )}
 
         <div className="sidebar-divider" />
         <span className="sidebar-section-title">Historie testů</span>
