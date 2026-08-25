@@ -2,9 +2,30 @@
 <html lang="cs">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%25238B5CF6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6'/%3E%3C/svg%3E" />
+    <!-- Samostatný soubor, ne data URI. Ta předchozí měla `%25238B5CF6`,
+         tedy dvojitě zakódovanou mřížku — z barvy se stal nesmysl
+         a v záložce nebylo vidět nic. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AuraTest AI – Lokální Testovací Agent</title>
+    <meta name="theme-color" content="#0b1120" />
+
+    <title>AuraGuard — compliance audit webových aplikací</title>
+    <meta
+      name="description"
+      content="Automatický audit webu podle předpisů EU: NIS2 a post-kvantová kryptografie, CRA, AI Act čl. 50, přístupnost (EAA) a GDPR. Co nelze externím skenem ověřit, označí jako neprůkazné."
+    />
+
+    <!-- Náhled při sdílení odkazu. Popis je záměrně stejný jako výš —
+         dvě různá tvrzení o témže nástroji jsou horší než žádné. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="AuraGuard — compliance audit webových aplikací" />
+    <meta
+      property="og:description"
+      content="Automatický audit webu podle předpisů EU. Měří, co změřit lze — u zbytku to řekne nahlas místo aby si domýšlel závěr."
+    />
+    <meta name="twitter:card" content="summary" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
