@@ -90,11 +90,23 @@ async function runCLI() {
       const nis2Report = await auditNIS2AndPQC(url);
       
       const missing = nis2Report.nis2.missingHeaders || [];
+      // Chybějící a slabé hlavičky se hlásí zvlášť. „Chybí CSP" u webu,
+      // který CSP má, je nepravda — i když je verdikt stejný. Provozovatel
+      // navíc podle toho pozná, jestli hlavičku doplnit, nebo opravit.
+      const weak = nis2Report.nis2.weakHeaders || [];
+
       if (classify(nis2Report.nis2.isCompliant) === 'fail') {
-        console.error(`❌ SELHÁNÍ: Chybí ${missing.length} bezpečnostních hlaviček.`);
-        missing.forEach(h => console.error(`   - Chybí hlavička: ${h}`));
+        if (missing.length > 0) {
+          console.error(`❌ SELHÁNÍ: Chybí ${missing.length} bezpečnostních hlaviček.`);
+          missing.forEach(h => console.error(`   - Chybí hlavička: ${h}`));
+          failedAudits.push(`*Bezpečnostní hlavičky*: chybí ${missing.join(', ')}`);
+        }
+        if (weak.length > 0) {
+          console.error(`❌ SELHÁNÍ: ${weak.length} hlaviček je nastavených, ale neposkytuje ochranu.`);
+          weak.forEach(h => console.error(`   - Nedostatečná hlavička: ${h}`));
+          failedAudits.push(`*Bezpečnostní hlavičky*: nedostatečné ${weak.join(', ')}`);
+        }
         hasErrors = true;
-        failedAudits.push(`*Bezpečnostní hlavičky*: chybí ${missing.join(', ')}`);
       } else {
         console.log('✅ PASS: Bezpečnostní hlavičky nastavené');
       }

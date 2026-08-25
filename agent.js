@@ -2042,9 +2042,38 @@ export async function auditNIS2AndPQC(url) {
       permissionsPolicy: 'Permissions-Policy',
     };
 
-    const missingHeaders = Object.entries(headerChecks)
-      .filter(([, ok]) => !ok)
-      .map(([key]) => HEADER_LABELS[key]);
+    // Rozlišit „hlavička chybí" od „hlavička je, ale nechrání".
+    //
+    // Dřív spadlo obojí do `missingHeaders` a report o webu, který CSP MÁ,
+    // tvrdil, že mu chybí. Verdikt je v obou případech stejný, ale tvrzení
+    // ne — a nepravdivé tvrzení v compliance reportu je vada, i když vede
+    // ke správnému závěru. Provozovatel navíc podle toho ví, jestli má
+    // hlavičku doplnit, nebo opravit.
+    const HEADER_SOURCES = {
+      hsts: 'strict-transport-security',
+      csp: 'content-security-policy',
+      xContentTypeOptions: 'x-content-type-options',
+      xFrameOptions: 'x-frame-options',
+      referrerPolicy: 'referrer-policy',
+      permissionsPolicy: 'permissions-policy',
+    };
+
+    const missingHeaders = [];
+    const weakHeaders = [];
+
+    for (const [key, ok] of Object.entries(headerChecks)) {
+      if (ok) continue;
+      const raw = headers[HEADER_SOURCES[key]];
+      const present = typeof raw === 'string' && raw.trim().length > 0;
+
+      // Zvláštní případ: ochranu proti rámování může zajišťovat
+      // `frame-ancestors` v CSP, i když X-Frame-Options chybí.
+      const alsoPresent = key === 'xFrameOptions'
+        && /frame-ancestors/i.test(headers['content-security-policy'] || '');
+
+      if (present || alsoPresent) weakHeaders.push(HEADER_LABELS[key]);
+      else missingHeaders.push(HEADER_LABELS[key]);
+    }
 
     // Rozbor obsahu politiky, ne jen její přítomnosti.
     //
@@ -2059,8 +2088,11 @@ export async function auditNIS2AndPQC(url) {
       // `!undefined` je true, takže NIS2 audit v CLI VŽDY hlásil selhání
       // a vypisoval prázdný seznam chybějících hlaviček.
       missingHeaders,
-      headersComplete: missingHeaders.length === 0,
-      isCompliant: missingHeaders.length === 0,
+      // Hlavičky, které existují, ale neposkytují ochranu (např.
+      // `Referrer-Policy: unsafe-url` nebo CSP s `unsafe-inline`).
+      weakHeaders,
+      headersComplete: missingHeaders.length === 0 && weakHeaders.length === 0,
+      isCompliant: missingHeaders.length === 0 && weakHeaders.length === 0,
 
       // Rozbor politiky pod VLASTNÍM klíčem, ze dvou důvodů.
       //

@@ -188,17 +188,21 @@ try {
   // kontrola nástroje; JESTLI jsou nastavené, je nález o webu.
   check('bezpečnostní hlavičky se podařilo načíst', typeof nis2.nis2.hsts === 'boolean');
 
-  const headerLabels = {
-    hsts: 'Strict-Transport-Security',
-    csp: 'Content-Security-Policy',
-    xContentTypeOptions: 'X-Content-Type-Options',
-    xFrameOptions: 'X-Frame-Options / frame-ancestors',
-    referrerPolicy: 'Referrer-Policy',
-    permissionsPolicy: 'Permissions-Policy',
-  };
-  for (const [key, label] of Object.entries(headerLabels)) {
-    if (nis2.nis2[key] === false) finding('fail', 'NIS2', `chybí nebo je nedostatečná hlavička ${label}`);
+  // Chybějící a slabá hlavička jsou dvě různá zjištění.
+  //
+  // Dřív se hlásilo „chybí nebo je nedostatečná" — u webu, který hlavičku
+  // MÁ, ale slabou, to tvrdilo nepravdu. Verdikt byl správný, výrok ne.
+  for (const label of nis2.nis2.missingHeaders || []) {
+    finding('fail', 'NIS2', `chybí hlavička ${label}`);
   }
+  for (const label of nis2.nis2.weakHeaders || []) {
+    finding('fail', 'NIS2', `hlavička ${label} je nastavená, ale neposkytuje ochranu`);
+  }
+  check(
+    'chybějící a slabé hlavičky se nemíchají',
+    !(nis2.nis2.missingHeaders || []).some((h) => (nis2.nis2.weakHeaders || []).includes(h)),
+    `chybí: ${(nis2.nis2.missingHeaders || []).length}, slabé: ${(nis2.nis2.weakHeaders || []).length}`
+  );
 
   // ── TLS sonda ──
   // Kontrola nástroje: sonda proběhla a vrátila tříhodnotový výsledek.
