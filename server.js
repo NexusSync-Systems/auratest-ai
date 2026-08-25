@@ -16,7 +16,9 @@ import * as db from './db.js';
 import { redactEventData } from './pii-redactor.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, SDK_DIR, FRONTEND_DIST_DIR, ensureDir } from './paths.js';
 import { resolveSpaFallback } from './spa-fallback.js';
-import { appendRecord, verifyChain, recordsForSession } from './audit-ledger.js';
+import { appendRecord, verifyChain, recordsForSession, readLedger } from './audit-ledger.js';
+import { buildCaseFile, renderCaseFileHtml } from './case-file.js';
+import { renderCaseFilePdf } from './case-file-pdf.js';
 
 // Global error handlers to prevent unhandled rejections from crashing the process
 // Po nezachycené výjimce je proces v nedefinovaném stavu (viselé Playwright
@@ -433,6 +435,57 @@ app.get('/api/ledger/session/:sessionId', authenticateToken, (req, res) => {
       .filter((r) => r.userId === req.user.userId);
     res.json(records);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Spis za období — to, co se odevzdává při kontrole.
+ *
+ * `format=pdf` drží slot pro prohlížeč: vykreslení spouští Chromium a bez
+ * limitu by opakovaný export položil stroj stejně jako spuštěné audity.
+ */
+app.get('/api/case-file', authenticateToken, browserSlotGuard, async (req, res) => {
+  try {
+    const { from, to, format = 'json' } = req.query;
+
+    for (const [name, value] of [['from', from], ['to', to]]) {
+      if (value && Number.isNaN(Date.parse(value))) {
+        return res.status(400).json({ error: `Neplatné datum v parametru ${name}.` });
+      }
+    }
+
+    const sessions = await db.getSessionsDetailed(req.user.userId);
+    // Záznam se filtruje na vlastníka stejně jako běhy — spis nesmí
+    // prozradit, že v systému existují cizí audity.
+    const records = readLedger().filter(
+      (r) => !r.__malformed && r.userId === req.user.userId
+    );
+
+    const caseFile = buildCaseFile({
+      sessions,
+      records,
+      from,
+      to,
+      subject: req.user.email || req.user.userId,
+    });
+
+    if (format === 'json') {
+      return res.json(caseFile);
+    }
+
+    if (format === 'pdf') {
+      const html = renderCaseFileHtml(caseFile);
+      const pdf = await renderCaseFilePdf(html);
+      const stamp = new Date().toISOString().slice(0, 10);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="spis-auditu-${stamp}.pdf"`);
+      return res.send(pdf);
+    }
+
+    return res.status(400).json({ error: 'Neznámý formát. Použij json nebo pdf.' });
+  } catch (err) {
+    console.error('Export spisu selhal:', err);
     res.status(500).json({ error: err.message });
   }
 });

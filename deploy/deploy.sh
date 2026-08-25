@@ -164,6 +164,8 @@ echo "      → PQC sonda proti serveru, který hybridní skupinu umí"
 echo
 echo "  docker compose exec auratest-ai node scripts/verify-ledger.mjs"
 echo "      → neporušenost záznamu auditů (D1–D3)"
+echo "  docker compose exec auratest-ai node scripts/verify-case-file.mjs"
+echo "      → vytiskne se spis do PDF (Chromium chybí v CI, jde ověřit jen tady)"
 echo
 echo "Logy:    docker compose logs -f"
 echo "Restart: docker compose restart"
