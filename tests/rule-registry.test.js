@@ -33,7 +33,20 @@ describe('registr pravidel', () => {
   });
 
   test('ruleRef doplní verzi', () => {
-    expect(ruleRef('nis2.headers.csp')).toBe('nis2.headers.csp.v1');
+    // CSP je na v2 od doplnění rozboru obsahu politiky. Test na konkrétní
+    // číslo je záměr: zvýšení verze má být vědomé rozhodnutí, ne vedlejší
+    // efekt úpravy textu.
+    expect(ruleRef('nis2.headers.csp')).toBe('nis2.headers.csp.v2');
+    expect(ruleRef('nis2.headers.hsts')).toBe('nis2.headers.hsts.v1');
+  });
+
+  test('pravidlo s vyšší verzí vysvětluje, co se změnilo', () => {
+    // Bez záznamu změny nejde po roce doložit, proč se týž web posuzuje
+    // jinak než dřív.
+    for (const rule of RULES.filter((r) => r.version > 1)) {
+      expect(rule.changelog).toBeDefined();
+      expect(rule.changelog[rule.version].length).toBeGreaterThan(30);
+    }
   });
 
   test('neznámé pravidlo vyhodí chybu, nevrátí tiše undefined', () => {

@@ -1697,6 +1697,33 @@ export default function App() {
                              </ul>
                            </div>
                          )}
+
+                         {/* Příznaky cookies jsou aplikační bezpečnost, ne ePrivacy.
+                             Web bez trackerů, ale s relační cookie čitelnou ze
+                             skriptu, by jinak vypadal jako bezvadný. */}
+                         {cookieResult.cookieFlags && (
+                           <div style={{ marginTop: '16px', background: 'rgba(255,255,255,0.05)', padding: '16px', borderRadius: '8px' }}>
+                             <strong style={{ color: complianceColor(cookieResult.cookieFlags.ok) }}>
+                               {`[${complianceLabel(cookieResult.cookieFlags.ok)}] `}
+                               Příznaky cookies (Secure, HttpOnly, SameSite)
+                             </strong>
+                             <p style={{ margin: '6px 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                               {cookieResult.cookieFlags.rationale}
+                             </p>
+                             {cookieResult.cookieFlags.findings.length > 0 && (
+                               <ul style={{ paddingLeft: '20px', marginTop: '8px', fontSize: '0.85rem', lineHeight: 1.6 }}>
+                                 {cookieResult.cookieFlags.findings.map((f, i) => (
+                                   <li key={`${f.id}-${f.cookie}-${i}`} style={{
+                                     color: f.severity === 'high' ? 'var(--error)'
+                                       : f.severity === 'medium' ? 'var(--warning)' : 'var(--text-muted)',
+                                   }}>
+                                     <code>{f.cookie}</code> — {f.message}
+                                   </li>
+                                 ))}
+                               </ul>
+                             )}
+                           </div>
+                         )}
                        </div>
                      )}
 
@@ -1732,6 +1759,29 @@ export default function App() {
                              <strong>CSP</strong>: {nis2Result.nis2.csp ? 'Aktivní' : 'Chybí'}
                            </div>
                          </div>
+
+                         {/* Rozbor obsahu politiky.
+                             „Aktivní" výš odpovídá jen na to, jestli politika k něčemu
+                             je. Tady je vidět PROČ — `default-src *` a chybějící
+                             base-uri jsou dvě různé vady s různou závažností. */}
+                         {nis2Result.nis2.cspDetail?.present
+                           && nis2Result.nis2.cspDetail.findings.length > 0 && (
+                           <div style={{ marginTop: '12px' }}>
+                             <p style={{ fontSize: '0.8rem', color: 'var(--text-dark)', textTransform: 'uppercase', letterSpacing: '0.04em', margin: '0 0 6px' }}>
+                               Obsah politiky CSP
+                             </p>
+                             <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '0.85rem', lineHeight: 1.6 }}>
+                               {nis2Result.nis2.cspDetail.findings.map((f) => (
+                                 <li key={f.id} style={{
+                                   color: f.severity === 'high' ? 'var(--error)'
+                                     : f.severity === 'medium' ? 'var(--warning)' : 'var(--text-muted)',
+                                 }}>
+                                   {f.message}
+                                 </li>
+                               ))}
+                             </ul>
+                           </div>
+                         )}
                          {/*
                            Dřív tahle karta ukazovala jen název protokolu a vydavatele
                            certifikátu — o post-kvantové odolnosti neříkala nic, přestože

@@ -41,12 +41,26 @@ const RULE_LIST = [
   },
   {
     id: 'nis2.headers.csp',
-    version: 1,
-    title: 'Hlavička Content-Security-Policy',
-    method: 'Kontroluje se přítomnost hlavičky, ne obsah politiky.',
+    version: 2,
+    title: 'Content-Security-Policy — obsah politiky',
+    method:
+      'Politika se rozebere na direktivy a posoudí se, co skutečně zakazuje. ' +
+      'Hledá se zejména `default-src *` nebo `https:` u skriptů, ' +
+      "`'unsafe-inline'` bez nonce či hashe, `'unsafe-eval'`, a chybějící " +
+      '`base-uri` a `frame-ancestors` — ty se z `default-src` NEdědí, ' +
+      'na rozdíl od `script-src` a `object-src`.',
     limits:
-      'Politika může být přítomná a přitom bezzubá (např. `default-src *`). ' +
-      'Tuhle kontrolu neprojde jen úplná absence.',
+      'Posuzuje se text politiky, ne její účinek na konkrétní stránce. ' +
+      "Politika s nonce a zároveň `'unsafe-inline'` se nehlásí jako vada — " +
+      'prohlížeče od CSP Level 2 tuhle hodnotu při přítomnosti nonce ' +
+      'ignorují. Za splněné se považuje politika bez závažného nálezu; ' +
+      'střední a nízké se vypisují, ale verdikt neshazují.',
+    changelog: {
+      2:
+        'Doplněn rozbor obsahu. Verze 1 posuzovala jen script-src na ' +
+        'unsafe-inline a hvězdičku, takže politika bez base-uri nebo ' +
+        'frame-ancestors procházela bez poznámky.',
+    },
   },
   {
     id: 'nis2.headers.frame-options',
@@ -198,6 +212,21 @@ const RULE_LIST = [
     limits:
       'Posuzuje se stav bez souhlasu. Neřeší se, zda je souhlasová lišta ' +
       'sama o sobě v souladu (předvybrané volby, dark patterns).',
+  },
+  {
+    id: 'appsec.cookies.flags',
+    version: 1,
+    title: 'Příznaky cookies: Secure, HttpOnly, SameSite',
+    method:
+      'Cookies nastavené při načtení stránky se čtou z prohlížeče (vidí ' +
+      'i HttpOnly, na rozdíl od `document.cookie`). Závažnost se odvíjí od ' +
+      'druhu cookie: u relační či autentizační váží chybějící příznak víc ' +
+      'než u analytické, kde bývá čitelnost ze skriptu záměr.',
+    limits:
+      'Posuzují se jen cookies vzniklé bez přihlášení a bez interakce. ' +
+      'Ty, které aplikace nastaví až po přihlášení, sken nevidí — ' +
+      'nenalezení proto neznamená, že žádné rizikové neexistují. ' +
+      'Druh cookie se odhaduje z názvu.',
   },
   {
     id: 'gdpr.residency.geoip',

@@ -153,6 +153,22 @@ console.log('\n2) NIS2 / PQC');
 try {
   const nis2 = await auditNIS2AndPQC(TARGET);
   check('TLS bylo rozpoznáno', nis2.pqc.secure === true, `protokol: ${nis2.pqc.protocol}`);
+
+  // Rozbor obsahu CSP: nesmí vzniknout nález u politiky, která má nonce
+  // vedle 'unsafe-inline' — prohlížeč tu hodnotu ignoruje a hlásit ji
+  // jako díru by byl falešný nález.
+  const csp = nis2.nis2.cspDetail;
+  check('rozbor CSP proběhl', csp && typeof csp.present === 'boolean',
+    csp?.present ? `direktiv: ${csp.directives.length}` : 'hlavička chybí');
+  check(
+    'nálezy CSP mají závažnost i vysvětlení',
+    (csp?.findings || []).every((f) => f.severity && f.message && f.message.length > 20),
+    `nálezů: ${csp?.findings?.length ?? 0}`
+  );
+  for (const f of csp?.findings || []) {
+    if (f.severity === 'high') finding('fail', 'CSP', f.message);
+    else info(`  ${f.severity === 'medium' ? '⚠️ ' : '·'} CSP: ${f.message}`);
+  }
   check(
     'protocol není undefined',
     typeof nis2.pqc.protocol === 'string' && nis2.pqc.protocol !== 'None',
@@ -389,6 +405,20 @@ try {
 try {
   const cookies = await auditStrictCookies(TARGET);
   check('cookie audit doběhl', typeof cookies.gdpr.isCompliant === 'boolean');
+
+  // Příznaky cookies. Prázdný seznam MUSÍ být neprůkazný, ne splněný —
+  // web může cookies nastavovat až po přihlášení.
+  const flags = cookies.cookieFlags;
+  check('příznaky cookies vyhodnoceny', flags && 'ok' in flags, flags?.rationale?.slice(0, 60));
+  check(
+    'bez cookies je výsledek neprůkazný, ne splněný',
+    flags?.total > 0 || flags?.ok === null,
+    `cookies: ${flags?.total ?? 0}, ok=${flags?.ok}`
+  );
+  for (const f of flags?.findings || []) {
+    if (f.severity === 'high') finding('fail', 'Cookies', `${f.cookie}: ${f.message}`);
+    else info(`  ${f.severity === 'medium' ? '⚠️ ' : '·'} ${f.cookie}: ${f.message}`);
+  }
 
   if (cookies.gdpr.suspiciousItems.length > 0) {
     finding('fail', 'GDPR', `${cookies.gdpr.suspiciousItems.length} trackerů před udělením souhlasu`);

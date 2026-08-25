@@ -105,6 +105,29 @@ async function runCLI() {
       console.log(`${PQC_MARK[pqcState]}: post-kvantová výměna klíčů (${nis2Report.pqc.pqcGroup})`);
       console.log(`   ${nis2Report.pqc.recommendation}`);
 
+      // Rozbor obsahu CSP.
+      //
+      // Samostatně od chybějících hlaviček: „politika je slabá" a „politika
+      // chybí" jsou dvě různá zjištění a smíchat je znamená vypsat
+      // „Chybí hlavička: chybí base-uri".
+      const csp = nis2Report.nis2.cspDetail;
+      if (csp?.present) {
+        const bySeverity = { high: [], medium: [], low: [] };
+        for (const f of csp.findings) bySeverity[f.severity]?.push(f.message);
+
+        for (const message of bySeverity.high) {
+          console.error(`❌ SELHÁNÍ: CSP — ${message}`);
+          hasErrors = true;
+          failedAudits.push(`*CSP*: ${message}`);
+        }
+        for (const message of bySeverity.medium) console.log(`   ⚠️  CSP — ${message}`);
+        for (const message of bySeverity.low) console.log(`   ➖ CSP — ${message}`);
+
+        if (csp.ok && bySeverity.medium.length === 0) {
+          console.log('✅ PASS: obsah CSP bez nálezu');
+        }
+      }
+
       // Nálezy v TLS vrstvě jsou samostatná, prokázaná závada — proto mají
       // vlastní pole a nemíchají se mezi chybějící hlavičky.
       for (const finding of nis2Report.nis2.tlsFindings || []) {
@@ -183,6 +206,27 @@ async function runCLI() {
         failedAudits.push(`*GDPR Cookies*: Nalezeny nelegální trackery (${cookieReport.gdpr.suspiciousItems.join(', ')})`);
       } else {
         console.log('✅ PASS: GDPR Cookie Compliance (No implicit trackers)\n');
+      }
+
+      // Příznaky cookies jsou aplikační bezpečnost, ne ePrivacy — proto
+      // samostatný oddíl. Web bez trackerů, ale s relační cookie čitelnou
+      // ze skriptu, by jinak prošel jako bezvadný.
+      const flags = cookieReport.cookieFlags;
+      if (flags) {
+        if (flags.ok === null) {
+          console.log(`➖ NEPRŮKAZNÉ: příznaky cookies — ${flags.rationale}`);
+        } else {
+          const severe = flags.findings.filter((f) => f.severity === 'high');
+          for (const f of severe) {
+            console.error(`❌ SELHÁNÍ: cookie ${f.cookie} — ${f.message}`);
+            hasErrors = true;
+            failedAudits.push(`*Cookie ${f.cookie}*: ${f.message}`);
+          }
+          for (const f of flags.findings.filter((x) => x.severity !== 'high')) {
+            console.log(`   ${f.severity === 'medium' ? '⚠️ ' : '➖'} cookie ${f.cookie} — ${f.message}`);
+          }
+          if (severe.length === 0) console.log(`✅ PASS: ${flags.rationale}`);
+        }
       }
     }
 

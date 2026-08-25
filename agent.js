@@ -11,6 +11,8 @@ import { createSeededRandom, generateRunSeed } from './seeded-random.js';
 import { collectBundleEvidence, mergeFindings } from './sbom-fingerprint.js';
 import { normalizeSemver } from './semver.js';
 import { classifyActionFailure } from './action-failure.js';
+import { auditCsp } from './csp-audit.js';
+import { auditCookieFlags } from './cookie-flags.js';
 
 // Volby pro Chromium jsou ve vlastním modulu — potřebuje je i generátor PDF
 // spisu a duplikát by se jednou opravil jen na jednom místě.
@@ -2044,6 +2046,13 @@ export async function auditNIS2AndPQC(url) {
       .filter(([, ok]) => !ok)
       .map(([key]) => HEADER_LABELS[key]);
 
+    // Rozbor obsahu politiky, ne jen její přítomnosti.
+    //
+    // `headerChecks.csp` výš odpovídá na otázku „je politika k něčemu?"
+    // jedním ANO/NE. Kontrolor ale potřebuje vědět PROČ — `default-src *`
+    // a chybějící `base-uri` jsou dvě různé vady s různou závažností.
+    const cspDetail = auditCsp(headers['content-security-policy']);
+
     const nis2 = {
       ...headerChecks,
       // CLI i UI tahle dvě pole čekaly, ale agent je nikdy nevracel:
@@ -2052,6 +2061,17 @@ export async function auditNIS2AndPQC(url) {
       missingHeaders,
       headersComplete: missingHeaders.length === 0,
       isCompliant: missingHeaders.length === 0,
+
+      // Rozbor politiky pod VLASTNÍM klíčem, ze dvou důvodů.
+      //
+      // `csp` už v `headerChecks` je jako boolean a čtou ho CLI, UI
+      // i tiskový report — přepsat ho objektem by je rozbilo.
+      //
+      // A do `missingHeaders` nálezy nepatří: to pole se vypisuje jako
+      // „Chybí hlavička: X". Nález „chybí base-uri" by dal
+      // „Chybí hlavička: chybí base-uri" — nesmysl, který u nálezů z TLS
+      // jednou vznikl a musel se rozdělovat zpátky.
+      cspDetail,
 
       // Poctivé vymezení rozsahu. Zákon č. 264/2025 Sb. žádné konkrétní HTTP
       // hlavičky nepředepisuje — § 14 mluví o organizačních a technických
@@ -3046,6 +3066,15 @@ export async function auditStrictCookies(url) {
     return {
       success: true,
       url,
+      // Příznaky cookies jsou samostatné zjištění, ne součást GDPR verdiktu.
+      //
+      // Trackery před souhlasem řeší ePrivacy; Secure, HttpOnly a SameSite
+      // jsou aplikační bezpečnost podle § 14. Sloučit je by znamenalo, že
+      // web bez trackerů, ale s relační cookie čitelnou ze skriptu, projde
+      // jako bezvadný.
+      cookieFlags: auditCookieFlags(cookies, {
+        https: new URL(page.url() || url).protocol === 'https:',
+      }),
       gdpr: {
         suspiciousItems: suspiciousFound,
         isCompliant,
