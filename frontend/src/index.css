@@ -1411,3 +1411,17 @@ button:focus-visible,
 .sample-error {
   color: var(--error);
 }
+
+/* Přihlašovací obrazovka stojí samostatně, bez postranního panelu aplikace.
+   Formulář má vlastní výšku, takže se stránka nemá roztahovat na celou. */
+.public-page-auth {
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 80vh;
+}
+
+.public-page-auth .sample-back {
+  align-self: flex-start;
+}

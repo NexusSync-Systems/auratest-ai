@@ -156,6 +156,9 @@ describe('Přístupnost', () => {
   });
 
   it('stav běhu má role="status" pro oznámení screen readeru', () => {
+    // Ukazatel stavu je součást aplikace, ne přihlašovací stránky.
+    authUser = { uid: 'test-uid', email: 'test@example.com' };
+    window.history.replaceState({}, '', '/hub');
     const { container } = render(<App />);
     const status = container.querySelector('.status-badge[role="status"]');
 

@@ -17,6 +17,7 @@ import {
   Copy,
   Plus,
   Shield,
+  ArrowLeft,
   Zap,
   Printer,
   User,
@@ -1035,9 +1036,12 @@ export default function App() {
   const renderLogin = () => (
     <div className="login-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', minHeight: '400px', background: 'transparent' }}>
       <form onSubmit={handleAuth} className="card" style={{ width: '380px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid rgba(255,255,255,0.1)', padding: '24px', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-md)' }}>
-        <h2 style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: 0, fontSize: '1.5rem', color: 'white', fontWeight: 'bold' }}>
+        {/* h1, ne h2: přihlášení je samostatná stránka a tohle je její
+            nadpis. Jako h2 by stránka neměla žádný h1 a porušovala
+            `page-has-heading-one` — pravidlo, které sama vytýká cizím webům. */}
+        <h1 style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: 0, fontSize: '1.5rem', color: 'white', fontWeight: 'bold' }}>
           <Layers color="var(--accent)" size={24} /> Přihlášení
-        </h2>
+        </h1>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
           {authMode === 'login' ? 'Tato sekce vyžaduje přihlášení.' : 'Zaregistrujte si nový účet.'}
         </p>
@@ -1151,6 +1155,27 @@ export default function App() {
       <Suspense fallback={<div className="public-page">Načítám ukázku…</div>}>
         <SampleReport onBack={() => setActiveTab(user ? 'auraguard' : 'landing')} />
       </Suspense>
+    );
+  }
+
+  // Přihlášení stojí samostatně, bez skořápky aplikace.
+  //
+  // Dřív se vykreslovalo uvnitř `.app-container`, takže vedle formuláře
+  // zůstal postranní panel s prázdnou historií testů a tlačítkem, které
+  // nikam nevedlo. Po schování menu odhlášeným z toho zbyl poloprázdný
+  // sloupec, který vypadal jako nedodělek.
+  if (activeTab === 'login' && !user) {
+    return (
+      <div className="public-page public-page-auth">
+        <button
+          type="button"
+          className="btn btn-secondary sample-back"
+          onClick={() => setActiveTab('landing')}
+        >
+          <ArrowLeft size={16} aria-hidden="true" /> Zpět na úvod
+        </button>
+        {renderLogin()}
+      </div>
     );
   }
 
@@ -1321,7 +1346,6 @@ export default function App() {
               a zároveň je výchozí. Anonymní uživatel tak viděl UI, které pak
               střílelo /api/monitors a /api/projects bez tokenu a 401 mizely
               v prázdném catch bloku. */}
-          {!user && renderLogin()}
 
           {/* Tab 1: QA Agent Runner */}
           {user && activeTab === 'agent' && (
