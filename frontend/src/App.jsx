@@ -31,6 +31,7 @@ import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqc
 import { useRoutedTab } from './hooks/useRoutedTab.js';
 import LandingPage from './components/public/LandingPage.jsx';
 import CaseFilePanel from './components/CaseFilePanel.jsx';
+import { authErrorMessage } from './lib/auth-errors.js';
 
 // Ukázkový report si tahá vlastní JSON a v běžném provozu ho nikdo neotevře —
 // do hlavního bundlu nepatří.
@@ -679,15 +680,11 @@ export default function App() {
       }
     } catch (err) {
       console.error(err);
-      let friendlyMessage = err.message;
-      if (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
-        friendlyMessage = 'Nesprávný e-mail nebo heslo.';
-      } else if (err.code === 'auth/email-already-in-use') {
-        friendlyMessage = 'Tento e-mail již používá jiný účet.';
-      } else if (err.code === 'auth/weak-password') {
-        friendlyMessage = 'Heslo musí mít alespoň 6 znaků.';
-      }
-      setAuthError(friendlyMessage);
+      // Překlad je v `lib/auth-errors.js`: neošetřené kódy sem dřív padaly
+      // jako `Firebase: Error (auth/network-request-failed)`, což uživateli
+      // neřekne nic a vývojáře pošle hledat výpadek sítě místo chyby
+      // v Content-Security-Policy.
+      setAuthError(authErrorMessage(err));
     }
   };
 
