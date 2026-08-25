@@ -18,3 +18,8 @@ adapters/*/finetune/mlx-responses*.jsonl
 __pycache__/
 *.pyc
 generated-scripts/
+
+# Neměnný záznam auditů (D1–D3). Provozní důkazní materiál, ne zdrojový kód —
+# do repozitáře nepatří a při klonování by se nesměl přepsat. Zálohuje se
+# spolu s ostatními daty instalace.
+ledger/

@@ -68,7 +68,7 @@ COPY --from=builder /app/*.js ./
 COPY --from=builder /app/scripts/*.mjs ./scripts/
 
 # Adresáře pro artefakty musí patřit neprivilegovanému uživateli.
-RUN mkdir -p screenshots videos generated-scripts \
+RUN mkdir -p screenshots videos generated-scripts ledger \
     && chown -R pwuser:pwuser /app
 
 # Base image má připraveného neprivilegovaného uživatele, ale kontejner dosud

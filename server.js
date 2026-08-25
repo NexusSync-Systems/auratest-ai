@@ -16,6 +16,7 @@ import * as db from './db.js';
 import { redactEventData } from './pii-redactor.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, SDK_DIR, FRONTEND_DIST_DIR, ensureDir } from './paths.js';
 import { resolveSpaFallback } from './spa-fallback.js';
+import { appendRecord, verifyChain, recordsForSession } from './audit-ledger.js';
 
 // Global error handlers to prevent unhandled rejections from crashing the process
 // Po nezachycené výjimce je proces v nedefinovaném stavu (viselé Playwright
@@ -379,6 +380,63 @@ function broadcastToSession(sessionId, data) {
 }
 
 // REST Endpoints
+/**
+ * Zapíše dokončený audit do neměnného záznamu.
+ *
+ * Selhání zápisu NESMÍ shodit dokončený audit — výsledek už existuje
+ * a zahodit ho kvůli logu by bylo horší. Nesmí se ale ani zamlčet: session
+ * si nese `ledger.recorded`, takže report umí říct „tenhle běh v záznamu
+ * není" místo aby doložitelnost jen předstíral.
+ */
+function recordInLedger(sessionData) {
+  try {
+    const record = appendRecord({
+      sessionId: sessionData.id,
+      target: sessionData.url,
+      userId: sessionData.userId,
+      // Do otisku jde to, co tvoří zjištění. Artefakty (screenshoty, video)
+      // ne — jejich cesty se mění a otisk by pak nesouhlasil u nezměněného
+      // výsledku.
+      result: {
+        status: sessionData.status,
+        bugs: sessionData.bugs,
+        warnings: sessionData.warnings,
+        summary: sessionData.summary,
+        steps: sessionData.steps,
+      },
+    });
+    sessionData.ledger = { recorded: true, hash: record.hash, recordedAt: record.recordedAt };
+  } catch (err) {
+    console.error('Zápis do záznamu auditů selhal:', err.message);
+    sessionData.ledger = { recorded: false, error: err.message };
+  }
+}
+
+/**
+ * Ověření neporušenosti záznamu.
+ *
+ * Dostupné každému přihlášenému záměrně: kdo má důkazy doložit, musí je
+ * umět i ověřit, aniž by o to musel žádat.
+ */
+app.get('/api/ledger/verify', authenticateToken, (req, res) => {
+  try {
+    res.json(verifyChain());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Záznamy k jedné session. Filtrováno na vlastníka — cizí audity sem nepatří. */
+app.get('/api/ledger/session/:sessionId', authenticateToken, (req, res) => {
+  try {
+    const records = recordsForSession(req.params.sessionId)
+      .filter((r) => r.userId === req.user.userId);
+    res.json(records);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/sessions', authenticateToken, async (req, res) => {
   try {
     const list = await db.getSessions(req.user.userId);
@@ -549,6 +607,7 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           sessionData.generatedScript = combinedScripts;
           sessionData.performanceMetrics = lastPerformance;
           sessionData.videoUrl = lastVideoUrl;
+          recordInLedger(sessionData);
           await db.saveSession(sessionId, sessionData);
 
           broadcastToSession(sessionId, {
@@ -582,6 +641,7 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           sessionData.performanceMetrics = result.performanceMetrics;
           sessionData.generatedScript = result.generatedScript;
           sessionData.videoUrl = result.videoUrl;
+          recordInLedger(sessionData);
           await db.saveSession(sessionId, sessionData);
 
           broadcastToSession(sessionId, {
@@ -826,6 +886,7 @@ async function schedulerTick() {
             sessionData.performanceMetrics = result.performanceMetrics;
             sessionData.generatedScript = result.generatedScript;
             sessionData.videoUrl = result.videoUrl;
+            recordInLedger(sessionData);
             await db.saveSession(sessionId, sessionData);
 
             await db.updateMonitor(monitor.id, {

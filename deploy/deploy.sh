@@ -79,9 +79,9 @@ fi
 # „EACCES: permission denied" u screenshotů a videí, tedy dávno po tom, co
 # nasazení nahlásí úspěch.
 echo
-echo "▶ Adresáře pro artefakty"
+echo "▶ Adresáře pro artefakty a záznam auditů"
 CONTAINER_UID=1000
-for d in screenshots videos generated-scripts; do
+for d in screenshots videos generated-scripts ledger; do
     mkdir -p "$d"
     OWNER="$(stat -c '%u' "$d" 2>/dev/null || echo '?')"
     if [[ "$OWNER" != "$CONTAINER_UID" ]]; then
@@ -161,6 +161,9 @@ echo "  docker compose exec auratest-ai npx playwright install --dry-run"
 echo "      → které prohlížeče jsou na téhle architektuře reálně k dispozici"
 echo "  docker compose exec auratest-ai node scripts/smoke-test.mjs https://www.cloudflare.com"
 echo "      → PQC sonda proti serveru, který hybridní skupinu umí"
+echo
+echo "  docker compose exec auratest-ai node scripts/verify-ledger.mjs"
+echo "      → neporušenost záznamu auditů (D1–D3)"
 echo
 echo "Logy:    docker compose logs -f"
 echo "Restart: docker compose restart"

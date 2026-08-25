@@ -37,6 +37,9 @@ services:
       - ./screenshots:/app/screenshots
       - ./videos:/app/videos
       - ./generated-scripts:/app/generated-scripts
+      # Neměnný záznam auditů. Bez svazku by ho smazal každý rebuild,
+      # což je u důkazního materiálu ta nejhorší možná vlastnost.
+      - ./ledger:/app/ledger
       # Servisní klíč se montuje read-only, do image se nekopíruje.
       - ./firebase-credentials.json:/app/firebase-credentials.json:ro
 
