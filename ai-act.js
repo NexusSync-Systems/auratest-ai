@@ -27,6 +27,8 @@
  */
 
 /** Stavy jednotlivé povinnosti. */
+import { placementToStatus } from './disclosure-placement.js';
+
 export const OBLIGATION_STATUS = {
   PASS: 'pass',
   FAIL: 'fail',
@@ -127,15 +129,39 @@ export function evaluateInteractionObligation(signals) {
   const hasStrongSignal = aiApiCalls.length > 0;
   const hasWeakSignal = chatWidgets.length > 0 || domHits.length > 0;
 
+  // Kde je upozornění umístěné. Bez téhle informace (starší běh, chyba
+  // čtení DOM) se zachovává původní chování podle pouhé přítomnosti textu.
+  const disclosure = signals.disclosure || null;
+
   const evidence = {
     aiApiCalls,
     chatWidgets,
     domIndicators: domHits,
     hasDisclaimer,
+    disclosurePlacement: disclosure?.placement ?? null,
+    disclosureOccurrences: disclosure?.occurrences ?? null,
   };
 
   // Přímý důkaz volání AI API — o použití AI není pochyb.
   if (hasStrongSignal) {
+    // Existence textu nestačí.
+    //
+    // Dřív z „na stránce je někde slovo AI" plynulo SPLNĚNO. Projde tím
+    // zmínka v patičce i v marketingové větě. Čl. 50 odst. 1 chce
+    // informování „nejpozději při první interakci", takže rozhoduje, jestli
+    // ho uživatel uvidí — a to je měřitelné.
+    if (disclosure) {
+      const status = placementToStatus(disclosure.placement);
+      return {
+        id: 'art50.1',
+        title: 'Informování uživatele, že komunikuje s AI',
+        status: OBLIGATION_STATUS[status.toUpperCase()] || OBLIGATION_STATUS.INCONCLUSIVE,
+        evidence,
+        rationale:
+          `Zachyceno ${aiApiCalls.length} volání AI API. ${disclosure.rationale}`,
+      };
+    }
+
     return {
       id: 'art50.1',
       title: 'Informování uživatele, že komunikuje s AI',
@@ -192,10 +218,16 @@ export function evaluateSyntheticMarkingObligation(signals) {
   const images = signals.dom?.images || { total: 0, withC2pa: 0, sampled: 0 };
   const generatesContent = (signals.aiApiCalls || []).length > 0;
 
+  // Rozbor manifestů. Chybí u starších uložených běhů, proto volitelně.
+  const c2pa = images.c2pa || null;
+
   const evidence = {
     imagesTotal: images.total,
     imagesSampled: images.sampled,
     imagesWithC2pa: images.withC2pa,
+    imagesDeclaredAi: c2pa?.declaredAi ?? null,
+    imagesDeclaredCapture: c2pa?.declaredCapture ?? null,
+    imagesUnsampled: c2pa?.unsampled ?? null,
   };
 
   if (images.total === 0) {
@@ -209,12 +241,36 @@ export function evaluateSyntheticMarkingObligation(signals) {
   }
 
   if (images.withC2pa > 0) {
+    // Nově se rozlišuje, CO manifest tvrdí.
+    //
+    // Verze 1 uměla jen „pověření tam je". Obrázek s pověřením, které se
+    // hlásí jako pořízený fotoaparátem, a obrázek hlásící se jako výstup
+    // generativního modelu jsou přitom pro čl. 50 odst. 2 dvě různé věci:
+    // v druhém případě označení PROKAZATELNĚ existuje.
+    const declaredAi = c2pa?.declaredAi ?? 0;
+
+    const detail = declaredAi > 0
+      ? `${declaredAi} z nich se hlásí jako vytvořené generativním modelem, ` +
+        'takže označení u nich existuje. Podpis manifestu se neověřuje — jde ' +
+        'o tvrzení obsažené v souboru, ne o prokázaný původ.'
+      : 'Žádný z nich se ale nehlásí jako vytvořený AI.';
+
+    const unsampled = c2pa?.unsampled
+      ? ` Zbylých ${c2pa.unsampled} obrázků na stránce zůstalo neprozkoumaných.`
+      : '';
+
     return {
       id: 'art50.2',
       title: 'Strojově čitelné označení syntetického obsahu',
+      // Stále neprůkazné: i když je něco označené, o ZBYTKU syntetického
+      // obsahu to nic neříká. Vydávat vzorek za celek by bylo přesně to
+      // tvrzení nad rámec měření, kterému se nástroj vyhýbá.
       status: OBLIGATION_STATUS.INCONCLUSIVE,
       evidence,
-      rationale: `${images.withC2pa} z ${images.sampled} zkoumaných obrázků nese C2PA manifest. Zda jsou označené VŠECHNY syntetické výstupy, tímto testem zjistit nelze.`,
+      rationale:
+        `${images.withC2pa} z ${images.sampled} zkoumaných obrázků nese C2PA ` +
+        `manifest. ${detail}${unsampled} Zda jsou označené VŠECHNY syntetické ` +
+        'výstupy, tímto testem zjistit nelze.',
     };
   }
 

@@ -131,24 +131,51 @@ const RULE_LIST = [
   // ── AI Act, čl. 50 ─────────────────────────────────────────────────────
   {
     id: 'aiact.cl50.1.chatbot-disclosure',
-    version: 1,
+    version: 2,
     title: 'Informování uživatele, že komunikuje s AI (čl. 50 odst. 1)',
     method:
       'Hledají se volání známých AI API, konverzační widgety a vzory v DOM ' +
-      '(role="log" s textovým vstupem apod.).',
+      '(role="log" s textovým vstupem apod.). Je-li použití AI prokázané, ' +
+      'posuzuje se UMÍSTĚNÍ upozornění: jestli se vykresluje, jestli je vidět ' +
+      'bez posouvání a jestli stojí u konverzačního prvku, nebo jen v patičce.',
     limits:
       'Server-side integraci externí sken nevidí. Nezachycení proto znamená ' +
-      'neprůkazné, nikoli splněné ani porušené.',
+      'neprůkazné, nikoli splněné ani porušené. ' +
+      'Posuzuje se umístění, NE formulace: rozlišit „tento chat používá AI" ' +
+      'od marketingové zmínky o AI automaticky nelze. ' +
+      'Upozornění pouze v patičce se hodnotí jako neprůkazné — jestli splňuje ' +
+      '„nejpozději při první interakci", je právní výklad, ne měření. ' +
+      'Za porušení se považuje jen upozornění, které se vůbec nevykresluje.',
+    changelog: {
+      2:
+        'Verze 1 považovala za splnění pouhý výskyt slova „AI" kdekoli ' +
+        'v textu stránky — projde tím zmínka v patičce i v marketingové ' +
+        'větě. Nově rozhoduje umístění a splnění se přiznává jen tam, kde ' +
+        'uživatel upozornění skutečně uvidí.',
+    },
   },
   {
     id: 'aiact.cl50.2.synthetic-marking',
-    version: 1,
+    version: 2,
     title: 'Strojově čitelné označení syntetického obsahu (čl. 50 odst. 2)',
-    method: 'Ve vzorku obrázků na stránce se hledá manifest C2PA.',
+    method:
+      'Ve vzorku obrázků se stáhne začátek souboru a hledá se manifest C2PA. ' +
+      'Z manifestu se čte typ zdroje podle slovníku IPTC, takže se rozliší ' +
+      'obsah hlásící se jako vytvořený generativním modelem od obsahu ' +
+      'hlásícího se jako pořízený zařízením.',
     limits:
+      'PODPIS MANIFESTU SE NEOVĚŘUJE. Manifest tvrdí, co tvrdí; jeho pravost ' +
+      'by vyžadovala kryptografické ověření proti důvěryhodnému kořeni. ' +
       'Chybějící manifest neznamená, že obsah je syntetický a neoznačený — ' +
-      'bez znalosti toho, co systém generuje, z toho porušení neplyne. ' +
-      'Vzorkuje se jen část obrázků.',
+      'většina fotografií žádné pověření nemá a bez znalosti toho, co systém ' +
+      'generuje, z toho porušení neplyne. Vzorkuje se jen část obrázků a ' +
+      'report uvádí, kolik jich zůstalo neprozkoumaných.',
+    changelog: {
+      2:
+        'Verze 1 uměla jen zjistit, že pověření existuje. Nově se čte typ ' +
+        'zdroje, takže jde rozlišit deklarovaný výstup generativního modelu ' +
+        'od fotografie s pověřením.',
+    },
   },
   {
     id: 'aiact.cl50.3.emotion-recognition',

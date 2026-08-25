@@ -267,6 +267,29 @@ try {
     !(ai.aiAct.isCompliant === true && ai.aiAct.counts?.inconclusive > 0),
     `isCompliant=${ai.aiAct.isCompliant}, neprůkazných=${ai.aiAct.counts?.inconclusive}`);
 
+  // A4: samotný výskyt slova „AI" v textu už nestačí na splnění. Kdyby se
+  // vrátil PASS bez údaje o umístění, znamenalo by to návrat starého
+  // chování, kdy zmínka v patičce procházela jako splněná povinnost.
+  const interaction = obligations.find((o) => o.id === 'art50.1');
+  check(
+    'splnění čl. 50 odst. 1 je podloženo umístěním upozornění',
+    interaction?.status !== 'pass' || Boolean(interaction?.evidence?.disclosurePlacement),
+    `stav=${interaction?.status}, umístění=${interaction?.evidence?.disclosurePlacement ?? '—'}`
+  );
+
+  // A5: u deklarovaného AI obsahu musí odůvodnění přiznat, že se podpis
+  // neověřuje — jinak by se z „hlásí se jako" stalo „je".
+  const marking = obligations.find((o) => o.id === 'art50.2');
+  check(
+    'u deklarovaného AI obsahu se přiznává neověřený podpis',
+    !(marking?.evidence?.imagesDeclaredAi > 0)
+      || /podpis[^.]*neověřuje/i.test(marking.rationale),
+    `deklarováno AI: ${marking?.evidence?.imagesDeclaredAi ?? 0}`
+  );
+  if (marking?.evidence?.imagesUnsampled > 0) {
+    info(`  · ${marking.evidence.imagesUnsampled} obrázků zůstalo neprozkoumaných`);
+  }
+
   for (const ob of obligations) {
     const mark = { pass: 'splněno', fail: 'NESPLNĚNO', inconclusive: 'neprůkazné', not_applicable: 'netýká se' }[ob.status];
     info(`${ob.id}: ${mark} — ${ob.title}`);

@@ -12,6 +12,8 @@ import { collectBundleEvidence, mergeFindings } from './sbom-fingerprint.js';
 import { normalizeSemver } from './semver.js';
 import { classifyActionFailure } from './action-failure.js';
 import { auditCsp } from './csp-audit.js';
+import { assessDisclosurePlacement } from './disclosure-placement.js';
+import { inspectImageBytes, summarizeC2pa } from './c2pa.js';
 import { auditCookieFlags } from './cookie-flags.js';
 
 // Volby pro Chromium jsou ve vlastním modulu — potřebuje je i generátor PDF
@@ -2828,11 +2830,20 @@ export async function auditAIAct(url) {
     const pageText = await page.evaluate(() => document.body?.innerText || '');
     const hasDisclaimer = AI_DISCLAIMER_PATTERN.test(pageText);
 
+    // Kde je upozornění umístěné, ne jen jestli text obsahuje slovo AI.
+    //
+    // Dosud stačil výskyt kdekoli na stránce — projde tím zmínka v patičce
+    // i v marketingové větě, a z toho plynulo SPLNĚNO. Čl. 50 odst. 1 chce
+    // informování „nejpozději při první interakci"; upozornění, které nikdo
+    // neuvidí, tuhle podmínku nesplňuje, i když v HTML je.
+    const disclosureOccurrences = await collectDisclosureOccurrences(page);
+
     const signals = {
       aiApiCalls,
       chatWidgets: [...chatWidgets],
       dom,
       hasDisclaimer,
+      disclosure: assessDisclosurePlacement(disclosureOccurrences),
     };
 
     const obligations = [
@@ -2877,6 +2888,76 @@ export async function auditAIAct(url) {
  * UI je přitom ze stránky poznat — a i když nedokazuje AI, posouvá výsledek
  * z „nic jsme nenašli" na „něco tu je, posuďte to".
  */
+/**
+ * Najde na stránce zmínky o AI a zjistí, KDE jsou vykreslené.
+ *
+ * Vrací surová pozorování; rozhodování o jejich kvalitě je
+ * v `disclosure-placement.js`, aby šlo testovat bez prohlížeče.
+ *
+ * Prohledávají se listové prvky, ne celé podstromy: kdyby se bral <body>,
+ * odpovídal by pokaždé a poloha by odpovídala celé stránce.
+ */
+async function collectDisclosureOccurrences(page) {
+  try {
+    return await page.evaluate((patternSource) => {
+      const pattern = new RegExp(patternSource, 'i');
+      const out = [];
+
+      const CONVERSATION_HINT =
+        '[role="log"], [id*="chat" i], [class*="chat" i], [id*="messenger" i], ' +
+        '[data-testid*="chat" i], textarea, input[type="text"]';
+
+      const elements = document.querySelectorAll('body *');
+      for (const el of elements) {
+        // Jen prvky, jejichž VLASTNÍ text odpovídá — ne rodiče, kteří ho
+        // obsahují skrz potomky.
+        const own = [...el.childNodes]
+          .filter((n) => n.nodeType === 3)
+          .map((n) => n.textContent)
+          .join(' ')
+          .trim();
+        if (!own || !pattern.test(own)) continue;
+
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+
+        const rendered =
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          Number(style.opacity) !== 0 &&
+          el.getAttribute('aria-hidden') !== 'true' &&
+          rect.width > 0 &&
+          rect.height > 0;
+
+        // Vůči dokumentu, ne vůči aktuálnímu posunu — sken může být
+        // v okamžiku měření posunutý jinam než uživatel při načtení.
+        const topInDocument = rect.top + window.scrollY;
+
+        out.push({
+          rendered,
+          inViewport: rendered && topInDocument < window.innerHeight,
+          inFooter: Boolean(el.closest('footer, [role="contentinfo"]')),
+          nearConversation: Boolean(
+            el.closest(CONVERSATION_HINT) || el.querySelector?.(CONVERSATION_HINT)
+          ),
+          text: own.slice(0, 120),
+        });
+
+        // Strop: na stránce plné zmínek o AI (blog o AI) by jich jinak byly
+        // stovky a do reportu se stejně vejde jen ukázka.
+        if (out.length >= 25) break;
+      }
+
+      return out;
+    }, AI_DISCLAIMER_PATTERN.source);
+  } catch (err) {
+    // Neúspěšné čtení DOM nesmí shodit celý audit — jen z něj plyne, že
+    // o umístění nic nevíme.
+    console.warn('Zjištění umístění upozornění na AI selhalo:', err.message);
+    return [];
+  }
+}
+
 async function collectAiActDomSignals(page) {
   try {
     const domSignals = await page.evaluate(() => {
@@ -2955,6 +3036,10 @@ async function collectAiActDomSignals(page) {
         total: domSignals.imagesTotal || 0,
         sampled: images.sampled,
         withC2pa: images.withC2pa,
+        // Rozbor manifestů: kolik obrázků se hlásí jako vytvořené AI,
+        // kolik jako pořízené zařízením. Dřív se počítala jen přítomnost
+        // pověření, takže se nedalo poznat, co vlastně tvrdí.
+        c2pa: summarizeC2pa(images.inspected || [], domSignals.imagesTotal || 0),
       },
     };
   } catch (err) {
@@ -2974,28 +3059,34 @@ async function inspectImagesForC2pa(page, imageUrls) {
   const sample = imageUrls.slice(0, MAX_C2PA_SAMPLES);
   let withC2pa = 0;
   let sampled = 0;
+  const inspected = [];
 
   for (const imageUrl of sample) {
     try {
-      const found = await page.evaluate(async (src) => {
+      // Vrací se TEXT hlavičky, ne rovnou verdikt.
+      //
+      // Rozhodování patří do `c2pa.js`, aby šlo testovat proti ukázkovým
+      // bajtům bez prohlížeče. Dřív tady byl regex, který uměl říct jen
+      // „něco tam je" — ne jestli se obsah hlásí jako vytvořený AI.
+      const header = await page.evaluate(async (src) => {
         const res = await fetch(src, { headers: { Range: 'bytes=0-65535' } });
         if (!res.ok && res.status !== 206) return null;
         const buf = new Uint8Array(await res.arrayBuffer());
-
-        // Hledáme značky 'c2pa' / 'jumb' / 'caBX' v hlavičce souboru.
-        const text = new TextDecoder('latin1').decode(buf);
-        return /c2pa|jumbf|caBX|contentauth/i.test(text);
+        return new TextDecoder('latin1').decode(buf);
       }, imageUrl);
 
-      if (found === null) continue;
+      if (header === null) continue;
       sampled += 1;
-      if (found) withC2pa += 1;
+
+      const inspection = inspectImageBytes(header);
+      inspected.push({ url: imageUrl, ...inspection });
+      if (inspection.hasManifest) withC2pa += 1;
     } catch {
       // obrázek nešel načíst (CORS, 404) — do vzorku ho nepočítáme
     }
   }
 
-  return { sampled, withC2pa };
+  return { sampled, withC2pa, inspected };
 }
 
 // Prefixy názvů trackovacích cookies. Dřív byly jen tři (_ga, _fbp, _hj).
