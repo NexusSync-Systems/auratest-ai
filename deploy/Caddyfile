@@ -59,7 +59,24 @@ auraguard.example.com {
 		# - connect-src 'self' pokrývá i wss:// na stejném původu
 		# - img-src data: kvůli náhledům screenshotů
 		# - frame-ancestors 'none' brání vložení do cizího rámu
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		# Content-Security-Policy
+		#
+		# `connect-src 'self'` tu původně bylo bez výjimek — a zamklo
+		# přihlášení. Firebase Auth mluví z prohlížeče přímo na Google API,
+		# takže se login neprojevil chybou hesla, ale hláškou
+		# `auth/network-request-failed`, která svádí hledat výpadek sítě.
+		#
+		# Vyjmenované jsou jen adresy, které aplikace skutečně potřebuje:
+		#   identitytoolkit  přihlášení a registrace
+		#   securetoken      obnova ID tokenu
+		#   firestore        projekty, session, monitory
+		# WebSocket na vlastní původ pokrývá `'self'`.
+		#
+		# Písma z fonts.googleapis.com jsou požadavek na třetí stranu —
+		# přesně ten typ, který GDPR skener tohohle nástroje u cizích webů
+		# hlásí. Vlastní hosting písem to odstraní; do té doby je to tady
+		# poznamenané, ne zamlčené.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 
 		# Neprozrazovat, co pod tím běží.
 		-Server
