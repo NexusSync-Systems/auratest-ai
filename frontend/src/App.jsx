@@ -27,6 +27,7 @@ import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
+import { useRoutedTab } from './hooks/useRoutedTab.js';
 const PrintReport = lazy(() => import('./components/print/PrintReport.jsx'));
 import {
   TEST_TYPES, IMPACT_COLORS, IMPACT_TRANSLATIONS, RULE_TRANSLATIONS,
@@ -52,7 +53,10 @@ export default function App() {
   const [projectName, setProjectName] = useState('');
   const [projectOrigins, setProjectOrigins] = useState('');
 
-  const [activeTab, setActiveTab] = useState('auraguard'); // 'agent', 'compare', 'audit', 'settings'
+  // Sekce se promítá do adresního řádku (/hub, /audit-prekladu, …), takže na
+  // ni jde poslat odkaz a Zpět v prohlížeči přepíná sekce místo odchodu
+  // z aplikace. Rozhraní je stejné jako u useState.
+  const [activeTab, setActiveTab] = useRoutedTab();
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const [activeSession, setActiveSession] = useState(null);
