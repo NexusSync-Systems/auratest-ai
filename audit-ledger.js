@@ -63,17 +63,89 @@ export const GENESIS_HASH = '0'.repeat(64);
  * Pole se NEtřídí: jejich pořadí je součást informace (kroky testu,
  * seznam nálezů).
  */
-export function canonicalize(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`;
+export function canonicalize(value, seen = new WeakSet()) {
+  // Typy, které JSON neumí, se ODMÍTAJÍ — netiší se na null.
+  //
+  // Dřív tudy prošlo všechno: `Date`, `Map`, `Set` i instance třídy skončily
+  // jako `{}`, `NaN` a `Infinity` jako `null`. `digestOf({t: new Date()})`
+  // se tak rovnalo `digestOf({t: {}})`. U otisku, jehož jediný smysl je
+  // zachytit změnu obsahu, je tohle ta nejhorší možná vlastnost: změna
+  // proběhne a otisk se nehne.
+  const t = typeof value;
+  if (t === 'bigint' || t === 'function' || t === 'symbol') {
+    throw new TypeError(`Kanonizace: nepodporovaný typ ${t}`);
+  }
+  if (t === 'number' && !Number.isFinite(value)) {
+    throw new TypeError(`Kanonizace: číslo ${value} nelze zapsat do JSON`);
+  }
+  // -0 a 0 jsou různé hodnoty, ale JSON.stringify z obou udělá "0".
+  if (t === 'number' && Object.is(value, -0)) return '"-0"';
 
-  const keys = Object.keys(value).sort();
-  const parts = keys
-    // `undefined` se do JSON nedostane; kdyby se zahrnul, lišil by se otisk
-    // podle toho, jestli klíč existoval s hodnotou undefined, nebo vůbec.
-    .filter((k) => value[k] !== undefined)
-    .map((k) => `${JSON.stringify(k)}:${canonicalize(value[k])}`);
-  return `{${parts.join(',')}}`;
+  if (value === null || t !== 'object') return JSON.stringify(value) ?? 'null';
+
+  if (seen.has(value)) {
+    throw new TypeError('Kanonizace: cyklický odkaz v datech');
+  }
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((v) => canonicalize(v, seen)).join(',')}]`;
+    }
+
+    // Date má jednoznačný textový zápis — použijeme ho místo prázdného objektu.
+    if (value instanceof Date) {
+      if (Number.isNaN(value.getTime())) {
+        throw new TypeError('Kanonizace: neplatné datum');
+      }
+      return JSON.stringify(value.toISOString());
+    }
+
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new TypeError(
+        `Kanonizace: nepodporovaný objekt ${value.constructor?.name || '(bez prototypu)'}`
+      );
+    }
+
+    const keys = Object.keys(value).sort();
+    const parts = keys
+      // `undefined` se do JSON nedostane; kdyby se zahrnul, lišil by se otisk
+      // podle toho, jestli klíč existoval s hodnotou undefined, nebo vůbec.
+      .filter((k) => value[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${canonicalize(value[k], seen)}`);
+    return `{${parts.join(',')}}`;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+/**
+ * Co z běhu vstupuje do otisku výsledku.
+ *
+ * Vyexportované schválně: spis tímtéž předpisem otisk PŘEPOČÍTÁ a porovná.
+ * Dokud tahle funkce žila jako objektový literál uvnitř server.js, byl otisk
+ * ve spisu číslo, které nikdo nedokázal zkontrolovat — přesná struktura
+ * nebyla nikde zapsaná a mezi cestami se dokonce lišila (crawler větev
+ * neposílala `warnings`).
+ *
+ * Artefakty (screenshoty, video) se vynechávají: jejich cesty se mění
+ * a otisk by pak nesouhlasil u nezměněného výsledku.
+ */
+export function auditResultOf(session) {
+  return {
+    status: session.status ?? null,
+    bugs: session.bugs ?? [],
+    warnings: session.warnings ?? [],
+    // Chyby měření jsou součást zjištění o běhu, takže do otisku patří —
+    // jen se nikdy nevydávají za nálezy na auditovaném webu.
+    runErrors: session.runErrors ?? [],
+    summary: session.summary ?? null,
+    steps: (session.steps ?? []).map((step) => {
+      // Cesta ke screenshotu je artefakt, ne zjištění.
+      const { screenshot, ...rest } = step || {};
+      return rest;
+    }),
+  };
 }
 
 /** SHA-256 kanonické podoby. */
@@ -117,16 +189,45 @@ export function readLedger(file = LEDGER_FILE) {
       try {
         return JSON.parse(line);
       } catch (err) {
-        return { __malformed: true, line: i + 1, raw: line.slice(0, 200), error: err.message };
+        // Příznak se drží MIMO rozparsovaný objekt: `__malformed` je běžný
+        // JSON klíč a záznam, který ho obsahuje, by se vydával za nečitelný
+        // řádek — a jedna kontrola návaznosti by se kvůli tomu přeskočila.
+        return {
+          __malformed: true,
+          line: i + 1,
+          raw: line.slice(0, 200),
+          error: err.message,
+        };
       }
     });
 }
 
-/** Otisk posledního záznamu — to, co se ukotvuje ven. */
+/**
+ * Otisk posledního záznamu — to, co se ukotvuje ven.
+ *
+ * Nečitelná nebo neúplná hlava vyhodí chybu, NEvrátí genesis.
+ *
+ * Dřív tu stálo `|| GENESIS_HASH`: nedopsaný poslední řádek (plný disk, pád
+ * procesu) tak vypadal jako prázdný soubor a další zápis začal nový řetěz
+ * od začátku. Ztráta celé dosavadní historie bez jediné hlášky je u důkazního
+ * materiálu nepřijatelná — lepší je odmítnout zapsat.
+ */
 export function headHash(file = LEDGER_FILE) {
   const records = readLedger(file);
   if (records.length === 0) return GENESIS_HASH;
-  return records[records.length - 1].hash || GENESIS_HASH;
+  const last = records[records.length - 1];
+  if (last.__malformed) {
+    throw new Error(
+      `Poslední řádek záznamu je nečitelný (řádek ${last.line}). ` +
+        'Zápis se zastavuje, aby nezaložil nový řetěz — soubor je potřeba opravit ručně.'
+    );
+  }
+  if (typeof last.hash !== 'string' || last.hash.length !== 64) {
+    throw new Error(
+      'Poslední záznam nemá platný otisk. Zápis se zastavuje, aby nezaložil nový řetěz.'
+    );
+  }
+  return last.hash;
 }
 
 /**
@@ -146,6 +247,68 @@ export function headHash(file = LEDGER_FILE) {
 export function appendRecord(entry, file = LEDGER_FILE) {
   ensureDir(path.dirname(file));
 
+  if (!entry?.sessionId || !entry?.target) {
+    // Záznam bez cíle auditu je konzistentní a bezcenný: `canonicalize`
+    // klíč s `undefined` tiše vypustí, takže by vznikla položka, která
+    // nedokládá nic.
+    throw new Error('appendRecord: chybí sessionId nebo target');
+  }
+
+  // Zámek kolem čtení hlavy i zápisu.
+  //
+  // Bez něj dva procesy (server + plánovač monitorů, nebo dvě instance)
+  // přečtou tutéž hlavu a zapíšou stejný `prevHash`. `verifyChain` to pak
+  // ohlásí jako „před tímhle místem někdo záznam změnil nebo odstranil" —
+  // nástroj obviní z manipulace tam, kde k žádné nedošlo. U mechanismu,
+  // který má manipulaci dokazovat, je falešné obvinění to nejhorší.
+  const release = acquireLock(file);
+  try {
+    return writeRecord(entry, file);
+  } finally {
+    release();
+  }
+}
+
+/** Jednoduchý zámek přes výhradní vytvoření souboru. */
+function acquireLock(file, timeoutMs = 5000) {
+  const lockPath = `${file}.lock`;
+  const start = Date.now();
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return () => {
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          /* zámek už zmizel — nic k úklidu */
+        }
+      };
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      // Osiřelý zámek po pádu procesu nesmí zablokovat zápis navždy.
+      try {
+        const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (age > timeoutMs) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        continue; // zámek mezitím zmizel
+      }
+      if (Date.now() - start > timeoutMs) {
+        throw new Error('Zápis do záznamu auditů: nepodařilo se získat zámek.');
+      }
+      // Krátké aktivní čekání. Zápis trvá jednotky milisekund, takže se sem
+      // v praxi skoro nedostaneme; async varianta by si vyžádala async API
+      // v celém volajícím řetězci.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+}
+
+function writeRecord(entry, file) {
   const body = {
     // Verze schématu záznamu. Až se formát změní, staré záznamy musí zůstat
     // ověřitelné — bez tohohle pole by se nedalo poznat, podle jakých
@@ -166,7 +329,33 @@ export function appendRecord(entry, file = LEDGER_FILE) {
   };
 
   const record = { ...body, hash: digestOf(body) };
-  fs.appendFileSync(file, `${JSON.stringify(record)}\n`, 'utf8');
+
+  // Nedopsaný předchozí řádek by se s tímhle zápisem slil do jednoho.
+  // Pojistka: chybí-li koncový nový řádek, doplní se.
+  let prefix = '';
+  try {
+    const { size } = fs.statSync(file);
+    if (size > 0) {
+      const fd = fs.openSync(file, 'r');
+      const tail = Buffer.alloc(1);
+      fs.readSync(fd, tail, 0, 1, size - 1);
+      fs.closeSync(fd);
+      if (tail[0] !== 0x0a) prefix = '\n';
+    }
+  } catch {
+    /* soubor zatím neexistuje */
+  }
+
+  // fsync: `appendFileSync` vrátí řízení, jakmile data převezme systém.
+  // Po pádu stroje může záznam zmizet, přestože jsme volajícímu potvrdili
+  // uložení. U důkazního materiálu se to potvrzení musí opírat o disk.
+  const fd = fs.openSync(file, 'a');
+  try {
+    fs.writeSync(fd, `${prefix}${JSON.stringify(record)}\n`, null, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
   return record;
 }
 
@@ -175,8 +364,45 @@ export function appendRecord(entry, file = LEDGER_FILE) {
  *
  * @returns {{ok: boolean, count: number, problems: Array<{index: number, sessionId?: string, problem: string}>}}
  */
-export function verifyChain(file = LEDGER_FILE) {
-  const records = readLedger(file);
+export function verifyChain(file = LEDGER_FILE, records = null) {
+  // Volitelná podmnožina: spis ověřuje jen záznamy svého vlastníka.
+  // Ověřovat celý soubor znamenalo prozradit počet záznamů všech nájemců
+  // a v `problems` i jejich sessionId.
+  //
+  // Pozn.: nad podmnožinou nelze ověřit NAVAZOVÁNÍ — mezi dvěma záznamy
+  // téhož vlastníka leží cizí. Kontroluje se proto jen otisk obsahu a to,
+  // že podmnožina je souvislá v původním pořadí.
+  if (records) return verifySubset(records);
+  return verifyFull(readLedger(file));
+}
+
+function verifySubset(records) {
+  const problems = [];
+  records.forEach((record, index) => {
+    if (record.__malformed) {
+      problems.push({ index, problem: `Nečitelný řádek ${record.line}: ${record.error}` });
+      return;
+    }
+    const { hash, ...body } = record;
+    let recomputed;
+    try {
+      recomputed = digestOf(body);
+    } catch (err) {
+      problems.push({ index, sessionId: record.sessionId, problem: `Záznam nelze zpracovat: ${err.message}` });
+      return;
+    }
+    if (hash !== recomputed) {
+      problems.push({
+        index,
+        sessionId: record.sessionId,
+        problem: 'Otisk nesedí s obsahem — záznam byl po zapsání změněn.',
+      });
+    }
+  });
+  return { ok: problems.length === 0, count: records.length, problems, scope: 'subset' };
+}
+
+function verifyFull(records) {
   const problems = [];
   let expectedPrev = GENESIS_HASH;
 
@@ -199,7 +425,18 @@ export function verifyChain(file = LEDGER_FILE) {
     }
 
     const { hash, ...body } = record;
-    const recomputed = digestOf(body);
+    let recomputed;
+    try {
+      recomputed = digestOf(body);
+    } catch (err) {
+      problems.push({
+        index,
+        sessionId: record.sessionId,
+        problem: `Záznam nelze zpracovat: ${err.message}`,
+      });
+      expectedPrev = hash;
+      return;
+    }
     if (hash !== recomputed) {
       problems.push({
         index,
@@ -211,7 +448,7 @@ export function verifyChain(file = LEDGER_FILE) {
     expectedPrev = hash;
   });
 
-  return { ok: problems.length === 0, count: records.length, problems };
+  return { ok: problems.length === 0, count: records.length, problems, scope: 'full' };
 }
 
 /** Záznamy k jedné session — typicky pro doložení jednoho auditu. */

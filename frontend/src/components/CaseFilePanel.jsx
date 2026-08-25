@@ -55,12 +55,14 @@ export default function CaseFilePanel({ getToken }) {
     setMessage(null);
     try {
       const token = await getToken();
-      // `to` je datum bez času; bez posunu na konec dne by poslední den
-      // období vypadl a uživatel by to nepoznal.
+      // Datum se posílá tak, jak ho uživatel zadal. Konec období na celý den
+      // řeší server (`periodEnd` v case-file.js) — dokud se to obcházelo tady,
+      // platilo to jen pro tenhle formulář a každý jiný konzument API o den
+      // měření tiše přišel.
       const params = new URLSearchParams({
         format,
-        ...(from ? { from: `${from}T00:00:00.000Z` } : {}),
-        ...(to ? { to: `${to}T23:59:59.999Z` } : {}),
+        ...(from ? { from } : {}),
+        ...(to ? { to } : {}),
       });
       const name = await downloadAuthenticated(
         `/api/case-file?${params}`,
@@ -179,8 +181,7 @@ export default function CaseFilePanel({ getToken }) {
               <ul className="case-file-problems">
                 {chain.problems.map((p) => (
                   <li key={`${p.index}-${p.problem}`}>
-                    položka {p.index}
-                    {p.sessionId ? ` (${p.sessionId})` : ''}: {p.problem}
+                    položka {p.index}: {p.problem}
                   </li>
                 ))}
               </ul>
@@ -189,10 +190,12 @@ export default function CaseFilePanel({ getToken }) {
             {/* Bez tohohle by zelená fajfka svedla k závěru, že je záznam
                 neprůstřelný. Není — dokazuje jen, že s ním nikdo nehýbal. */}
             <p className="card-note">
-              Dokazuje to, že žádný záznam nebyl dodatečně změněn ani odstraněn.
-              Nedokazuje to nemožnost podvrhu: kdo smí zapisovat, může přepsat
-              celou historii a otisky přepočítat. Proti tomu pomáhá ukotvení
-              otisku mimo tenhle systém.
+              Dokazuje to, že žádný záznam nebyl dodatečně změněn ani odstraněn
+              z prostřed řetězu. Useknutí konce — odstranění nejnovějších
+              položek — takhle prokázat nelze; vyloučí ho až porovnání otisku
+              hlavy s hodnotou ukotvenou dřív mimo tenhle systém. A nedokazuje
+              to nemožnost podvrhu: kdo smí zapisovat, může přepsat celou
+              historii a otisky přepočítat.
             </p>
           </>
         )}

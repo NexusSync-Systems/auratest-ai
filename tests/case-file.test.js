@@ -1,4 +1,10 @@
-import { buildCaseFile, renderCaseFileHtml, CASE_FILE_LIMITS } from '../case-file.js';
+import {
+  buildCaseFile,
+  renderCaseFileHtml,
+  verifyCaseFileDigest,
+  CASE_FILE_LIMITS,
+} from '../case-file.js';
+import { RULES } from '../rule-registry.js';
 
 /**
  * Spis za období.
@@ -144,16 +150,51 @@ describe('období', () => {
 });
 
 describe('znění pravidel a meze', () => {
-  test('spis nese plné znění pravidel, ne jen odkazy', () => {
+  test('spis nese plné znění pravidel, na která se běhy odvolávají', () => {
     // Za rok už soubor s registrem nemusí být po ruce a „nis2.headers.csp.v1"
     // by nikomu nic neřeklo.
-    const file = build();
-    expect(file.ruleset.rules.length).toBeGreaterThan(0);
+    const file = build({
+      sessions: [session()],
+      records: [record({ rules: [`${RULES[0].id}.v${RULES[0].version}`] })],
+    });
+    expect(file.ruleset.rules.length).toBe(1);
     for (const rule of file.ruleset.rules) {
       expect(rule.ref).toMatch(/\.v\d+$/);
       expect(rule.method.length).toBeGreaterThan(20);
       expect(rule.limits.length).toBeGreaterThan(20);
     }
+  });
+
+  test('vypisují se JEN pravidla, která opravdu běžela', () => {
+    // REGRESE: spis tiskl celý registr pod nadpisem „Znění použitých
+    // pravidel" — včetně pravidla, jehož metoda zní „neexistuje automatická
+    // kontrola". Kontrolor si z toho přečetl, že jsme kontrolovali věci,
+    // které jsme nekontrolovali.
+    const file = build({ sessions: [session()], records: [record({ rules: [] })] });
+    expect(file.ruleset.rules).toHaveLength(0);
+    expect(renderCaseFileHtml(file)).toMatch(/neodvolává na pravidlo/);
+  });
+
+  test('snapshot pravidel se označuje jako dnešní, ne jako tehdejší', () => {
+    // Do záznamu jde jen otisk sady, ne její text. Tvrdit „znění platné
+    // v době měření" je proto nad rámec doloženého.
+    const file = build({ sessions: [session()], records: [record()] });
+    expect(file.ruleset.snapshotOf).toBe('generated');
+    expect(renderCaseFileHtml(file)).not.toMatch(/Verze platné v době měření/);
+  });
+
+  test('změna sady pravidel od měření se ve spisu ohlásí', () => {
+    const file = build({
+      sessions: [session()],
+      records: [
+        record({
+          rules: [`${RULES[0].id}.v${RULES[0].version}`],
+          ruleset: { digest: 'z'.repeat(64), count: 20 },
+        }),
+      ],
+    });
+    expect(file.ruleset.changedSinceMeasurement).toBe(true);
+    expect(renderCaseFileHtml(file)).toMatch(/NEODPOVÍDÁ tomu, podle kterého se měřilo/);
   });
 
   test('meze spisu zmiňují, co řetězení nedokazuje', () => {
@@ -198,5 +239,113 @@ describe('HTML podoba', () => {
   test('prázdné období to řekne místo prázdné stránky', () => {
     const html = renderCaseFileHtml(build());
     expect(html).toContain('neproběhl žádný audit');
+  });
+});
+
+
+describe('spis netvrdí víc, než co dokládá (regrese kontrolní vlny)', () => {
+  test('chyba měření nedělá z běhu nález', () => {
+    // Timeout sítě je selhání NAŠEHO měření. Dokud se zapisoval do `bugs`,
+    // běh skončil jako „Nálezy: 1", uložil se do neměnného záznamu a ve spisu
+    // se vytiskl jako doložená vada zákazníkova webu.
+    const file = build({
+      sessions: [
+        session({
+          bugs: ['Katastrofická chyba testu: timeout'],
+          runErrors: ['Měření se nedokončilo: timeout'],
+        }),
+      ],
+    });
+    expect(file.runs[0].verdict.value).toBe('inconclusive');
+    expect(file.runs[0].findings).toHaveLength(0);
+    expect(file.runs[0].runErrors).toHaveLength(1);
+  });
+
+  test('u neprůkazného běhu bez záznamu se neříká „výsledek platí"', () => {
+    const file = build({ sessions: [session({ status: 'failed' })] });
+    expect(file.runs[0].evidence.note).not.toMatch(/Výsledek platí/);
+    expect(file.runs[0].evidence.note).toMatch(/nedokončilo/);
+  });
+
+  test('konec období zahrnuje celý den', () => {
+    // REGRESE: `to='2026-06-15'` se parsovalo jako půlnoc, takže běh
+    // z 15. 6. v 10:00 z období vypadl. Frontend si to obcházel sám;
+    // každý jiný konzument o den měření tiše přišel.
+    const file = build({ sessions: [session()], from: '2026-06-01', to: '2026-06-15' });
+    expect(file.summary.runs).toBe(1);
+  });
+
+  test('běh s nečitelným časem nezmizí beze stopy', () => {
+    // Rozdíl mezi „nic neproběhlo" a „něco nám vypadlo" musí být vidět.
+    const file = build({
+      sessions: [session({ id: 'x', timestamp: 'nesmysl' })],
+      from: '2026-06-01',
+      to: '2026-06-30',
+    });
+    expect(file.summary.runs).toBe(0);
+    expect(file.summary.undatable).toBe(1);
+    expect(file.undatableRuns[0].sessionId).toBe('x');
+  });
+
+  test('duplicitní záznam k jedné session se ohlásí, ne zahodí', () => {
+    // Kdo má právo zapisovat, mohl přidat druhý záznam téže session s jiným
+    // otiskem. Ověření řetězu to odhalit nemůže — řetěz sám je v pořádku.
+    const file = build({
+      sessions: [session()],
+      records: [record(), record({ hash: 'd'.repeat(64), resultDigest: 'e'.repeat(64) })],
+    });
+    expect(file.runs[0].evidence.duplicateRecords).toBe(true);
+    expect(renderCaseFileHtml(file)).toMatch(/víc než jeden záznam/);
+  });
+
+  test('otisk výsledku se přepočítá a porovná', () => {
+    // Bez toho je „Otisk výsledku" 64znakové číslo pod seznamem nálezů,
+    // které nikdo nedokáže zkontrolovat — a čtenář si přitom vyvodí,
+    // že ty nálezy kryje.
+    const file = build({ sessions: [session()], records: [record()] });
+    expect(file.runs[0].evidence.digestMatches).toBe(false);
+    expect(renderCaseFileHtml(file)).toMatch(/liší/);
+  });
+
+  test('problémy řetězu neprozrazují cizí sessionId', () => {
+    const file = build({
+      sessions: [session()],
+      chain: {
+        ok: false,
+        count: 9,
+        problems: [{ index: 2, sessionId: 'cizi-session', problem: 'Otisk nesedí' }],
+      },
+    });
+    expect(JSON.stringify(file.ledger)).not.toMatch(/cizi-session/);
+  });
+
+  test('tvrzení o řetězu nevylučuje useknutí konce', () => {
+    // Odmazání posledních položek je bez vnějšího ukotvení nedetekovatelné,
+    // a právě konec je to, co by útočník mazal.
+    const html = renderCaseFileHtml(build({ sessions: [session()] }));
+    expect(html).toMatch(/z prostřed řetězu/);
+    expect(html).toMatch(/[Uu]seknutí konce/);
+  });
+
+  test('nález jako objekt se nevytiskne jako [object Object]', () => {
+    const file = build({
+      sessions: [session({ bugs: [{ severity: 'high', message: 'chybí CSP' }] })],
+    });
+    const html = renderCaseFileHtml(file);
+    expect(html).not.toMatch(/\[object Object\]/);
+    expect(html).toMatch(/chybí CSP/);
+  });
+
+  test('spis nese vlastní otisk a ten sedí', () => {
+    const file = build({ sessions: [session()] });
+    expect(file.selfDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(verifyCaseFileDigest(file)).toBe(true);
+    expect(renderCaseFileHtml(file)).toMatch(file.selfDigest);
+  });
+
+  test('časy ve spisu nesou zónu', () => {
+    // Bez ní se čas tiskne v neurčené zóně serveru a na jiném stroji vyjde
+    // jinak. U důkazu musí být čas jednoznačný.
+    expect(renderCaseFileHtml(build({ sessions: [session()] }))).toMatch(/UTC/);
   });
 });

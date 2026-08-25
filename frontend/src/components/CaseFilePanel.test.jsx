@@ -41,7 +41,16 @@ describe('stav řetězu', () => {
     // než dokazuje.
     global.fetch = vi.fn(async () => chainResponse({ ok: true, count: 1, problems: [] }));
     render(<CaseFilePanel getToken={getToken} />);
-    expect(await screen.findByText(/Nedokazuje to nemožnost podvrhu/)).toBeInTheDocument();
+    expect(await screen.findByText(/nedokazuje\s+to nemožnost podvrhu/i)).toBeInTheDocument();
+  });
+
+  test('zelený stav nevylučuje useknutí konce řetězu', async () => {
+    // Odmazání nejnovějších položek je bez vnějšího ukotvení nedetekovatelné,
+    // a právě konec je to, co by útočník mazal. Věta „žádný záznam nebyl
+    // odstraněn" bez téhle výhrady tvrdí víc, než ověření dokládá.
+    global.fetch = vi.fn(async () => chainResponse({ ok: true, count: 1, problems: [] }));
+    render(<CaseFilePanel getToken={getToken} />);
+    expect(await screen.findByText(/[Uu]seknutí konce/)).toBeInTheDocument();
   });
 
   test('porušený řetěz vypíše, kde k zásahu došlo', async () => {
@@ -49,12 +58,14 @@ describe('stav řetězu', () => {
       chainResponse({
         ok: false,
         count: 5,
-        problems: [{ index: 2, sessionId: 'sess-9', problem: 'Otisk nesedí s obsahem' }],
+        problems: [{ index: 2, problem: 'Otisk nesedí s obsahem' }],
       })
     );
     render(<CaseFilePanel getToken={getToken} />);
     expect(await screen.findByText(/Řetěz je porušený/)).toBeInTheDocument();
-    expect(screen.getByText(/položka 2 \(sess-9\)/)).toBeInTheDocument();
+    // sessionId se ve výpisu NEUVÁDÍ: ověření běží nad podmnožinou vlastníka,
+    // ale identifikátory do hlášky o porušení stejně nepatří.
+    expect(screen.getByText(/položka 2/)).toBeInTheDocument();
   });
 
   test('nedostupné ověření se přizná, nevydává se za pořádek', async () => {
@@ -89,7 +100,12 @@ describe('export spisu', () => {
     await waitFor(() => {
       const call = global.fetch.mock.calls.find((c) => String(c[0]).includes('/api/case-file'));
       expect(call).toBeTruthy();
-      expect(decodeURIComponent(String(call[0]))).toContain('T23:59:59.999Z');
+      // Datum se posílá tak, jak ho uživatel zadal. Konec období na celý den
+      // řeší server — obcházet to tady znamenalo, že to platilo jen pro tenhle
+      // formulář a přímé volání API o poslední den měření tiše přišlo.
+      const query = decodeURIComponent(String(call[0]));
+      expect(query).not.toContain('T23:59:59.999Z');
+      expect(query).toMatch(/to=\d{4}-\d{2}-\d{2}/);
     });
   });
 

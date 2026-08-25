@@ -20,7 +20,21 @@
  */
 
 import { RULES, rulesetInfo } from './rule-registry.js';
-import { verifyChain, headHash } from './audit-ledger.js';
+import { verifyChain, headHash, digestOf, auditResultOf } from './audit-ledger.js';
+
+/**
+ * Odpovídá uložený otisk tomu, co je dnes v databázi?
+ *
+ * @returns {boolean|null} null = nelze ověřit (starý záznam bez otisku)
+ */
+function verifyResultDigest(session, record) {
+  if (!record?.resultDigest) return null;
+  try {
+    return digestOf(auditResultOf(session)) === record.resultDigest;
+  } catch {
+    return null;
+  }
+}
 
 /** Verze formátu spisu. Až se změní, staré spisy musí zůstat čitelné. */
 export const CASE_FILE_SCHEMA = 1;
@@ -45,6 +59,13 @@ export const CASE_FILE_LIMITS = [
     'systém.',
   'Časová razítka pocházejí z hodin serveru, ne od autority časových razítek.',
   'Spis není právní posouzení shody. Je to doklad o provedených měřeních.',
+  'Nálezy z autonomního průzkumu aplikace pocházejí z posouzení jazykovým ' +
+    'modelem, ne z pravidla registru. Nejsou reprodukovatelné stejným způsobem ' +
+    'jako předpisové kontroly a je namístě je ověřit ručně, než se z nich ' +
+    'vyvodí závěr.',
+  'Chyby měření (timeout, pád prohlížeče) se ve spisu drží odděleně od ' +
+    'nálezů. Běh, jehož měření se nedokončilo, je vždy neprůkazný — nikdy ' +
+    'z něj neplyne nález ani jeho absence.',
 ];
 
 /**
@@ -71,6 +92,19 @@ function verdictOf(session) {
   // Verdikt proto vždycky nese vlastní větu a souhrn se k ní jen připojí.
   const detail = session.summary ? ` Souhrn skeneru: ${session.summary}` : '';
 
+  // Pojistka pro starší záznamy: běh, který má zapsanou chybu měření, není
+  // průkazný, ať už je jeho `status` jakýkoli. Dřív se chyby měření zapisovaly
+  // do `bugs` a takový běh se ve spisu tvářil jako doložený nález.
+  if (session.runErrors?.length) {
+    return {
+      value: 'inconclusive',
+      label: 'Neprůkazné',
+      rationale:
+        `Měření se nedokončilo (${session.runErrors[0]}). Z nedokončeného ` +
+        'měření neplyne nález ani jeho absence.',
+    };
+  }
+
   const bugs = session.bugs?.length ?? 0;
   if (bugs > 0) {
     return {
@@ -91,13 +125,37 @@ function verdictOf(session) {
   };
 }
 
-/** Bezpečné porovnání dat; neplatné vstupy nesmí tiše vyřadit běh ze spisu. */
-function inPeriod(timestamp, from, to) {
+/**
+ * Konec období včetně celého dne.
+ *
+ * `to='2026-06-15'` se parsuje jako půlnoc, takže běh z 15. 6. v 10:00 by
+ * z období vypadl — přestože dokumentace i uživatelské rozhraní slibují
+ * „včetně". Frontend si to obcházel vlastním přičtením času; opravou tady
+ * platí totéž pro každého konzumenta včetně přímého volání API.
+ */
+function periodEnd(to) {
+  if (!to) return null;
+  const t = Date.parse(to);
+  if (Number.isNaN(t)) return null;
+  // Datum bez časové složky → posunout na konec dne.
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(to).trim()) ? t + 86399999 : t;
+}
+
+/**
+ * Bezpečné porovnání dat.
+ *
+ * Vrací 'in' | 'out' | 'unreadable'. Tři stavy, ne dva: běh s nečitelným
+ * časem NENÍ mimo období — jen nevíme, kam patří. Vracet u něj `false` ho
+ * ze spisu tiše odstranilo a rozdíl mezi „nic neproběhlo" a „něco nám
+ * vypadlo" nikdo nepoznal.
+ */
+function periodMembership(timestamp, from, to) {
   const t = Date.parse(timestamp);
-  if (Number.isNaN(t)) return false;
-  if (from && t < Date.parse(from)) return false;
-  if (to && t > Date.parse(to)) return false;
-  return true;
+  if (Number.isNaN(t)) return 'unreadable';
+  if (from && t < Date.parse(from)) return 'out';
+  const end = periodEnd(to);
+  if (end != null && t > end) return 'out';
+  return 'in';
 }
 
 /**
@@ -113,24 +171,59 @@ function inPeriod(timestamp, from, to) {
  * @param {string} [input.head]    otisk hlavy; pro testy
  */
 export function buildCaseFile({ sessions, records, from, to, subject, chain, head }) {
-  const byId = new Map((records || []).map((r) => [r.sessionId, r]));
+  const recordList = records || [];
 
-  const runs = (sessions || [])
-    .filter((s) => inPeriod(s.timestamp, from, to))
+  // Duplicitní sessionId se NEPŘEHLÍŽÍ.
+  //
+  // Dřív tu bylo `new Map(records.map(...))`, kde poslední vyhrál. Kdo má
+  // právo zapisovat, mohl přidat druhý záznam téže session s jiným otiskem
+  // a spis tiše ukázal jen ten novější — přepis historie, který ověření
+  // řetězu odhalit nemůže, protože řetěz sám je v pořádku.
+  const byId = new Map();
+  const duplicated = new Set();
+  for (const r of recordList) {
+    if (byId.has(r.sessionId)) duplicated.add(r.sessionId);
+    else byId.set(r.sessionId, r);
+  }
+
+  const all = sessions || [];
+  const inPeriodSessions = [];
+  const unreadable = [];
+  for (const session of all) {
+    const where = periodMembership(session.timestamp, from, to);
+    if (where === 'in') inPeriodSessions.push(session);
+    else if (where === 'unreadable') unreadable.push(session);
+  }
+
+  const chainStatus = chain || verifyChain(undefined, recordList);
+
+  // Problémy řetězu napárované na konkrétní běh, aby výstraha stála u něj,
+  // ne jen v souhrnu o dvě kapitoly výš.
+  const problemBySession = new Set(
+    (chainStatus.problems || []).map((p) => p.sessionId).filter(Boolean)
+  );
+
+  const runs = inPeriodSessions
     .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
     .map((session) => {
       const record = byId.get(session.id);
       const verdict = verdictOf(session);
+      // Nálezy se u neprůkazného běhu NEVYPISUJÍ. Seznam pod verdiktem
+      // „Neprůkazné" se čte jako zjištění, i když jím není.
+      const findings = verdict.value === 'inconclusive' ? [] : session.bugs || [];
       return {
         sessionId: session.id,
         target: session.url,
         goal: session.goal,
         performedAt: session.timestamp,
         verdict,
-        findings: session.bugs || [],
+        findings,
         // Varování se drží odděleně od nálezů schválně: jsou to pozorování,
         // ne porušení. Sloučit je by nafouklo počet vad.
         observations: session.warnings || [],
+        // Chyby NAŠEHO měření. Patří do spisu, aby bylo vidět, proč je běh
+        // neprůkazný — ale nikdy mezi nálezy o auditovaném webu.
+        runErrors: session.runErrors || [],
         evidence: record
           ? {
               recorded: true,
@@ -139,30 +232,54 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
               recordedAt: record.recordedAt,
               toolVersion: record.tool?.version,
               rulesetDigest: record.ruleset?.digest,
+              // Otisk se PŘEPOČÍTÁ z uloženého výsledku a porovná.
+              // Bez toho je „Otisk výsledku" jen 64znakové číslo pod seznamem
+              // nálezů, které nikdo nedokáže zkontrolovat — a čtenář si přitom
+              // vyvodí, že ty nálezy kryje.
+              digestMatches: verifyResultDigest(session, record),
+              chainProblem: problemBySession.has(session.id),
+              duplicateRecords: duplicated.has(session.id),
             }
           : {
               recorded: false,
               // Bez záznamu je běh ve spisu pořád uveden — zamlčet ho by
-              // znamenalo upravovat historii. Jen se u něj řekne, že
-              // neporušenost doložit nelze.
+              // znamenalo upravovat historii. Jen se u něj řekne, co z toho
+              // plyne; a u běhu, který se nedokončil, se neříká „výsledek
+              // platí", protože žádný výsledek není.
               note:
-                'K tomuto běhu chybí položka v záznamu auditů. Výsledek platí, ' +
-                'ale jeho neporušenost tímto spisem doložit nelze.',
+                verdict.value === 'inconclusive'
+                  ? 'Měření se nedokončilo, v záznamu auditů proto není žádná položka.'
+                  : 'K tomuto běhu chybí položka v záznamu auditů. Výsledek platí, ' +
+                    'ale jeho neporušenost tímto spisem doložit nelze.',
             },
       };
     });
 
-  const chainStatus = chain || verifyChain();
-
   // Do spisu jde znění pravidel, ne odkaz na ně. Za rok už soubor
   // s registrem nemusí být po ruce a odkaz „nis2.headers.csp.v1" by pak
   // nikomu nic neřekl.
-  const ruleSnapshot = RULES.map(({ id, version, title, method, limits }) => ({
-    ref: `${id}.v${version}`,
-    title,
-    method,
-    limits,
-  }));
+  //
+  // Vypisují se JEN pravidla, na která se běhy v období skutečně odvolávají.
+  // Dřív se tiskl celý registr pod nadpisem „Znění použitých pravidel" —
+  // včetně pravidla, jehož metoda zní „neexistuje automatická kontrola".
+  // Kontrolor si z toho přečetl, že jsme kontrolovali věci, které jsme
+  // nekontrolovali.
+  const usedRefs = new Set();
+  for (const session of inPeriodSessions) {
+    const record = byId.get(session.id);
+    for (const ref of record?.rules || []) usedRefs.add(ref);
+  }
+  const ruleSnapshot = RULES.filter((r) => usedRefs.has(`${r.id}.v${r.version}`)).map(
+    ({ id, version, title, method, limits, changelog }) => ({
+      ref: `${id}.v${version}`,
+      title,
+      method,
+      limits,
+      // Changelog patří do spisu: bez něj nejde po roce doložit, proč se týž
+      // web posuzuje jinak než dřív.
+      changelog: changelog || null,
+    })
+  );
 
   const counts = runs.reduce(
     (acc, r) => {
@@ -172,7 +289,19 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
     { findings: 0, 'no-findings': 0, inconclusive: 0 }
   );
 
-  return {
+  // Otisk sady pravidel, na který se běhy odvolávaly, proti dnešnímu.
+  // Když se liší, znamená to, že se od měření pravidla změnila — a spis to
+  // musí říct, protože jinak vydává dnešní znění za znění platné tehdy.
+  const today = rulesetInfo();
+  const recordedDigests = new Set(
+    inPeriodSessions
+      .map((session) => byId.get(session.id)?.ruleset?.digest)
+      .filter(Boolean)
+  );
+  const rulesetChanged =
+    recordedDigests.size > 0 && [...recordedDigests].some((d) => d !== today.digest);
+
+  const caseFile = {
     schema: CASE_FILE_SCHEMA,
     generatedAt: new Date().toISOString(),
     subject: subject || null,
@@ -183,17 +312,59 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
       withoutFindings: counts['no-findings'],
       inconclusive: counts.inconclusive,
       unrecorded: runs.filter((r) => !r.evidence.recorded).length,
+      // Běhy s nečitelným časem: nepatří do období, ale ani nezmizí.
+      // Rozdíl mezi „nic neproběhlo" a „něco nám vypadlo" musí být vidět.
+      undatable: unreadable.length,
     },
     runs,
+    undatableRuns: unreadable.map((s2) => ({
+      sessionId: s2.id,
+      target: s2.url,
+      rawTimestamp: s2.timestamp ?? null,
+    })),
     ledger: {
       headHash: head || headHash(),
       chainOk: chainStatus.ok,
       recordsTotal: chainStatus.count,
-      problems: chainStatus.problems,
+      // Problémy bez `sessionId`: index a popis stačí k doložení, identifikátory
+      // cizích auditů do spisu nepatří.
+      problems: (chainStatus.problems || []).map(({ index, problem }) => ({ index, problem })),
     },
-    ruleset: { ...rulesetInfo(), rules: ruleSnapshot },
+    ruleset: {
+      ...today,
+      rules: ruleSnapshot,
+      // Snapshot je znění K DATU VYGENEROVÁNÍ. Do záznamu se ukládá jen otisk
+      // sady, ne její text, takže tvrdit „znění platné v době měření" nelze.
+      snapshotOf: 'generated',
+      changedSinceMeasurement: rulesetChanged,
+      recordedDigests: [...recordedDigests],
+    },
     limits: CASE_FILE_LIMITS,
   };
+
+  // Otisk spisu samotného. Bez něj nemá držitel PDF jak ověřit, že odpovídá
+  // strojově čitelné podobě, a naopak. Počítá se nad spisem BEZ tohoto pole —
+  // ověření viz `verifyCaseFileDigest`.
+  caseFile.selfDigest = digestOf(caseFile);
+  return caseFile;
+}
+
+/**
+ * Ověří otisk spisu.
+ *
+ * Předpis musí být zapsaný, ne odvozený: kdo dostane JSON a PDF, potřebuje
+ * vědět, co přesně se hashovalo. Jinak je otisk v patičce jen dekorace.
+ *
+ * @param {object} caseFile spis včetně pole `selfDigest`
+ */
+export function verifyCaseFileDigest(caseFile) {
+  if (!caseFile?.selfDigest) return null;
+  const { selfDigest, ...body } = caseFile;
+  try {
+    return digestOf(body) === selfDigest;
+  } catch {
+    return null;
+  }
 }
 
 const escapeHtml = (value) =>
@@ -204,7 +375,33 @@ const escapeHtml = (value) =>
 
 const czDate = (iso) => {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('cs-CZ');
+  // Zóna se uvádí výslovně. Bez ní se čas tiskne v neurčené zóně serveru
+  // a na jiném stroji vyjde jinak — u důkazu musí být čas jednoznačný.
+  return Number.isNaN(d.getTime())
+    ? '—'
+    : `${d.toLocaleString('cs-CZ', { timeZone: 'UTC' })} UTC`;
+};
+
+/**
+ * Nález na čitelný text.
+ *
+ * Skenery pracují se strukturami (`{severity, message}`), agent posílá
+ * řetězce. `String(objekt)` z toho udělal `[object Object]` — ve spisu
+ * odevzdávaném úřadu ztráta obsahu bez varování.
+ */
+const findingText = (f) => {
+  if (f == null) return '—';
+  if (typeof f === 'string') return f;
+  if (typeof f === 'object') {
+    const base = f.message || f.title || f.text;
+    if (base) return f.severity ? `[${f.severity}] ${base}` : String(base);
+    try {
+      return JSON.stringify(f);
+    } catch {
+      return String(f);
+    }
+  }
+  return String(f);
 };
 
 /**
@@ -233,7 +430,15 @@ export function renderCaseFileHtml(caseFile) {
         <p class="rationale">${escapeHtml(run.verdict.rationale)}</p>
         ${
           run.findings.length
-            ? `<ul>${run.findings.map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`
+            ? `<ul>${run.findings.map((f) => `<li>${escapeHtml(findingText(f))}</li>`).join('')}</ul>`
+            : ''
+        }
+        ${
+          run.runErrors?.length
+            ? `<p class="label">Chyby měření (netýkají se auditovaného webu)</p>
+               <ul class="dim">${run.runErrors
+                 .map((e) => `<li>${escapeHtml(findingText(e))}</li>`)
+                 .join('')}</ul>`
             : ''
         }
         ${
@@ -248,8 +453,23 @@ export function renderCaseFileHtml(caseFile) {
           ${
             run.evidence.recorded
               ? `<tr><th>Otisk výsledku</th><td class="mono">${escapeHtml(run.evidence.resultDigest)}</td></tr>
+                 <tr><th>Otisk souhlasí</th><td>${
+                   run.evidence.digestMatches === true
+                     ? 'Ano — uložený výsledek odpovídá zapsanému otisku.'
+                     : run.evidence.digestMatches === false
+                       ? '<span class="warn">NE — uložený výsledek se od zapsaného otisku liší.</span>'
+                       : 'Nelze ověřit (záznam bez otisku výsledku).'
+                 }</td></tr>
                  <tr><th>Otisk záznamu</th><td class="mono">${escapeHtml(run.evidence.recordHash)}</td></tr>
-                 <tr><th>Verze nástroje</th><td>${escapeHtml(run.evidence.toolVersion)}</td></tr>`
+                 <tr><th>Verze nástroje</th><td>${escapeHtml(run.evidence.toolVersion)}</td></tr>${
+                   run.evidence.chainProblem
+                     ? '<tr><th>Výstraha</th><td class="warn">Ověření řetězu u tohoto záznamu nalezlo problém — viz oddíl Neporušenost záznamu.</td></tr>'
+                     : ''
+                 }${
+                   run.evidence.duplicateRecords
+                     ? '<tr><th>Výstraha</th><td class="warn">K tomuto běhu existuje víc než jeden záznam. Ve spisu je uveden ten první.</td></tr>'
+                     : ''
+                 }`
               : `<tr><th>Záznam</th><td class="warn">${escapeHtml(run.evidence.note)}</td></tr>`
           }
         </table>
@@ -314,12 +534,25 @@ export function renderCaseFileHtml(caseFile) {
   <table class="evidence">
     <tr><th>Stav řetězu</th><td>${
       caseFile.ledger.chainOk
-        ? 'Neporušený — žádný záznam nebyl dodatečně změněn ani odstraněn.'
+        ? 'Neporušený — žádný záznam nebyl dodatečně změněn ani odstraněn ' +
+          '<em>z prostřed řetězu</em>. Useknutí konce (odstranění nejnovějších ' +
+          'položek) tímto ověřením prokázat nelze; vyloučí ho až porovnání ' +
+          'otisku hlavy s hodnotou ukotvenou dřív mimo tento systém.'
         : `<span class="warn">PORUŠENÝ — ${caseFile.ledger.problems.length} nálezů.</span>`
     }</td></tr>
-    <tr><th>Položek celkem</th><td>${caseFile.ledger.recordsTotal}</td></tr>
+    <tr><th>Položek v tomto spisu</th><td>${caseFile.ledger.recordsTotal}</td></tr>
     <tr><th>Otisk hlavy</th><td class="mono">${escapeHtml(caseFile.ledger.headHash)}</td></tr>
     <tr><th>Otisk sady pravidel</th><td class="mono">${escapeHtml(caseFile.ruleset.digest)}</td></tr>
+    ${
+      caseFile.summary.unrecorded
+        ? `<tr><th>Bez záznamu</th><td class="warn">${caseFile.summary.unrecorded} běhů nemá položku v záznamu auditů.</td></tr>`
+        : ''
+    }
+    ${
+      caseFile.summary.undatable
+        ? `<tr><th>Nezařaditelné</th><td class="warn">${caseFile.summary.undatable} běhů má nečitelný čas a nelze je zařadit do období — nejsou tedy níž uvedené.</td></tr>`
+        : ''
+    }
   </table>
 
   <h2>Jednotlivé běhy</h2>
@@ -331,23 +564,46 @@ export function renderCaseFileHtml(caseFile) {
   </div>
 
   <h2>Znění použitých pravidel</h2>
-  <p class="sub">Verze platné v době měření. Uvedeno včetně toho, co z každé kontroly neplyne.</p>
-  <table class="rules">
-    ${caseFile.ruleset.rules
-      .map(
-        (r) => `<tr>
-          <td class="mono">${escapeHtml(r.ref)}</td>
-          <td><strong>${escapeHtml(r.title)}</strong><br>
-              ${escapeHtml(r.method)}<br>
-              <em>Neplyne z toho:</em> ${escapeHtml(r.limits)}</td>
-        </tr>`
-      )
-      .join('')}
-  </table>
+  ${
+    caseFile.ruleset.rules.length
+      ? `<p class="sub">Znění k datu vygenerování spisu (${czDate(caseFile.generatedAt)}).
+          Do záznamu se ukládá jen otisk sady pravidel, ne její text, takže tvrdit,
+          že jde o znění platné v době měření, by bylo nad rámec doloženého.
+          ${
+            caseFile.ruleset.changedSinceMeasurement
+              ? '<strong class="warn">Otisk sady se od doby měření změnil — níž uvedené znění tedy NEODPOVÍDÁ tomu, podle kterého se měřilo.</strong>'
+              : 'Otisk sady odpovídá tomu, který nesou záznamy z tohoto období.'
+          }
+          Uvedeno včetně toho, co z každé kontroly neplyne.</p>
+        <table class="rules">
+          ${caseFile.ruleset.rules
+            .map(
+              (r) => `<tr>
+                <td class="mono">${escapeHtml(r.ref)}</td>
+                <td><strong>${escapeHtml(r.title)}</strong><br>
+                    ${escapeHtml(r.method)}<br>
+                    <em>Neplyne z toho:</em> ${escapeHtml(r.limits)}${
+                      r.changelog
+                        ? `<br><em>Změny oproti starším verzím:</em> ${Object.entries(r.changelog)
+                            .map(([v, text]) => `v${escapeHtml(v)}: ${escapeHtml(text)}`)
+                            .join(' ')}`
+                        : ''
+                    }</td>
+              </tr>`
+            )
+            .join('')}
+        </table>`
+      : `<p>Žádný z běhů v tomto období se neodvolává na pravidlo z registru.
+          Uvedené běhy pocházejí z autonomního průzkumu aplikace, který
+          nevyhodnocuje jednotlivé předpisové kontroly — výpis znění pravidel
+          by proto tvrdil, že proběhly kontroly, které neproběhly.</p>`
+  }
 
   <footer>
     AuraGuard — doklad o provedených měřeních, nikoli právní posouzení shody.
-    Strojově čitelnou podobu tohoto spisu lze získat ve formátu JSON.
+    Strojově čitelnou podobu tohoto spisu lze získat ve formátu JSON.<br>
+    Otisk spisu (SHA-256): <span class="mono">${escapeHtml(caseFile.selfDigest)}</span> —
+    tímtéž otiskem se ověří, že strojově čitelná podoba nese stejný obsah.
   </footer>
 </body>
 </html>`;
