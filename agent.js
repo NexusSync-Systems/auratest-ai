@@ -158,7 +158,15 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+
+      // ⚡ Bolt: Fast live HTMLCollection retrieval instead of slow querySelectorAll parsing + Array.from allocation
+      const liveElements = document.getElementsByTagName('*');
+      const liveLen = liveElements.length;
+      const elements = new Array(liveLen);
+      for (let i = 0; i < liveLen; i++) {
+        elements[i] = liveElements[i];
+      }
+
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -348,7 +356,14 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      // ⚡ Bolt: Fast live HTMLCollection iteration instead of slow querySelectorAll and map
+      const links = document.getElementsByTagName('a');
+      const len = links.length;
+      const res = new Array(len);
+      for (let i = 0; i < len; i++) {
+        res[i] = links[i].href;
+      }
+      return res;
     });
     
     // Filter internal links and deduplicate
@@ -740,7 +755,8 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
             loadTimeMs: timing.loadEventEnd ? Math.round(timing.loadEventEnd - timing.startTime) : null,
             domInteractiveMs: timing.domInteractive ? Math.round(timing.domInteractive - timing.startTime) : null,
             title: document.title,
-            h1Count: document.querySelectorAll('h1').length
+            // ⚡ Bolt: Fast DOM property access without CSS parsing overhead
+            h1Count: document.getElementsByTagName('h1').length
           };
         });
       } catch (e) {
