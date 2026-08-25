@@ -10,6 +10,7 @@ import { inspectTls, summarizeTls, PQC_GROUP } from './tls-audit.js';
 import { createSeededRandom, generateRunSeed } from './seeded-random.js';
 import { collectBundleEvidence, mergeFindings } from './sbom-fingerprint.js';
 import { normalizeSemver } from './semver.js';
+import { classifyActionFailure } from './action-failure.js';
 
 /**
  * Argumenty navíc pro Chromium, z konfigurace serveru.
@@ -1467,11 +1468,16 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       } catch (actionErr) {
         console.error(`Akce '${actionResponse.action}' na prvek [data-qa-id="${actionResponse.target}"] selhala:`, actionErr.message);
 
-        // Zablokování vlastní bezpečnostní politikou není chyba testované
-        // aplikace — nesmí to shodit `success` ani se hlásit jako bug.
-        const blockedByPolicy = /zablokována|neveřejn|interní rozsah/i.test(actionErr.message);
-        const message = `Akce '${actionResponse.action}' v kroku ${currentStep} selhala: ${actionErr.message}`;
-        addFinding(blockedByPolicy ? warnings : bugs, message);
+        // Vlastní bezpečnostní politika ani cizí překryvná vrstva nejsou
+        // chybou testované aplikace — nesmí shodit `success` ani se hlásit
+        // jako bug. Rozhodování je v `action-failure.js`, aby šlo testovat
+        // bez tahání Playwrightu do testovacího procesu.
+        const failure = classifyActionFailure(
+          actionResponse.action,
+          currentStep,
+          actionErr.message
+        );
+        addFinding(failure.isAppFault ? bugs : warnings, failure.message);
       }
 
       currentStep++;
