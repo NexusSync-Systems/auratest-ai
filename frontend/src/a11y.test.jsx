@@ -22,6 +22,20 @@ vi.mock('./lib/firebase.js', () => ({
 // Testy, které menu zkoumají, proto musí renderovat jako přihlášený.
 let authUser = null;
 
+/**
+ * Fiktivní uživatel MUSÍ mít `getIdToken`.
+ *
+ * App.jsx si jím podepisuje volání API i WebSocket. S pouhým `{uid, email}`
+ * vznikne „currentUser.getIdToken is not a function" jako neodchycené
+ * odmítnutí Promise — a vitest kvůli němu skončí nenulovým kódem, přestože
+ * všechny testy projdou. Lokálně to vypadá zeleně, CI spadne.
+ */
+const FAKE_USER = {
+  uid: 'test-uid',
+  email: 'test@example.com',
+  getIdToken: async () => 'test-token',
+};
+
 vi.mock('firebase/auth', () => ({
   onAuthStateChanged: (_auth, cb) => {
     cb(authUser);
@@ -94,7 +108,7 @@ describe('Přístupnost', () => {
   });
 
   it('interaktivní prvky navigace jsou tlačítka, ne divy s onClick', () => {
-    authUser = { uid: 'test-uid', email: 'test@example.com' };
+    authUser = FAKE_USER;
     window.history.replaceState({}, '', '/hub');
     const { container } = render(<App />);
 
@@ -112,7 +126,7 @@ describe('Přístupnost', () => {
   });
 
   it('aktivní záložka je označená aria-current, ne jen barvou', () => {
-    authUser = { uid: 'test-uid', email: 'test@example.com' };
+    authUser = FAKE_USER;
     window.history.replaceState({}, '', '/hub');
     const { container } = render(<App />);
     expect(container.querySelector('.nav-item[aria-current="page"]')).toBeTruthy();
@@ -157,7 +171,7 @@ describe('Přístupnost', () => {
 
   it('stav běhu má role="status" pro oznámení screen readeru', () => {
     // Ukazatel stavu je součást aplikace, ne přihlašovací stránky.
-    authUser = { uid: 'test-uid', email: 'test@example.com' };
+    authUser = FAKE_USER;
     window.history.replaceState({}, '', '/hub');
     const { container } = render(<App />);
     const status = container.querySelector('.status-badge[role="status"]');
