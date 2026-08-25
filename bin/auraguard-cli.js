@@ -2,6 +2,7 @@
 
 import { auditNIS2AndPQC, auditCRA_SBOM, auditAccessibility, auditAIAct, auditStrictCookies, auditCRAVulnerabilities, runAutonomousTest } from '../agent.js';
 import { sendSlackNotification } from '../slack-notifier.js';
+import { randomUUID } from 'crypto';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -267,7 +268,15 @@ async function runCLI() {
       console.log('Spouštím: Autonomní AI Agent Test (Playwright + LLM)...');
       // Použijeme jednoduchý headless smoke test s 5 kroky
       const llmConfig = { provider: 'ollama', model: 'llama3', host: 'http://localhost:11434', headless: true, maxSteps: 5, mode: 'smoke_test' };
-      const aiAgentReport = await runAutonomousTest(url, 'Najdi všechny logické nebo javascriptové chyby na webu.', llmConfig, () => {});
+      // Vlastní ID i pro CLI: artefakty pod společným jménem by si mohl
+      // přisvojit kdokoli, kdo to jméno uhodne.
+      const aiAgentReport = await runAutonomousTest(
+        url,
+        'Najdi všechny logické nebo javascriptové chyby na webu.',
+        llmConfig,
+        () => {},
+        `session_cli_${randomUUID()}`
+      );
       
       const agentBugs = aiAgentReport.bugs || [];
       if (agentBugs.length > 0) {

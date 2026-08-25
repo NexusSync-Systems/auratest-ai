@@ -37,6 +37,29 @@ if [[ ! -f firebase-credentials.json ]]; then
 fi
 ok "firebase-credentials.json existuje"
 
+# Omezení přístupu je podmínka nasazení, ne doporučení.
+#
+# Bez něj si účet založí kdokoli na internetu a spustí z tohoto serveru
+# sken na libovolnou adresu. Server sám start odmítne, ale zjistit to až
+# z restartující se kontejnerové smyčky je zbytečně pozdě.
+if ! grep -qE "^(ALLOWED_EMAILS|ALLOWED_EMAIL_DOMAINS)=.+" .env; then
+    if grep -qE "^ALLOW_ANY_EMAIL=true" .env; then
+        warn "ALLOW_ANY_EMAIL=true — instalace je vědomě otevřená komukoli."
+    else
+        die "V .env chybí ALLOWED_EMAILS nebo ALLOWED_EMAIL_DOMAINS. Bez nich by účet mohl založit kdokoli."
+    fi
+fi
+ok "Přístup je omezený"
+
+# Servisní klíč Firebase má nad projektem plná práva. Po git clone nebo scp
+# běžně vznikne s 0644, tedy čitelný pro každého uživatele stroje.
+CRED_MODE="$(stat -c '%a' firebase-credentials.json 2>/dev/null || stat -f '%Lp' firebase-credentials.json)"
+if [[ "$CRED_MODE" != "600" && "$CRED_MODE" != "400" ]]; then
+    warn "firebase-credentials.json má práva ${CRED_MODE}, zužuji na 600."
+    chmod 600 firebase-credentials.json
+fi
+ok "Práva servisního klíče: 600"
+
 # Proměnné, bez kterých se aplikace chová špatně, ale nespadne — tedy ty,
 # jejichž chybění se pozná až za provozu.
 for var in ALLOWED_ORIGINS PUBLIC_BASE_URL; do

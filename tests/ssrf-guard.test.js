@@ -1,4 +1,4 @@
-import { assertPublicHttpUrl } from '../ssrf-guard.js';
+import { assertPublicHttpUrl, guardNavigation } from '../ssrf-guard.js';
 
 describe('ssrf-guard — blokace neveřejných/nebezpečných cílů', () => {
   const blocked = [
@@ -102,5 +102,68 @@ describe('assertPublicHttpUrl — přechodové IPv6 mechanismy', () => {
   it('6to4 s veřejnou IPv4 uvnitř propustí', async () => {
     // Blokovat celý 2002::/16 by zablokovalo i legitimní cíle.
     await expect(assertPublicHttpUrl('http://[2002:0808:0808::]/')).resolves.toBeTruthy();
+  });
+});
+
+describe('guardNavigation — hlídá i přesměrování (regrese kontrolní vlny)', () => {
+  /**
+   * Napodobenina kontextu Playwrightu. Skutečný prohlížeč tu nepotřebujeme —
+   * testuje se rozhodnutí, ne síť.
+   */
+  const fakeContext = () => {
+    const ctx = { handler: null };
+    ctx.route = async (_pattern, handler) => {
+      ctx.handler = handler;
+    };
+    return ctx;
+  };
+
+  const request = (url, { navigation = true, topLevel = true } = {}) => ({
+    url: () => url,
+    isNavigationRequest: () => navigation,
+    frame: () => ({ parentFrame: () => (topLevel ? null : {}) }),
+  });
+
+  const run = async (url, options) => {
+    const ctx = fakeContext();
+    await guardNavigation(ctx, () => {});
+    const calls = [];
+    await ctx.handler(
+      { continue: () => calls.push('continue'), abort: () => calls.push('abort') },
+      request(url, options)
+    );
+    return calls[0];
+  };
+
+  test('přesměrování na metadata endpoint se zablokuje', async () => {
+    // Útočníkovi stačí veřejná adresa vracející 302 na 169.254.169.254.
+    // Kontrola před spuštěním posoudí jen tu první; prohlížeč jde dál sám
+    // a co uvidí, pošle zpátky ve screenshotu i v textu stránky.
+    expect(await run('http://169.254.169.254/latest/meta-data/')).toBe('abort');
+  });
+
+  test('přesměrování na loopback a privátní rozsah se zablokuje', async () => {
+    expect(await run('http://127.0.0.1:8080/admin')).toBe('abort');
+    expect(await run('http://10.0.0.5/')).toBe('abort');
+  });
+
+  test('veřejný cíl projde', async () => {
+    // Literál veřejné IP, ne doména: test nesmí záviset na DNS prostředí,
+    // ve kterém běží.
+    expect(await run('https://93.184.216.34/')).toBe('continue');
+  });
+
+  test('podřízené zdroje se nefiltrují', async () => {
+    // Web načte stovky adres; ověřovat každou přes DNS by sken položilo
+    // a obsah takového požadavku se do reportu stejně nedostane.
+    expect(await run('http://127.0.0.1/obrazek.png', { navigation: false })).toBe('continue');
+  });
+
+  test('navigace uvnitř iframu se nefiltruje', async () => {
+    expect(await run('http://127.0.0.1/', { topLevel: false })).toBe('continue');
+  });
+
+  test('kontext bez route() hlídač nezapne, ale nespadne', async () => {
+    await expect(guardNavigation({})).resolves.toBeUndefined();
   });
 });

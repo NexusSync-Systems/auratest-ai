@@ -189,3 +189,51 @@ export async function assertPublicHttpUrl(rawUrl) {
 
   return parsed.toString();
 }
+
+/**
+ * Hlídá navigaci prohlížeče, ne jen zadanou URL.
+ *
+ * PROČ TO NESTAČÍ OVĚŘIT PŘED SPUŠTĚNÍM
+ * `assertPublicHttpUrl` posoudí adresu, kterou poslal klient. Prohlížeč pak
+ * přesměrování následuje sám. Útočníkovi stačí veřejná adresa vracející
+ * `302 → http://169.254.169.254/…` a sken skončí na vnitřní síti — a co tam
+ * uvidí, pošle zpátky: ve screenshotu, v `document.body.innerText`, nebo
+ * v `violations[].nodes[].html`.
+ *
+ * Kontrola tady byla dosud jen v jednom skeneru z osmi. Spoléhat na to, že si
+ * ji každý nový skener připíše, je otázka času; proto se zapíná na kontextu.
+ *
+ * CO SE HLÍDÁ
+ * Jen navigační požadavky hlavního rámce. Podřízené zdroje (obrázky, skripty)
+ * se nefiltrují záměrně: web běžně načítá stovky adres, ověřovat každou přes
+ * DNS by sken zpomalilo na neúnosnou míru a přínos je malý — obsah takového
+ * požadavku se do reportu nedostane.
+ *
+ * @param {import('playwright').BrowserContext} context
+ * @param {(url: string, reason: string) => void} [onBlocked] volitelné hlášení
+ */
+export async function guardNavigation(context, onBlocked) {
+  // Napodobenina kontextu v testech `route` nemá. Chybějící hlídač je vážná
+  // věc a nesmí projít tiše, ale shodit kvůli tomu běh by bylo horší.
+  if (typeof context?.route !== 'function') {
+    console.warn('[SSRF] Kontext neumí route() — hlídač navigace se nezapnul.');
+    return;
+  }
+  await context.route('**/*', async (route, request) => {
+    // Jen navigace hlavního rámce: `parentFrame() === null` ho odliší
+    // od iframu, jehož obsah se do reportu nedostane.
+    if (!request.isNavigationRequest() || request.frame().parentFrame() !== null) {
+      return route.continue();
+    }
+    try {
+      await assertPublicHttpUrl(request.url());
+      return route.continue();
+    } catch (err) {
+      // `abort` je záměr: prohlížeč dostane síťovou chybu, sken pokračuje
+      // s tím, co má, a do reportu se nedostane nic z vnitřní sítě.
+      if (onBlocked) onBlocked(request.url(), err.message);
+      else console.warn(`[SSRF] Navigace zablokována: ${request.url()} — ${err.message}`);
+      return route.abort('blockedbyclient');
+    }
+  });
+}

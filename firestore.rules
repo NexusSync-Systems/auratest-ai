@@ -12,34 +12,47 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isOwner(res) {
-      return request.auth != null && res.data.userId == request.auth.uid;
-    }
-    function isOwnerNew() {
-      return request.auth != null && request.resource.data.userId == request.auth.uid;
-    }
-
-    // Projekty, monitory a session — vlastněné přes pole userId.
+    // Projekty, monitory a session — VÝHRADNĚ přes API, přímý přístup zakázán.
+    //
+    // Dřívější podoba pravidel dovolovala přihlášenému klientovi zapsat
+    // dokument s vlastním `userId`. To znělo jako obrana do hloubky, ale ve
+    // skutečnosti to byla druhá cesta k týmž datům, která obcházela obě
+    // kontroly v API:
+    //
+    //   1. Allowlist e-mailů. Registrace ve Firebase je otevřená (apiKey je
+    //      veřejný), takže účet si založí kdokoli. Server ho k API nepustí,
+    //      ale do Firestore psal přímo.
+    //   2. Ověření cíle proti SSRF. Monitor zapsaný mimo `POST /api/monitors`
+    //      neprošel `assertPublicHttpUrl`, a plánovač ho pak spustil sám.
+    //      Útočník tak donutil server otevřít vnitřní adresu a screenshot si
+    //      vyzvedl přes artifactToken, který si do téhož dokumentu napsal.
+    //
+    // Frontend k těmto kolekcím nesahá — čte je přes /api/*. Zavření tedy nic
+    // nerozbíjí a odstraňuje celou třídu útoků najednou.
     match /projects/{id} {
-      allow read, delete: if isOwner(resource);
-      allow create: if isOwnerNew();
-      allow update: if isOwner(resource) && isOwnerNew();
+      allow read, write: if false;
     }
     match /monitors/{id} {
-      allow read, delete: if isOwner(resource);
-      allow create: if isOwnerNew();
-      allow update: if isOwner(resource) && isOwnerNew();
+      allow read, write: if false;
     }
     match /sessions/{id} {
-      allow read, delete: if isOwner(resource);
-      allow create: if isOwnerNew();
-      allow update: if isOwner(resource) && isOwnerNew();
+      allow read, write: if false;
     }
 
     // Uživatelský profil a historie — vlastněné přes ID dokumentu (uid).
     // Zapisuje přímo klient (App.jsx: handleSaveProfile), proto musí být povoleno.
+    // Omezení tvaru: bez něj je profil volné úložiště v produkčním Firestore
+    // pro kohokoli, kdo si založí účet (byť mimo allowlist).
+    function profileShapeOk() {
+      return request.resource.data.keys().hasOnly([
+        'name', 'defaultUrl', 'slackWebhook', 'updatedAt'
+      ]);
+    }
+
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create, update:
+        if request.auth != null && request.auth.uid == uid && profileShapeOk();
 
       match /history/{docId} {
         allow read, write: if request.auth != null && request.auth.uid == uid;

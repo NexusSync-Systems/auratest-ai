@@ -10,13 +10,20 @@ import { fetchTranslations } from './db-connector.js';
 import { authenticateToken } from './auth.js';
 import { auth } from './db.js';
 import { assertPublicHttpUrl } from './ssrf-guard.js';
+import { isEmailAllowed, accessConfig } from './access-control.js';
 import { verifySlackRequest, parseSlackPayload } from './slack-verify.js';
 import { sendSlackNotification } from './slack-notifier.js';
 import * as db from './db.js';
 import { redactEventData } from './pii-redactor.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, SDK_DIR, FRONTEND_DIST_DIR, ensureDir } from './paths.js';
 import { resolveSpaFallback } from './spa-fallback.js';
-import { appendRecord, verifyChain, recordsForSession, readLedger } from './audit-ledger.js';
+import {
+  appendRecord,
+  verifyChain,
+  recordsForSession,
+  readLedger,
+  auditResultOf,
+} from './audit-ledger.js';
 import { buildCaseFile, renderCaseFileHtml } from './case-file.js';
 import { renderCaseFilePdf } from './case-file-pdf.js';
 import { accessWarnings } from './access-control.js';
@@ -391,22 +398,24 @@ function broadcastToSession(sessionId, data) {
  * si nese `ledger.recorded`, takže report umí říct „tenhle běh v záznamu
  * není" místo aby doložitelnost jen předstíral.
  */
-function recordInLedger(sessionData) {
+function recordInLedger(sessionData, rules = []) {
   try {
     const record = appendRecord({
       sessionId: sessionData.id,
       target: sessionData.url,
       userId: sessionData.userId,
-      // Do otisku jde to, co tvoří zjištění. Artefakty (screenshoty, video)
-      // ne — jejich cesty se mění a otisk by pak nesouhlasil u nezměněného
-      // výsledku.
-      result: {
-        status: sessionData.status,
-        bugs: sessionData.bugs,
-        warnings: sessionData.warnings,
-        summary: sessionData.summary,
-        steps: sessionData.steps,
-      },
+      // Identifikátory pravidel, na která se běh odvolává. Spis pak vytiskne
+      // znění JEN těchto — dřív tiskl celý registr pod nadpisem „Znění
+      // použitých pravidel", takže kontrolor četl i o kontrolách, které
+      // vůbec neproběhly.
+      //
+      // Agentní běh (prozkoumání aplikace jazykovým modelem) se na žádné
+      // pravidlo registru neodvolává, a prázdný seznam to říká pravdivě.
+      rules,
+      // Do otisku jde to, co tvoří zjištění. Předpis je vyexportovaný
+      // v audit-ledger.js, aby ho spis mohl použít k PŘEPOČÍTÁNÍ otisku
+      // a k porovnání — jinak by to bylo číslo, které nikdo neověří.
+      result: auditResultOf(sessionData),
     });
     sessionData.ledger = { recorded: true, hash: record.hash, recordedAt: record.recordedAt };
   } catch (err) {
@@ -423,7 +432,20 @@ function recordInLedger(sessionData) {
  */
 app.get('/api/ledger/verify', authenticateToken, (req, res) => {
   try {
-    res.json(verifyChain());
+    // Ověřuje se podmnožina vlastníka. Ověření celého souboru sem vracelo
+    // počet záznamů všech nájemců a v `problems` i jejich sessionId —
+    // a projevilo by se to zrovna ve chvíli porušené integrity, tedy tehdy,
+    // kdy se to hodí nejmíň.
+    const mine = readLedger().filter(
+      (r) => !r.__malformed && r.userId === req.user.userId
+    );
+    const result = verifyChain(undefined, mine);
+    res.json({
+      ok: result.ok,
+      count: result.count,
+      scope: result.scope,
+      problems: result.problems.map(({ index, problem }) => ({ index, problem })),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -446,7 +468,12 @@ app.get('/api/ledger/session/:sessionId', authenticateToken, (req, res) => {
  * `format=pdf` drží slot pro prohlížeč: vykreslení spouští Chromium a bez
  * limitu by opakovaný export položil stroj stejně jako spuštěné audity.
  */
-app.get('/api/case-file', authenticateToken, browserSlotGuard, async (req, res) => {
+app.get('/api/case-file', authenticateToken, (req, res, next) => {
+  // Slot drží jen PDF: vykreslení spouští Chromium. Strojově čitelný export
+  // důkazů žádný prohlížeč nepotřebuje a vyčerpané sloty ho blokovat nemají.
+  if (req.query.format === 'pdf') return browserSlotGuard(req, res, next);
+  return next();
+}, async (req, res) => {
   try {
     const { from, to, format = 'json' } = req.query;
 
@@ -686,8 +713,16 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
             broadcastToSession(sessionId, { type: 'step', step: stepInfo });
           }, sessionId);
 
-          sessionData.status = 'completed';
+          // Běh, jehož měření se nedokončilo, NENÍ `completed`.
+          //
+          // `completed` znamená ve spisu „výsledek platí". Kdyby sem spadl
+          // timeout nebo pád prohlížeče, zapsal by se do neměnného záznamu
+          // jako platné zjištění o zákazníkově webu.
+          sessionData.status = result.measured === false ? 'failed' : 'completed';
           sessionData.bugs = result.bugs;
+          // Chyby měření se ukládají odděleně, aby je nikdo nemohl číst
+          // jako nálezy.
+          sessionData.runErrors = result.runErrors || [];
           // Výkonnostní varování se dřív nikam nepropsala — agent je odděluje
           // od bugů, ale žádný konzument je nečetl.
           sessionData.warnings = result.warnings || [];
@@ -728,7 +763,11 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
       } catch (err) {
         sessionData.status = 'failed';
         sessionData.summary = `Selhání testu: ${err.message}`;
-        sessionData.bugs.push(`Kritická chyba backendu: ${err.message}`);
+        // Do `bugs` NE — chyba na naší straně není nález na cizím webu.
+        sessionData.runErrors = [
+          ...(sessionData.runErrors || []),
+          `Chyba serveru při měření: ${err.message}`,
+        ];
         await db.saveSession(sessionId, sessionData);
 
         broadcastToSession(sessionId, {
@@ -798,7 +837,16 @@ app.post('/api/trigger-test', triggerLimiter, requireTriggerSecret, browserSlotG
   };
 
   try {
-    const result = await runAutonomousTest(safeUrl, goal || 'Automatický CI/CD test', llmConfig, () => {});
+    // Vlastní nepredikovatelné ID i pro CI běh — artefakty pod společným
+    // jménem by si mohl přisvojit kdokoli, kdo to jméno uhodne.
+    const sessionId = `session_ci_${randomUUID()}`;
+    const result = await runAutonomousTest(
+      safeUrl,
+      goal || 'Automatický CI/CD test',
+      llmConfig,
+      () => {},
+      sessionId
+    );
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -854,6 +902,29 @@ async function schedulerTick() {
       const lastRun = monitor.lastRunTime || 0;
 
       if (now - lastRun >= intervalMs) {
+        // Cíl se ověřuje ZNOVU, těsně před spuštěním.
+        //
+        // `POST /api/monitors` sice `urlGuard` má, ale to je jen jedna ze
+        // dvou cest, jak se do kolekce dostane záznam. Plánovač bere URL
+        // z databáze a otevře ji vlastním prohlížečem — pokud se tam adresa
+        // dostala jinudy, nebo se mezitím změnila, byla by tohle přímá cesta
+        // na vnitřní síť (169.254.169.254, 127.0.0.1, 10.x).
+        //
+        // Monitor s nepřijatelným cílem se vypne. Nechat ho aktivní znamená
+        // opakovat totéž každou minutu.
+        try {
+          await assertPublicHttpUrl(monitor.url);
+        } catch (err) {
+          console.warn(
+            `[AuraGuard] Monitor ${monitor.id} deaktivován — nepřijatelný cíl: ${err.message}`
+          );
+          await db.updateMonitor(monitor.id, {
+            active: false,
+            lastError: `Cíl odmítnut při kontrole: ${err.message}`,
+          });
+          continue;
+        }
+
         // Rezervace slotu. TODO: převést na Firestore transakci (uvnitř znovu
         // přečíst lastRunTime a zapsat jen když je stále starý) — dnešní
         // read-then-write není atomická napříč instancemi.
@@ -931,11 +1002,13 @@ async function schedulerTick() {
               sessionId
             );
 
-            sessionData.status = 'completed';
+            // Nedokončené měření není `completed` — viz /api/run-test.
+            sessionData.status = result.measured === false ? 'failed' : 'completed';
             sessionData.bugs = result.bugs;
             // Výkonnostní varování se dřív nikam nepropsala — agent je odděluje
             // od bugů, ale žádný konzument je nečetl.
             sessionData.warnings = result.warnings || [];
+            sessionData.runErrors = result.runErrors || [];
             sessionData.summary = result.summary;
             sessionData.performanceMetrics = result.performanceMetrics;
             sessionData.generatedScript = result.generatedScript;
@@ -944,8 +1017,15 @@ async function schedulerTick() {
             await db.saveSession(sessionId, sessionData);
 
             await db.updateMonitor(monitor.id, {
-              lastRunStatus: result.bugs.length === 0 ? 'success' : 'failure',
-              lastRunBugsCount: result.bugs.length
+              // Nezměřený běh není ani „v pořádku", ani „nález" — je to chyba
+              // našeho měření a monitor to musí ukázat jako takovou.
+              lastRunStatus:
+                result.measured === false
+                  ? 'error'
+                  : result.bugs.length === 0
+                    ? 'success'
+                    : 'failure',
+              lastRunBugsCount: result.measured === false ? 0 : result.bugs.length
             });
 
             const userMonitors = await db.getMonitors(monitor.userId);
@@ -953,7 +1033,11 @@ async function schedulerTick() {
           } catch (err) {
             console.error(`[AuraAuraGuard] Monitor ${monitor.name} selhal:`, err.message);
             sessionData.status = 'failed';
-            sessionData.bugs.push(`Kritická chyba plánovače: ${err.message}`);
+            // Do `bugs` NE — chyba plánovače není nález na sledovaném webu.
+            sessionData.runErrors = [
+              ...(sessionData.runErrors || []),
+              `Chyba plánovače při měření: ${err.message}`,
+            ];
             await db.saveSession(sessionId, sessionData);
 
             await db.updateMonitor(monitor.id, { lastRunStatus: 'error' });
@@ -1761,6 +1845,12 @@ server.on('upgrade', async (request, socket, head) => {
     let userId;
     try {
       const decoded = await auth.verifyIdToken(token);
+      // Allowlist platí i tady. Dřív se ověřoval jen podpis tokenu, takže
+      // účet mimo seznam sice nedostal žádná data (broadcast filtruje podle
+      // userId), ale spojení navázal a držel — tedy neomezený zdroj spojení
+      // pro kohokoli, kdo si u Firebase založí účet.
+      const access = isEmailAllowed(decoded.email);
+      if (!access.allowed) return reject(403, 'Forbidden');
       userId = decoded.uid;
     } catch {
       return reject(401, 'Unauthorized');
@@ -1769,9 +1859,11 @@ server.on('upgrade', async (request, socket, head) => {
     // `global_auraguard` je per-uživatelský kanál telemetrie, ne konkrétní běh.
     if (sessionId !== GLOBAL_WS_CHANNEL) {
       const session = await db.getSession(sessionId);
-      // Session se zakládá až chvíli po startu testu — povolíme i "zatím
-      // neexistuje", ale cizí session odmítneme.
-      if (session && session.userId !== userId) return reject(403, 'Forbidden');
+      // Neexistující session se odmítá. Klient se připojuje až poté, co mu
+      // `/api/run-test` vrátí ID — v tu chvíli už dokument existuje.
+      // Propouštět "zatím neexistuje" znamenalo, že si kdokoli držel spojení
+      // na libovolné ID a čekal, až ho někdo obsadí.
+      if (!session || session.userId !== userId) return reject(403, 'Forbidden');
     }
 
     // Socket je předán ws knihovně, která si dál chyby řeší sama.
@@ -1850,6 +1942,25 @@ app.use((err, req, res, next) => {
 
   res.status(status).json({ error: err.message || 'Neplatný požadavek.' });
 });
+
+// V produkci se s neomezeným přístupem nestartuje.
+//
+// `console.warn` při startu byl jediná pojistka — a v `docker compose logs`
+// s rotací po 10 MB ho nikdo neuvidí. Nasazení, kde chybí ALLOWED_EMAILS,
+// je přitom otevřený skener pro kohokoli na internetu. Výchozí stav musí být
+// zavřený; kdo chce otevřený, řekne si o to výslovně.
+if (
+  process.env.NODE_ENV === 'production' &&
+  !accessConfig().restricted &&
+  process.env.ALLOW_ANY_EMAIL !== 'true'
+) {
+  console.error(
+    'Server nelze spustit: přístup není omezený.\n' +
+      '  Nastav ALLOWED_EMAILS nebo ALLOWED_EMAIL_DOMAINS v .env.\n' +
+      '  Vědomě otevřená instalace vyžaduje ALLOW_ANY_EMAIL=true.'
+  );
+  process.exit(1);
+}
 
 if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, () => {

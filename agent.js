@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import AxeBuilder from '@axe-core/playwright';
 import geoip from 'geoip-lite';
-import { assertPublicHttpUrl } from './ssrf-guard.js';
+import { assertPublicHttpUrl, guardNavigation } from './ssrf-guard.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, GENERATED_SCRIPTS_DIR, ensureDir, safeFileToken } from './paths.js';
 import { inspectTls, summarizeTls, PQC_GROUP } from './tls-audit.js';
 import { createSeededRandom, generateRunSeed } from './seeded-random.js';
@@ -962,6 +962,7 @@ export function generatePlaywrightScript(steps, startUrl) {
 export async function extractInternalLinks(startUrl) {
   const browser = await chromium.launch(launchOptions());
   const context = await browser.newContext();
+  await guardNavigation(context);
   const page = await context.newPage();
   const internalLinks = [];
   try {
@@ -1203,7 +1204,17 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
   });
 }
 
-export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, sessionId = 'session_default') {
+export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, sessionId) {
+  // sessionId je POVINNÉ, protože je součástí názvu artefaktů.
+  //
+  // Dřív tu stála výchozí hodnota 'session_default'. Volání z CI/CD ji
+  // nepředávalo, takže se všechny takové běhy ukládaly pod jedno známé jméno.
+  // Kdo si ve Firestore založil dokument `sessions/session_default` s vlastním
+  // artifactToken, stáhl si screenshoty cizích CI běhů. Předvídatelné jméno
+  // artefaktu je přístupový údaj, ne detail.
+  if (!sessionId || typeof sessionId !== 'string') {
+    throw new Error('runAutonomousTest: chybí sessionId (artefakty by dostaly předvídatelné jméno)');
+  }
   let browser;
   try {
     browser = await chromium.launch(launchOptions({ headless: llmConfig.headless !== false }));
@@ -1213,6 +1224,8 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       viewport: { width: 1280, height: 720 },
       recordVideo: { dir: videosDir }
     });
+
+    await guardNavigation(context);
     const page = await context.newPage();
 
     const trackExceptions = llmConfig.trackExceptions !== false;
@@ -1262,6 +1275,10 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     // počítalo jako bugs.length === 0. Long task > 100 ms nebo pomalé API tak
     // označilo prakticky každou reálnou aplikaci za neúspěch.
     const warnings = [];
+    // Selhání NAŠEHO měření — timeout, pád prohlížeče, výpadek modelu.
+    // Vědomě oddělené od `bugs`: co se nezměřilo, nesmí se objevit jako
+    // zjištění o auditovaném webu.
+    const runErrors = [];
     let currentStep = 1;
     const maxSteps = llmConfig.maxSteps || 10;
     let isFinished = false;
@@ -1490,8 +1507,14 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
 
     } catch (err) {
       console.error('Test execution failed:', err);
-      // `bugs` je const ve stejném scope, dřívější typeof kontrola byla vždy true.
-      bugs.push(`Katastrofická chyba testu: ${err.message}`);
+      // NEPATŘÍ do `bugs`.
+      //
+      // Timeout sítě, pád prohlížeče nebo výpadek jazykového modelu je chyba
+      // NAŠEHO měření, ne vada zákazníkova webu. Dokud se zapisovala mezi
+      // nálezy, běh skončil jako `completed` s jedním „nálezem", uložil se do
+      // neměnného záznamu a ve spisu se vytiskl jako doložená vada. Zákazník
+      // by tak dostal černé na bílém obvinění z něčeho, co nikdo nezměřil.
+      runErrors.push(`Měření se nedokončilo: ${err.message}`);
     }
 
     let videoUrl = null;
@@ -1522,14 +1545,26 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     const scriptPath = path.join(scriptsDir, `test-${Date.now()}.spec.ts`);
     fs.writeFileSync(scriptPath, generatedScript, 'utf8');
 
+    const measured = runErrors.length === 0;
     return {
       // Výkonnostní varování (long tasks, pomalé API) nejsou chyby funkčnosti
       // a do success se nezapočítávají.
-      success: bugs.length === 0,
+      success: measured && bugs.length === 0,
+      // Proběhlo měření vůbec? Volající z toho odvozuje stav běhu: běh
+      // s chybou měření nesmí skončit jako `completed`, protože takový stav
+      // znamená „výsledek platí".
+      measured,
       steps,
       bugs: [...new Set(bugs)],
       warnings: [...new Set(warnings)],
-      summary: isFinished ? 'Test úspěšně dokončen.' : 'Test dosáhl limitu maximálního počtu kroků.',
+      // Chyby měření drženy odděleně od nálezů. Report i spis je smí ukázat,
+      // ale nikdy jako zjištění o auditovaném webu.
+      runErrors: [...new Set(runErrors)],
+      summary: !measured
+        ? `Měření se nedokončilo: ${runErrors[0]}`
+        : isFinished
+          ? 'Test úspěšně dokončen.'
+          : 'Test dosáhl limitu maximálního počtu kroků.',
       performanceMetrics,
       generatedScript,
       videoUrl
@@ -1557,6 +1592,7 @@ export async function comparePages(url1, url2) {
   try {
     browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    await guardNavigation(context);
     
     // ⚡ Bolt: Načítat obě stránky paralelně pomocí Promise.all pro zrychlení ~50%
     const page1 = await context.newPage();
@@ -1778,6 +1814,7 @@ export async function auditTranslations(url, dictionary, llmConfig) {
   try {
     browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    await guardNavigation(context);
     const page = await context.newPage();
 
     await page.goto(url, { waitUntil: 'networkidle', timeout: 25000 });
@@ -1914,6 +1951,7 @@ export async function auditAccessibility(url) {
   try {
     browser = await chromium.launch(launchOptions());
     const context = await browser.newContext();
+    await guardNavigation(context);
     const page = await context.newPage();
     
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
@@ -1968,30 +2006,13 @@ function hasStrongHsts(header) {
   return Boolean(match) && parseInt(match[1], 10) >= 31536000;
 }
 
-/**
- * CSP s `unsafe-inline`/`unsafe-eval` nebo wildcardem ve script-src reálně
- * nechrání; `!!header` ji přesto hlásilo jako splněnou.
- */
-function hasMeaningfulCsp(header) {
-  if (!header) return false;
-  // Bez `script-src` I BEZ `default-src` politika o skriptech neříká nic.
-  // Dřív se v takovém případě testovala celá hlavička, takže
-  // `Content-Security-Policy: upgrade-insecure-requests` prošlo jako
-  // „smysluplná CSP" — neobsahuje unsafe-inline ani *, protože neobsahuje
-  // nic o skriptech.
-  const scriptSrc = /(?:^|;)\s*script-src([^;]*)/i.exec(header)?.[1]
-    ?? /(?:^|;)\s*default-src([^;]*)/i.exec(header)?.[1];
-  if (scriptSrc === undefined) return false;
-  if (/'unsafe-inline'|'unsafe-eval'/i.test(scriptSrc)) return false;
-  if (/(^|\s)\*(\s|$)/.test(scriptSrc)) return false;
-  return true;
-}
 
 export async function auditNIS2AndPQC(url) {
   let browser;
   try {
     browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    await guardNavigation(context);
     const page = await context.newPage();
     
     // Hlavičky i TLS bereme z návratové hodnoty page.goto().
@@ -2017,9 +2038,20 @@ export async function auditNIS2AndPQC(url) {
     // Ověřuje se dřív, než se z odpovědi cokoli přečte.
     await assertPublicHttpUrl(response.url());
 
+    // Rozbor politiky se počítá jednou a používá se na obou místech:
+    // pro souhrnný příznak `csp` i pro podrobné nálezy. Dva nezávislé
+    // posuzovatelé si dřív protiřečili.
+    const cspDetail = auditCsp(headers['content-security-policy']);
+
     const headerChecks = {
       hsts: hasStrongHsts(headers['strict-transport-security']),
-      csp: hasMeaningfulCsp(headers['content-security-policy']),
+      // Jediný posuzovatel CSP.
+      //
+      // Dřív tu byla vlastní funkce `hasMeaningfulCsp`, která neznala nonce
+      // ani strict-dynamic. Report pak u jedné politiky tvrdil dvě různé
+      // věci: podrobný rozbor ji uznal, souhrn hlaviček ji označil za
+      // nedostatečnou.
+      csp: cspDetail.ok,
       xContentTypeOptions: (headers['x-content-type-options'] || '').toLowerCase() === 'nosniff',
       // Moderní ekvivalent X-Frame-Options je CSP frame-ancestors.
       // Hodnota musí něco zakazovat — `ALLOWALL` ochranu neposkytuje.
@@ -2077,12 +2109,6 @@ export async function auditNIS2AndPQC(url) {
       else missingHeaders.push(HEADER_LABELS[key]);
     }
 
-    // Rozbor obsahu politiky, ne jen její přítomnosti.
-    //
-    // `headerChecks.csp` výš odpovídá na otázku „je politika k něčemu?"
-    // jedním ANO/NE. Kontrolor ale potřebuje vědět PROČ — `default-src *`
-    // a chybějící `base-uri` jsou dvě různé vady s různou závažností.
-    const cspDetail = auditCsp(headers['content-security-policy']);
 
     const nis2 = {
       ...headerChecks,
@@ -2278,6 +2304,7 @@ export async function auditGreenAndResidency(url) {
   try {
     browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    await guardNavigation(context);
     const page = await context.newPage();
     
     let totalBytes = 0;
@@ -2418,6 +2445,7 @@ export async function auditCRA_SBOM(url) {
   try {
     browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    await guardNavigation(context);
     const page = await context.newPage();
 
     // Skripty se sbírají už při načítání stránky — po `goto` už jejich těla
@@ -2589,6 +2617,7 @@ export async function runChaosTest(url, options = {}) {
     const baseline = { completed: false, consoleErrors: 0, pageCrashed: false, navigationFailed: false };
     try {
       const baseContext = await browser.newContext({ ignoreHTTPSErrors: true });
+      await guardNavigation(baseContext);
       const basePage = await baseContext.newPage();
       basePage.on('console', (msg) => { if (msg.type() === 'error') baseline.consoleErrors++; });
       basePage.on('pageerror', () => { baseline.pageCrashed = true; });
@@ -2603,6 +2632,8 @@ export async function runChaosTest(url, options = {}) {
     }
 
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
+
+    await guardNavigation(context);
     const page = await context.newPage();
 
     let abortedRequests = 0;
@@ -2805,6 +2836,7 @@ export async function auditAIAct(url) {
   try {
     browser = await chromium.launch(launchOptions());
     const context = await browser.newContext();
+    await guardNavigation(context);
     const page = await context.newPage();
 
     const aiApiCalls = [];
@@ -2843,7 +2875,17 @@ export async function auditAIAct(url) {
       chatWidgets: [...chatWidgets],
       dom,
       hasDisclaimer,
-      disclosure: assessDisclosurePlacement(disclosureOccurrences),
+      // Kontext rozhoduje o tom, jestli „nic jsme nenašli" znamená
+      // „není tam", nebo „nedohlédli jsme tam".
+      disclosure: assessDisclosurePlacement(disclosureOccurrences, {
+        // Text stránky zmínku obsahuje, ale nenašel se prvek, který ji nese
+        // — bývá rozdělená mezi víc značek.
+        textMatched: hasDisclaimer,
+        // Do iframu ani shadow DOM čtení nedohlédne, a upozornění bývá
+        // umístěné právě u vloženého widgetu.
+        hasEmbeddedWidget:
+          chatWidgets.size > 0 || (dom.chatIndicators || []).some((i) => /iframe/i.test(i)),
+      }),
     };
 
     const obligations = [
@@ -2921,13 +2963,27 @@ async function collectDisclosureOccurrences(page) {
         const style = window.getComputedStyle(el);
         const rect = el.getBoundingClientRect();
 
+        // Kromě display/visibility se hlídá i technika `sr-only`: prvek
+        // o velikosti 1×1 s `clip: rect(0,0,0,0)` nebo odsunutý mimo plátno
+        // je určený pro čtečky, ne pro oči. Bez téhle kontroly by report
+        // tvrdil „uživatel ho uvidí" o textu, který vidět není.
+        const clipped =
+          /rect\(\s*0(px)?[,\s]+0(px)?[,\s]+0(px)?[,\s]+0(px)?\s*\)/.test(style.clip || '')
+          || (style.clipPath || '').includes('inset(50%)')
+          || (rect.width <= 1 && rect.height <= 1);
+
+        const offscreen =
+          rect.right < 0 || rect.bottom < 0 || rect.left + window.scrollX > 100000;
+
         const rendered =
           style.display !== 'none' &&
           style.visibility !== 'hidden' &&
           Number(style.opacity) !== 0 &&
           el.getAttribute('aria-hidden') !== 'true' &&
           rect.width > 0 &&
-          rect.height > 0;
+          rect.height > 0 &&
+          !clipped &&
+          !offscreen;
 
         // Vůči dokumentu, ne vůči aktuálnímu posunu — sken může být
         // v okamžiku měření posunutý jinam než uživatel při načtení.
@@ -2951,10 +3007,13 @@ async function collectDisclosureOccurrences(page) {
       return out;
     }, AI_DISCLAIMER_PATTERN.source);
   } catch (err) {
-    // Neúspěšné čtení DOM nesmí shodit celý audit — jen z něj plyne, že
-    // o umístění nic nevíme.
+    // `null`, ne prázdné pole.
+    //
+    // Prázdné pole znamená „hledali jsme a nic nenašli" a vede k verdiktu
+    // PORUŠENO. Selhání čtení znamená, že jsme neměřili — a vydávat jedno
+    // za druhé je přesně to tvrzení bez měření, kterému se nástroj vyhýbá.
     console.warn('Zjištění umístění upozornění na AI selhalo:', err.message);
-    return [];
+    return null;
   }
 }
 
@@ -3071,6 +3130,15 @@ async function inspectImagesForC2pa(page, imageUrls) {
       const header = await page.evaluate(async (src) => {
         const res = await fetch(src, { headers: { Range: 'bytes=0-65535' } });
         if (!res.ok && res.status !== 206) return null;
+
+        // Ověřit, že jsme dostali obrázek.
+        //
+        // Ochrana proti hotlinkování, WAF i fallback jednostránkové aplikace
+        // vrátí HTML se stavem 200. Článek o formátu C2PA by se pak
+        // vyhodnotil jako obrázek s manifestem.
+        const type = (res.headers.get('content-type') || '').toLowerCase();
+        if (type && !type.startsWith('image/')) return null;
+
         const buf = new Uint8Array(await res.arrayBuffer());
         return new TextDecoder('latin1').decode(buf);
       }, imageUrl);
@@ -3126,6 +3194,7 @@ export async function auditStrictCookies(url) {
     browser = await chromium.launch(launchOptions());
     // Důležité: Nemažeme cookies, ale startujeme čistý kontext
     const context = await browser.newContext();
+    await guardNavigation(context);
     const page = await context.newPage();
     
     // Odchozí požadavky na tracking domény jsou nejspolehlivější signál —
@@ -3195,9 +3264,21 @@ export async function auditStrictCookies(url) {
       // jsou aplikační bezpečnost podle § 14. Sloučit je by znamenalo, že
       // web bez trackerů, ale s relační cookie čitelnou ze skriptu, projde
       // jako bezvadný.
-      cookieFlags: auditCookieFlags(cookies, {
-        https: new URL(page.url() || url).protocol === 'https:',
-      }),
+      cookieFlags: (() => {
+        // Hostitel se předává, aby šlo odlišit vlastní cookies od těch,
+        // které nastavil vložený obsah. Provozovatel cizí cookie neopraví,
+        // takže hlásit mu ji jako vadu jeho aplikace nemá smysl.
+        let parsed;
+        try {
+          parsed = new URL(page.url() || url);
+        } catch {
+          parsed = null;
+        }
+        return auditCookieFlags(cookies, {
+          https: parsed ? parsed.protocol === 'https:' : true,
+          host: parsed ? parsed.hostname : null,
+        });
+      })(),
       gdpr: {
         suspiciousItems: suspiciousFound,
         isCompliant,
