@@ -15,6 +15,7 @@ import { sendSlackNotification } from './slack-notifier.js';
 import * as db from './db.js';
 import { redactEventData } from './pii-redactor.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, SDK_DIR, FRONTEND_DIST_DIR, ensureDir } from './paths.js';
+import { resolveSpaFallback } from './spa-fallback.js';
 
 // Global error handlers to prevent unhandled rejections from crashing the process
 // Po nezachycené výjimce je proces v nedefinovaném stavu (viselé Playwright
@@ -1698,11 +1699,15 @@ wss.on('connection', (ws, request, sessionId, userId) => {
 const frontendDistPath = FRONTEND_DIST_DIR;
 if (fs.existsSync(frontendDistPath)) {
   app.use(express.static(frontendDistPath));
-  // Bez této podmínky vracel GET /api/neexistujici index.html se stavem 200
-  // místo 404, což mátlo klienty i monitoring.
+
+  // Catch-all vrací index.html, aby fungovaly cesty SPA (/hub, /ukazka, …)
+  // při přímém otevření i po obnovení stránky. Rozhodování je
+  // v `spa-fallback.js` — viz tamní komentář, proč „200 s HTML" u chybějícího
+  // souboru způsobí zmatek na úplně jiném místě.
   app.get('*', (req, res) => {
-    if (req.path.startsWith('/api/')) {
-      return res.status(404).json({ error: 'Endpoint nenalezen.' });
+    const decision = resolveSpaFallback(req.path);
+    if (!decision.serveIndex) {
+      return res.status(decision.status).json({ error: decision.reason });
     }
     res.sendFile(path.join(frontendDistPath, 'index.html'));
   });

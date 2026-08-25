@@ -94,7 +94,19 @@ export default function SampleReport({ onBack }) {
   useEffect(() => {
     let cancelled = false;
     fetch('/sample-report.json')
-      .then((r) => {
+      .then(async (r) => {
+        // Kontrola typu obsahu, ne jen stavového kódu.
+        //
+        // Server u chybějícího souboru dřív vracel index.html se stavem 200
+        // (catch-all pro cesty SPA). `r.ok` bylo true a spadl až
+        // `JSON.parse` hláškou „The string did not match the expected
+        // pattern", která ukazuje na frontend, ačkoli chyběl soubor.
+        // Serverová strana je opravená, tahle pojistka zůstává —
+        // před stejným zmatením u jiné instalace.
+        const type = r.headers.get('content-type') || '';
+        if (r.status === 404 || !type.includes('json')) {
+          throw new Error('ukázka zatím nebyla vygenerována');
+        }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
@@ -140,7 +152,9 @@ export default function SampleReport({ onBack }) {
 
       {error && (
         <p className="sample-error">
-          Ukázku se nepodařilo načíst ({error}). Zkuste to prosím později.
+          Ukázku se nepodařilo načíst: {error}. Prázdná stránka je záměr —
+          vymyšlená čísla by u nástroje, který stojí na tom, že netvrdí nic
+          neověřeného, byla horší než chybějící ukázka.
         </p>
       )}
 
