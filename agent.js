@@ -158,7 +158,16 @@ async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
       const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
-      const elements = Array.from(document.querySelectorAll('*'));
+
+      // ⚡ Bolt: Use getElementsByTagName instead of querySelectorAll to avoid CSS parsing overhead
+      // Also pre-allocate array and use for-loop for fast conversion of live HTMLCollection to static array
+      const rawElements = document.getElementsByTagName('*');
+      const elementsLen = rawElements.length;
+      const elements = new Array(elementsLen);
+      for (let i = 0; i < elementsLen; i++) {
+        elements[i] = rawElements[i];
+      }
+
       const interactiveList = [];
       let qaIdCounter = 1;
 
@@ -166,7 +175,6 @@ async function extractInteractiveElements(page) {
       const elementsToMutate = [];
 
       // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
-      const elementsLen = elements.length;
       for (let i = 0; i < elementsLen; i++) {
         const el = elements[i];
         const tagName = el.tagName;
@@ -348,7 +356,15 @@ export async function extractInternalLinks(startUrl) {
     await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const baseUrl = new URL(startUrl);
     const hrefs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a')).map(a => a.href);
+      // ⚡ Bolt: Use getElementsByTagName instead of querySelectorAll to avoid CSS parsing overhead
+      // Also pre-allocate array for fast conversion
+      const links = document.getElementsByTagName('a');
+      const len = links.length;
+      const result = new Array(len);
+      for (let i = 0; i < len; i++) {
+        result[i] = links[i].href;
+      }
+      return result;
     });
     
     // Filter internal links and deduplicate
@@ -740,7 +756,8 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
             loadTimeMs: timing.loadEventEnd ? Math.round(timing.loadEventEnd - timing.startTime) : null,
             domInteractiveMs: timing.domInteractive ? Math.round(timing.domInteractive - timing.startTime) : null,
             title: document.title,
-            h1Count: document.querySelectorAll('h1').length
+            // ⚡ Bolt: Use getElementsByTagName instead of querySelectorAll to avoid CSS parsing overhead
+            h1Count: document.getElementsByTagName('h1').length
           };
         });
       } catch (e) {
