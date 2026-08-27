@@ -27,6 +27,12 @@ import {
 import { buildCaseFile, renderCaseFileHtml } from './case-file.js';
 import { renderCaseFilePdf } from './case-file-pdf.js';
 import { accessWarnings } from './access-control.js';
+import {
+  rulesForAudit,
+  verdictsForAudit,
+  overallVerdict,
+  AUDIT_TITLES,
+} from './audit-scope.js';
 
 // Global error handlers to prevent unhandled rejections from crashing the process
 // Po nezachycené výjimce je proces v nedefinovaném stavu (viselé Playwright
@@ -1288,11 +1294,90 @@ const AUDIT_OPTIONS = {
   ),
 };
 
+/**
+ * Zapíše předpisovou kontrolu do neměnného záznamu (D5).
+ *
+ * PROČ TO TU JE
+ * Compliance skeny běžely jako bezstavové endpointy: výsledek se poslal do
+ * prohlížeče a tím to skončilo. Spis pak dokládal jen agentní běhy —
+ * tedy průzkum aplikace jazykovým modelem — a o vlastních kontrolách NIS2,
+ * CRA nebo čl. 50 neříkal nic. Zákazník přitom při kontrole odevzdává
+ * právě je.
+ *
+ * CO SE UKLÁDÁ
+ * Dílčí verdikty (tříhodnotově), odkazy na verze pravidel, cíl a čas.
+ * Nikoli celý výsledek skenu: ten bývá desítky kilobajtů, mění se
+ * s každou úpravou skeneru a do dlouhověkého záznamu nepatří. Otisk ale
+ * počítá z toho, co se uložilo, takže je ověřitelný.
+ *
+ * Selhání zápisu NESMÍ shodit odpověď uživateli — sken proběhl a jeho
+ * výsledek platí, jen ho nebude čím doložit. To se pozná ve spisu.
+ */
+async function recordComplianceScan({ slug, url, userId, result }) {
+  const verdicts = verdictsForAudit(slug, result);
+  const sessionId = `session_scan_${randomUUID()}`;
+  const sessionData = {
+    id: sessionId,
+    userId,
+    url,
+    // Odlišení od agentních běhů. Spis podle toho pozná, že verdikt se má
+    // číst z `checks`, ne odvozovat z `bugs`.
+    kind: 'compliance-scan',
+    auditSlug: slug,
+    goal: AUDIT_TITLES[slug] || slug,
+    status: 'completed',
+    timestamp: new Date().toISOString(),
+    checks: verdicts,
+    verdict: overallVerdict(verdicts),
+    ruleRefs: rulesForAudit(slug),
+    // Prázdná pole schválně: spis a UI je čtou u každého běhu a jejich
+    // nepřítomnost by se musela ošetřovat na deseti místech.
+    bugs: [],
+    warnings: [],
+    runErrors: [],
+    steps: [],
+  };
+
+  try {
+    recordInLedger(sessionData, sessionData.ruleRefs);
+    await db.saveSession(sessionId, sessionData);
+  } catch (err) {
+    // Sken proběhl; nepovedlo se ho jen doložit.
+    console.error(`Záznam skenu ${slug} selhal:`, err.message);
+  }
+  return sessionData;
+}
+
 for (const [slug, auditFn] of Object.entries(URL_AUDITS)) {
   app.post(`/api/auraguard/${slug}`, authenticateToken, heavyLimiter, browserSlotGuard, urlGuard(), async (req, res) => {
     try {
       const options = AUDIT_OPTIONS[slug] ? AUDIT_OPTIONS[slug](req.body) : undefined;
-      res.json(await auditFn(req.safeUrl, options));
+      const result = await auditFn(req.safeUrl, options);
+
+      // Zápis běží PO skenu a před odesláním, aby si klient mohl vzít
+      // sessionId a doložit konkrétní běh.
+      const session = await recordComplianceScan({
+        slug,
+        url: req.safeUrl,
+        userId: req.user.userId,
+        result,
+      });
+
+      // Klíč `record`, ne `evidence`: `analyze-cra` vrací vlastní pole
+      // `evidence` (odkud SBOM pochází) a rozšíření odpovědi ho tiše
+      // přepsalo — ztráta doložitelnosti právě v tom skenu, který ji
+      // vypisuje nejpodrobněji.
+      res.json({
+        ...result,
+        record: {
+          sessionId: session.id,
+          recorded: session.ledger?.recorded === true,
+          recordHash: session.ledger?.hash || null,
+          ruleRefs: session.ruleRefs,
+          checks: session.checks,
+          verdict: session.verdict,
+        },
+      });
     } catch (err) {
       console.error(`Audit ${slug} selhal:`, err);
       res.status(500).json({ error: `Audit ${slug} selhal.` });

@@ -349,3 +349,76 @@ describe('spis netvrdí víc, než co dokládá (regrese kontrolní vlny)', () =
     expect(renderCaseFileHtml(build({ sessions: [session()] }))).toMatch(/UTC/);
   });
 });
+
+describe('předpisová kontrola ve spisu (D5)', () => {
+  const check = (ok, over = {}) => ({
+    key: 'nis2.headers-tls',
+    label: 'Bezpečnostní hlavičky a TLS',
+    ok,
+    rationale: 'Odůvodnění dostatečné délky pro kontrolu ve spisu.',
+    ...over,
+  });
+
+  const scan = (checks, over = {}) =>
+    session({
+      kind: 'compliance-scan',
+      auditSlug: 'analyze-nis2',
+      goal: 'Bezpečnostní hlavičky a TLS (NIS2 § 14)',
+      checks,
+      ruleRefs: [`${RULES[0].id}.v${RULES[0].version}`],
+      bugs: [],
+      ...over,
+    });
+
+  test('neposouzená kontrola brání tvrdit „bez nálezu"', () => {
+    // Jádro celého úkolu. Sken, u kterého část kontrol neproběhla, se nesmí
+    // ve spisu tvářit jako v pořádku — kontrolor by z toho vyvodil doklad,
+    // který neexistuje.
+    const file = build({ sessions: [scan([check(true), check(null, { key: 'tls.pqc' })])] });
+    expect(file.runs[0].verdict.value).toBe('inconclusive');
+    expect(file.runs[0].verdict.rationale).toMatch(/nepodařilo posoudit/);
+  });
+
+  test('prokázané porušení dá nález s počtem', () => {
+    const file = build({ sessions: [scan([check(false), check(true, { key: 'tls.pqc' })])] });
+    expect(file.runs[0].verdict.value).toBe('findings');
+    expect(file.runs[0].verdict.label).toBe('Nálezy: 1');
+  });
+
+  test('vše posouzeno a bez porušení → bez nálezu, ne „v souladu"', () => {
+    const file = build({ sessions: [scan([check(true), check(true, { key: 'tls.pqc' })])] });
+    expect(file.runs[0].verdict.value).toBe('no-findings');
+    expect(file.runs[0].verdict.rationale).toMatch(/[Nn]ení důkazem shody/);
+  });
+
+  test('sken bez dílčích výsledků je neprůkazný', () => {
+    const file = build({ sessions: [scan([])] });
+    expect(file.runs[0].verdict.value).toBe('inconclusive');
+  });
+
+  test('spis rozliší předpisovou kontrolu od agentního běhu', () => {
+    // Kontrolor musí poznat, co je měření podle pravidla a co posouzení
+    // jazykovým modelem — váha těch dvou věcí není stejná.
+    const file = build({ sessions: [scan([check(true)]), session({ id: 'agent-1' })] });
+    const kinds = Object.fromEntries(file.runs.map((r) => [r.sessionId, r.kind]));
+    expect(kinds['sess-1']).toBe('compliance-scan');
+    expect(kinds['agent-1']).toBe('agent-run');
+  });
+
+  test('dílčí kontroly se vytisknou i s odůvodněním', () => {
+    const html = renderCaseFileHtml(
+      build({ sessions: [scan([check(true), check(null, { key: 'tls.pqc', label: 'PQC' })])] })
+    );
+    expect(html).toMatch(/SPLNĚNO/);
+    expect(html).toMatch(/NEPRŮKAZNÉ/);
+    expect(html).toMatch(/Předpisová kontrola/);
+  });
+
+  test('pravidla se vezmou i z běhu, když chybí záznam', () => {
+    // Přednost má neměnný záznam; databáze slouží jen jako záloha pro běhy,
+    // u kterých se zápis do řetězu nezdařil. Bez toho by spis u takového
+    // běhu netiskl žádné znění pravidel.
+    const file = build({ sessions: [scan([check(true)])], records: [] });
+    expect(file.ruleset.rules.length).toBe(1);
+  });
+});

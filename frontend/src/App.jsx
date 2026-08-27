@@ -30,6 +30,7 @@ import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
 import { useRoutedTab } from './hooks/useRoutedTab.js';
 import LandingPage from './components/public/LandingPage.jsx';
+import ScanRecord from './components/ScanRecord.jsx';
 import CaseFilePanel from './components/CaseFilePanel.jsx';
 import { authErrorMessage } from './lib/auth-errors.js';
 
@@ -1677,6 +1678,7 @@ export default function App() {
                              )}
                            </div>
                          ))}
+                         <ScanRecord record={a11yResult.record} />
                        </div>
                      )}
 
@@ -1724,6 +1726,7 @@ export default function App() {
                              )}
                            </div>
                          )}
+                         <ScanRecord record={cookieResult.record} />
                        </div>
                      )}
 
@@ -1744,6 +1747,7 @@ export default function App() {
                              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{v.details}</div>
                            </div>
                          ))}
+                         <ScanRecord record={craVulnResult.record} />
                        </div>
                      )}
 
@@ -1820,6 +1824,7 @@ export default function App() {
                              </ul>
                            )}
                          </div>
+                         <ScanRecord record={nis2Result.record} />
                        </div>
                      )}
 
@@ -1847,6 +1852,7 @@ export default function App() {
                              <li key={i}>{loc.domain} ({loc.country}) - {loc.isEU ? 'EU/EEA' : 'Mimo EU'}</li>
                            ))}
                          </ul>
+                         <ScanRecord record={greenResult.record} />
                        </div>
                      )}
 
@@ -1914,6 +1920,7 @@ export default function App() {
                              </ul>
                            </>
                          )}
+                         <ScanRecord record={aiActResult.record} />
                        </div>
                      )}
 
@@ -1965,6 +1972,7 @@ export default function App() {
                          {craResult.scope && (
                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>{craResult.scope}</p>
                          )}
+                         <ScanRecord record={craResult.record} />
                        </div>
                      )}
 

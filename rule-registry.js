@@ -326,13 +326,34 @@ export function getRule(id) {
  * Do záznamu auditu se ukládá, aby šlo poznat, že mezi dvěma běhy někdo
  * sadu změnil — i když se u konkrétního nálezu verze pravidla nezměnila.
  *
- * Počítá se z id, verzí a popisů metody a mezí. Pořadí v poli výsledek
- * neovlivní, protože se před hashováním třídí — jinak by pouhé přeuspořádání
- * souboru vypadalo jako změna pravidel.
+ * Počítá se z id, verzí, popisů metody a mezí A ZE ZÁZNAMU ZMĚN. Pořadí
+ * v poli výsledek neovlivní, protože se před hashováním třídí — jinak by
+ * pouhé přeuspořádání souboru vypadalo jako změna pravidel.
+ *
+ * Changelog do otisku dřív nevstupoval. Přitom vysvětlení „proč se týž web
+ * posuzuje jinak než dřív" je to jediné, co změnu verdiktu u nezměněného
+ * webu ospravedlňuje — a šlo ho přepsat, aniž se otisk hnul.
+ *
+ * Pole se oddělují řídicími znaky (\u0000, \u0002), aby přesun textu
+ * z konce jednoho pole na začátek dalšího nedal stejný otisk.
  */
 export function rulesetDigest() {
   const canonical = RULE_LIST
-    .map((r) => [r.id, r.version, r.title, r.method, r.limits].join(' '))
+    .map((r) =>
+      [
+        r.id,
+        r.version,
+        r.title,
+        r.method,
+        r.limits,
+        // Klíče se třídí — pořadí vlastností objektu by jinak měnilo
+        // otisk bez změny obsahu.
+        Object.keys(r.changelog || {})
+          .sort()
+          .map((k) => `${k}=${r.changelog[k]}`)
+          .join('\u0002'),
+      ].join('\u0000')
+    )
     .sort()
     .join('');
   return createHash('sha256').update(canonical, 'utf8').digest('hex');

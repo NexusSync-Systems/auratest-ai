@@ -69,6 +69,63 @@ export const CASE_FILE_LIMITS = [
 ];
 
 /**
+ * Verdikt předpisové kontroly.
+ *
+ * Vychází z tříhodnotových výsledků jednotlivých kontrol:
+ *   • jediné prokázané porušení → nález
+ *   • jediná neposouzená kontrola → neprůkazné, i když ostatní prošly
+ *   • vše posouzeno a bez porušení → bez nálezu (NE „v souladu")
+ *
+ * Druhá odrážka je ta podstatná. Bez ní by sken, u kterého polovina
+ * kontrol neproběhla, vyšel jako v pořádku.
+ */
+function complianceVerdict(session) {
+  const checks = Array.isArray(session.checks) ? session.checks : [];
+  if (session.status !== 'completed' || checks.length === 0) {
+    return {
+      value: 'inconclusive',
+      label: 'Neprůkazné',
+      rationale:
+        'Sken neproběhl nebo nevrátil žádný dílčí výsledek. Z toho neplyne ' +
+        'nález ani jeho absence.',
+    };
+  }
+
+  const failed = checks.filter((c) => c.ok === false);
+  const unresolved = checks.filter((c) => c.ok !== true && c.ok !== false);
+
+  if (failed.length > 0) {
+    return {
+      value: 'findings',
+      label: `Nálezy: ${failed.length}`,
+      rationale:
+        `Z ${checks.length} kontrol ${failed.length} prokazatelně nesplněno` +
+        (unresolved.length ? `, ${unresolved.length} se nepodařilo posoudit` : '') +
+        '. Jednotlivé kontroly jsou uvedené níž.',
+    };
+  }
+
+  if (unresolved.length > 0) {
+    return {
+      value: 'inconclusive',
+      label: 'Neprůkazné',
+      rationale:
+        `Z ${checks.length} kontrol se ${unresolved.length} nepodařilo posoudit. ` +
+        'Ostatní neskončily nálezem, ale dokud zbývá neposouzená kontrola, ' +
+        'nelze o výsledku tvrdit ani splnění, ani porušení.',
+    };
+  }
+
+  return {
+    value: 'no-findings',
+    label: 'Bez nálezu',
+    rationale:
+      `Všech ${checks.length} kontrol proběhlo a žádná neskončila nálezem. ` +
+      'Absence nálezu není důkazem shody — viz meze spisu.',
+  };
+}
+
+/**
  * Verdikt jednoho běhu.
  *
  * Běh, který skončil chybou, NENÍ nález na testované aplikaci — je to
@@ -76,6 +133,14 @@ export const CASE_FILE_LIMITS = [
  * nikdo neprokázal.
  */
 function verdictOf(session) {
+  // Předpisová kontrola se čte jinak než agentní běh.
+  //
+  // Agentní běh hlásí nálezy jako seznam; verdikt jde odvodit z jeho délky.
+  // Compliance sken má tříhodnotové výsledky jednotlivých kontrol a odvozovat
+  // je z `bugs` by je zploštilo na dva stavy — přesně to slučování
+  // „neprůkazné = v pořádku", kterému se celý nástroj vyhýbá.
+  if (session.kind === 'compliance-scan') return complianceVerdict(session);
+
   if (session.status !== 'completed') {
     return {
       value: 'inconclusive',
@@ -215,8 +280,14 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
         sessionId: session.id,
         target: session.url,
         goal: session.goal,
+        // Předpisová kontrola vs. autonomní průzkum. Kontrolor musí poznat,
+        // co je měření podle pravidla a co posouzení jazykovým modelem.
+        kind: session.kind === 'compliance-scan' ? 'compliance-scan' : 'agent-run',
         performedAt: session.timestamp,
         verdict,
+        // Dílčí kontroly u předpisového skenu. Každá nese vlastní verdikt
+        // i odůvodnění, takže ve spisu je vidět nejen kolik, ale co přesně.
+        checks: Array.isArray(session.checks) ? session.checks : [],
         findings,
         // Varování se drží odděleně od nálezů schválně: jsou to pozorování,
         // ne porušení. Sloučit je by nafouklo počet vad.
@@ -267,7 +338,11 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
   const usedRefs = new Set();
   for (const session of inPeriodSessions) {
     const record = byId.get(session.id);
-    for (const ref of record?.rules || []) usedRefs.add(ref);
+    // Přednost má záznam: ten je neměnný. Databázový záznam běhu se dá
+    // změnit, takže slouží jen jako záloha pro běhy, u kterých se zápis
+    // do řetězu nezdařil.
+    const refs = record?.rules?.length ? record.rules : session.ruleRefs || [];
+    for (const ref of refs) usedRefs.add(ref);
   }
   const ruleSnapshot = RULES.filter((r) => usedRefs.has(`${r.id}.v${r.version}`)).map(
     ({ id, version, title, method, limits, changelog }) => ({
@@ -389,6 +464,13 @@ const czDate = (iso) => {
  * řetězce. `String(objekt)` z toho udělal `[object Object]` — ve spisu
  * odevzdávaném úřadu ztráta obsahu bez varování.
  */
+/**
+ * Tři stavy dílčí kontroly. Neprůkazné má vlastní značku, ne přeškrtnutí —
+ * čtenář musí na první pohled poznat, že se to neměřilo.
+ */
+const checkLabel = (ok) => (ok === true ? 'SPLNĚNO' : ok === false ? 'NESPLNĚNO' : 'NEPRŮKAZNÉ');
+const checkClass = (ok) => (ok === true ? 'pass' : ok === false ? 'fail' : 'unknown');
+
 const findingText = (f) => {
   if (f == null) return '—';
   if (typeof f === 'string') return f;
@@ -424,10 +506,28 @@ export function renderCaseFileHtml(caseFile) {
         <h3>${escapeHtml(run.target)}</h3>
         <p class="meta">
           ${czDate(run.performedAt)} · ${escapeHtml(run.goal || '')}<br>
+          <span class="kind">${
+            run.kind === 'compliance-scan'
+              ? 'Předpisová kontrola podle pravidel registru'
+              : 'Autonomní průzkum aplikace (posouzení jazykovým modelem)'
+          }</span><br>
           <span class="mono">${escapeHtml(run.sessionId)}</span>
         </p>
         <p class="verdict">${escapeHtml(run.verdict.label)}</p>
         <p class="rationale">${escapeHtml(run.verdict.rationale)}</p>
+        ${
+          run.checks.length
+            ? `<table class="checks">${run.checks
+                .map(
+                  (c) => `<tr>
+                    <td class="check-mark ${checkClass(c.ok)}">${checkLabel(c.ok)}</td>
+                    <td><strong>${escapeHtml(c.label || c.key)}</strong><br>
+                        <span class="dim">${escapeHtml(c.rationale || '')}</span></td>
+                  </tr>`
+                )
+                .join('')}</table>`
+            : ''
+        }
         ${
           run.findings.length
             ? `<ul>${run.findings.map((f) => `<li>${escapeHtml(findingText(f))}</li>`).join('')}</ul>`
@@ -509,6 +609,13 @@ export function renderCaseFileHtml(caseFile) {
   .warn { color: #b9770e; }
   .limits { background: #fdf6e3; border: 1px solid #e6d9a8; padding: 8pt 10pt; break-inside: avoid; }
   .limits li { margin-bottom: 4pt; }
+  .kind { color: #666; font-size: 8.5pt; }
+  .checks { border-collapse: collapse; width: 100%; margin: 6pt 0; }
+  .checks td { padding: 2pt 6pt 2pt 0; vertical-align: top; font-size: 9pt; border-top: 1px solid #eee; }
+  .check-mark { width: 24mm; font-weight: 600; font-size: 8.5pt; white-space: nowrap; }
+  .check-mark.pass { color: #1e8449; }
+  .check-mark.fail { color: #c0392b; }
+  .check-mark.unknown { color: #b9770e; }
   .rules th { text-align: left; }
   .rules td { padding: 3pt 6pt 3pt 0; vertical-align: top; font-size: 9pt; border-top: 1px solid #eee; }
   footer { margin-top: 16pt; color: #777; font-size: 8.5pt; }

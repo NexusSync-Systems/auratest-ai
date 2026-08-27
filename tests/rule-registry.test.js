@@ -84,3 +84,23 @@ describe('registr pravidel', () => {
     }
   });
 });
+
+describe('otisk sady zahrnuje záznam změn (regrese kontrolní vlny)', () => {
+  test('změna changelogu změní otisk', () => {
+    // Vysvětlení „proč se týž web posuzuje jinak než dřív" je to jediné, co
+    // změnu verdiktu u nezměněného webu ospravedlňuje. Dokud do otisku
+    // nevstupovalo, šlo ho přepsat, aniž se otisk hnul.
+    const pravidlo = RULES.find((r) => r.changelog);
+    expect(pravidlo).toBeDefined();
+
+    const puvodni = rulesetDigest();
+    const zaloha = pravidlo.changelog;
+    pravidlo.changelog = { ...zaloha, 99: 'podvržené vysvětlení' };
+    try {
+      expect(rulesetDigest()).not.toBe(puvodni);
+    } finally {
+      pravidlo.changelog = zaloha;
+    }
+    expect(rulesetDigest()).toBe(puvodni);
+  });
+});
