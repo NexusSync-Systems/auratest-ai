@@ -46,7 +46,10 @@ if (!checkOnly) {
   console.log('');
 }
 
-const stav = anchorSummary(readLedger(), readAnchors());
+// Plná kontrola se předává výslovně. Skript sice výš končí, když řetěz
+// neprojde, ale spoléhat na pořadí řádků znamená, že by se záruka při
+// přeuspořádání skriptu tiše ztratila.
+const stav = anchorSummary(readLedger(), readAnchors(), chain.ok);
 console.log(`Stav ukotvení: ${stav.state}`);
 console.log(stav.rationale);
 
