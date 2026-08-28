@@ -78,3 +78,16 @@ describe('CSP v Caddyfile', () => {
     expect(caddyfile).toMatch(/Vlastní hosting písem/);
   });
 });
+
+describe('access log neobsahuje citlivé query parametry', () => {
+  test('token artefaktu a adresy skenů se z logu vyřazují', () => {
+    // Log s retencí 720 h je špatné místo pro historii zákazníkových
+    // auditů — a dřív i pro capability tokeny k artefaktům.
+    const logBlock = caddyfile.slice(caddyfile.indexOf('log {'));
+    expect(logBlock).toMatch(/format filter/);
+    expect(logBlock).toMatch(/uri query/);
+    for (const param of ['delete t', 'delete url', 'delete from', 'delete to']) {
+      expect(logBlock).toContain(param);
+    }
+  });
+});

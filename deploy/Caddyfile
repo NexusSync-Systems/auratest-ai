@@ -96,8 +96,26 @@ auraguard.example.com {
 			roll_keep 5
 			roll_keep_for 720h
 		}
-		# URL skenovaných webů jsou v query stringu a v tělech requestů.
-		# Do access logu patří jen to nutné.
+		# Query string se z logu VYŘAZUJE.
+		#
+		# Chodí v něm adresy skenovaných webů — tedy údaj o tom, koho zákazník
+		# auditoval — a dřív i capability tokeny k artefaktům. Log s retencí
+		# 720 hodin je špatné místo pro obojí: kdo se k němu dostane, přečte
+		# si historii zákazníkových auditů.
+		#
+		# Tokeny už v URL nejsou (artefakty se načítají ověřeným požadavkem),
+		# ale adresy zůstávají. Filtr je proto na místě tak jako tak.
 		format json
+		format filter {
+			wrap json
+			fields {
+				uri query {
+					delete t
+					delete url
+					delete from
+					delete to
+				}
+			}
+		}
 	}
 }

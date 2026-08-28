@@ -33,6 +33,7 @@ import { isProtectedTab } from './lib/routes.js';
 import LandingPage from './components/public/LandingPage.jsx';
 import { runWithConcurrency, fetchConcurrencyLimit } from './lib/run-queue.js';
 import { runStatus, runningSessions } from './lib/run-status.js';
+import { useArtifact } from './hooks/useArtifact.js';
 import ScanRecord from './components/ScanRecord.jsx';
 import CaseFilePanel from './components/CaseFilePanel.jsx';
 import { authErrorMessage } from './lib/auth-errors.js';
@@ -214,7 +215,6 @@ export default function App() {
   // Dvě nezávislá spojení: globální telemetrie vs. živé logy konkrétního běhu.
   const wsRef = useRef(null);
   const sessionWsRef = useRef(null);
-  const artifactTokenRef = useRef(null);
   const logsEndRef = useRef(null);
 
   // Load past sessions
@@ -695,6 +695,10 @@ export default function App() {
   // Navíc to maskovalo chybu, že 11 volání posílalo `Bearer ${user.token}` —
   // Firebase User vlastnost `.token` nemá, takže se posílalo "Bearer undefined"
   // a fungovalo to jen díky tomu, že override hlavičku přepsal.
+  // Stabilní reference — `useArtifact` ji má v závislostech efektu,
+  // takže nová funkce při každém renderu by artefakt načítala pořád dokola.
+  const getIdToken = useCallback(() => firebaseAuth.currentUser.getIdToken(), []);
+
   const authFetch = useCallback(async (path, options = {}) => {
     let authHeaders = {};
     try {
@@ -976,9 +980,6 @@ export default function App() {
       }
 
       const data = await res.json();
-      // Capability token pro screenshoty/video — <img> a <video> hlavičku
-      // Authorization neposílají, takže token jde do query.
-      artifactTokenRef.current = data.artifactToken || null;
       setSelectedSessionId(data.sessionId);
       connectWebSocket(data.sessionId);
 
@@ -1084,13 +1085,15 @@ export default function App() {
 
   const targetStepIndex = selectedStepIndex !== null ? selectedStepIndex : (liveLogs.length > 0 ? liveLogs.length - 1 : null);
   const activeStep = targetStepIndex !== null ? liveLogs[targetStepIndex] : null;
-  // Artefakty (screenshoty, video) jsou chráněné capability tokenem session.
-  const artifactToken = activeSession?.artifactToken || artifactTokenRef.current;
-  const withArtifactToken = (url) => {
-    if (!url || !artifactToken) return url;
-    return `${url}${url.includes('?') ? '&' : '?'}t=${encodeURIComponent(artifactToken)}`;
-  };
-  const activeScreenshot = activeStep ? withArtifactToken(activeStep.screenshot) : null;
+  // Artefakty se načítají ověřeným požadavkem, ne tokenem v URL.
+  //
+  // Token v query stringu končil v access logu Caddy s retencí 720 h, takže
+  // kdo se dostal k logům, dostal se ke všem screenshotům. Viz
+  // hooks/useArtifact.js — soubor se stáhne s hlavičkou a podstrčí se
+  // prohlížeči jako blob.
+  const screenshotArtifact = useArtifact(activeStep?.screenshot || null, getIdToken);
+  const videoArtifact = useArtifact(activeSession?.videoUrl || null, getIdToken);
+  const activeScreenshot = screenshotArtifact.objectUrl;
   // Kroky nesou od optimalizace paměti jen PŘÍRŮSTEK logů a chyb, ne celou
   // historii. Prázdné pole je ale truthy, takže původní fallback na
   // activeSession.bugs byl nedosažitelný a inspektor hlásil "žádné chyby",
@@ -1658,7 +1661,7 @@ export default function App() {
                               controls 
                               muted
                               aria-label={`Němý záznam testovacího běhu pro ${activeSession.url || 'testovanou stránku'}. Textový přepis kroků je v seznamu vlevo.`}
-                              src={withArtifactToken(activeSession.videoUrl)}
+                              src={videoArtifact.objectUrl || undefined}
                               style={{ width: '100%', display: 'block', maxHeight: '400px' }}
                             />
                           </div>

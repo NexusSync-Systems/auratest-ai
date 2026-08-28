@@ -214,6 +214,22 @@ function safeEqual(a, b) {
   return timingSafeEqual(bufA, bufB);
 }
 
+/**
+ * Vydá artefakt (screenshot, video) vlastníkovi běhu.
+ *
+ * PROČ UŽ NE CAPABILITY TOKEN V QUERY
+ * Dřív stačil `?t=<artifactToken>`, protože `<img src>` neumí posílat
+ * hlavičky. Jenže Caddy zapisuje celé URI do access logu s retencí
+ * 720 hodin — token tam tedy skončil u každého požadavku a kdo se dostal
+ * k logům, dostal se ke všem screenshotům všech běhů.
+ *
+ * Nástroj přitom cizím webům vytýká úniky přes URL a vlastní
+ * `lib/download.js` má u sebe poznámku, proč token do query nepatří.
+ * U artefaktů se to porušovalo.
+ *
+ * Klient je proto načítá `fetch`em s hlavičkou `Authorization` a podstrkuje
+ * prohlížeči jako blob — viz `hooks/useArtifact.js`.
+ */
 function serveArtifact(dir) {
   return async (req, res) => {
     const name = req.params.file;
@@ -221,17 +237,17 @@ function serveArtifact(dir) {
       return res.status(400).json({ error: 'Neplatný název souboru.' });
     }
 
-    const token = req.query.t;
-    if (!token) return res.status(401).json({ error: 'Chybí přístupový token artefaktu.' });
-
     // Názvy artefaktů: `<sessionId>_step_<n>.png` a `<sessionId>_video.webm`
     // (viz agent.js). Z obou se sessionId vytáhne odstraněním přípony.
     const sessionId = name
       .replace(/_step_\d+\.png$/, '')
       .replace(/_video\.webm$/, '');
+
     try {
       const session = await db.getSession(sessionId);
-      if (!session || !session.artifactToken || !safeEqual(token, session.artifactToken)) {
+      // 404 i u cizího běhu: rozlišovat „neexistuje" od „není tvůj" by
+      // prozradilo, které identifikátory v systému jsou obsazené.
+      if (!session || session.userId !== req.user.userId) {
         return res.status(404).json({ error: 'Artefakt nenalezen.' });
       }
     } catch (err) {
@@ -245,8 +261,8 @@ function serveArtifact(dir) {
   };
 }
 
-app.get('/api/screenshots/:file', serveArtifact(screenshotsDir));
-app.get('/api/videos/:file', serveArtifact(videosDir));
+app.get('/api/screenshots/:file', authenticateToken, serveArtifact(screenshotsDir));
+app.get('/api/videos/:file', authenticateToken, serveArtifact(videosDir));
 
 app.use('/sdk', express.static(ensureDir(SDK_DIR)));
 

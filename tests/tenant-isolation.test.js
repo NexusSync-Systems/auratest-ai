@@ -207,24 +207,52 @@ describe('Multi-tenant izolace', () => {
   });
 });
 
-describe('Artefakty vyžadují capability token', () => {
+describe('Artefakty jsou za přihlášením a patří vlastníkovi', () => {
   beforeEach(reset);
 
-  it('bez tokenu vrátí 401', async () => {
+  it('cizí běh nevydá ani jeho vlastní artefakt', async () => {
+    // JÁDRO VĚCI: dřív stačil `?t=<artifactToken>`, protože <img src> neumí
+    // posílat hlavičky. Token ale končil v access logu Caddy s retencí
+    // 720 h — kdo se dostal k logům, dostal se ke všem screenshotům všech
+    // běhů. Nově rozhoduje přihlášení a vlastnictví.
+    mockStore.sessions.push({ id: 'session_abc', userId: 'user-b' });
+    mockCurrentUserId = 'user-a';
+
     const res = await request(app).get('/api/screenshots/session_abc_step_1.png');
-    expect(res.statusCode).toBe(401);
+    // 404, ne 403: rozlišovat „neexistuje" od „není tvůj" by prozradilo,
+    // které identifikátory jsou v systému obsazené.
+    expect(res.statusCode).toBe(404);
   });
 
-  it('se špatným tokenem vrátí 404', async () => {
-    mockStore.sessions.push({ id: 'session_abc', userId: 'user-a', artifactToken: 'spravny-token' });
+  it('neexistující běh vrátí totéž co cizí', async () => {
+    const res = await request(app).get('/api/screenshots/session_neexistuje_step_1.png');
+    expect(res.statusCode).toBe(404);
+  });
 
-    const res = await request(app).get('/api/screenshots/session_abc_step_1.png?t=spatny');
+  it('token v query už nic neotevře', async () => {
+    // Regrese: kdyby se stará cesta omylem vrátila, tenhle test spadne.
+    mockStore.sessions.push({
+      id: 'session_abc',
+      userId: 'user-b',
+      artifactToken: 'spravny-token',
+    });
+    mockCurrentUserId = 'user-a';
+
+    const res = await request(app).get('/api/screenshots/session_abc_step_1.png?t=spravny-token');
     expect(res.statusCode).toBe(404);
   });
 
   it('odmítne pokus o path traversal v názvu souboru', async () => {
-    const res = await request(app).get('/api/screenshots/..%2F..%2Fetc%2Fpasswd?t=x');
+    const res = await request(app).get('/api/screenshots/..%2F..%2Fetc%2Fpasswd');
     expect([400, 404]).toContain(res.statusCode);
+  });
+
+  it('totéž platí pro videa', async () => {
+    mockStore.sessions.push({ id: 'session_abc', userId: 'user-b' });
+    mockCurrentUserId = 'user-a';
+
+    const res = await request(app).get('/api/videos/session_abc_video.webm');
+    expect(res.statusCode).toBe(404);
   });
 });
 
