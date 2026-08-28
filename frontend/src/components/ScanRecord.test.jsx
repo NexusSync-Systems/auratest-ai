@@ -51,13 +51,31 @@ test('neprůkazná kontrola se neukazuje jako splněná', () => {
       })}
     />
   );
-  expect(screen.getByText('SPLNĚNO')).toBeInTheDocument();
+  // „BEZ NÁLEZU", ne „SPLNĚNO": absence nálezu není důkaz shody a slovník
+  // se nesmí rozcházet s verdiktem ve spisu.
+  expect(screen.getByText('BEZ NÁLEZU')).toBeInTheDocument();
   expect(screen.getByText('NEPRŮKAZNÉ')).toBeInTheDocument();
-  expect(screen.getByText('NESPLNĚNO')).toBeInTheDocument();
+  expect(screen.getByText('NÁLEZ')).toBeInTheDocument();
   expect(screen.getByText('Neproběhla.')).toBeInTheDocument();
 });
 
 test('neznámý stav se bere jako neprůkazný, ne jako splněný', () => {
   render(<ScanRecord record={record({ checks: [{ key: 'x', label: 'X', ok: 'nesmysl' }] })} />);
   expect(screen.getByText('NEPRŮKAZNÉ')).toBeInTheDocument();
+});
+
+
+test('pozorování se neoznačuje jako splnění ani porušení', () => {
+  // Post-kvantová výměna klíčů: žádný předpis ji nevyžaduje, takže
+  // „nepodporuje" není vada. Sloučit ji s nálezem by znamenalo vytknout
+  // zákazníkovi něco, co po něm nikdo nechce.
+  render(
+    <ScanRecord
+      record={record({
+        checks: [{ key: 'tls.pqc', label: 'PQC', ok: false, advisory: true, rationale: 'Nenabízí.' }],
+      })}
+    />
+  );
+  expect(screen.getByText('NEZJIŠTĚNO')).toBeInTheDocument();
+  expect(screen.queryByText('NÁLEZ')).not.toBeInTheDocument();
 });

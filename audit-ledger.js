@@ -132,7 +132,7 @@ export function canonicalize(value, seen = new WeakSet()) {
  * a otisk by pak nesouhlasil u nezměněného výsledku.
  */
 export function auditResultOf(session) {
-  return {
+  const base = {
     status: session.status ?? null,
     bugs: session.bugs ?? [],
     warnings: session.warnings ?? [],
@@ -146,6 +146,34 @@ export function auditResultOf(session) {
       return rest;
     }),
   };
+
+  // U předpisové kontroly nesou zjištění `checks`, ne `bugs`.
+  //
+  // Bez tohohle šel do otisku jen společný podklad — status a čtyři prázdná
+  // pole — takže KAŽDÝ compliance sken v systému měl týž `resultDigest`,
+  // bez ohledu na cíl, druh skenu i výsledek. Kdo uměl zapsat do databáze,
+  // přepsal „NESPLNĚNO" na „SPLNĚNO" a ověření otisku dál hlásilo shodu.
+  // Spis to přitom tiskne jako „Otisk souhlasí: Ano" — tedy nepravdivé
+  // tvrzení na nejcitlivějším místě dokumentu.
+  if (session.kind === 'compliance-scan') {
+    return {
+      ...base,
+      kind: 'compliance-scan',
+      auditSlug: session.auditSlug ?? null,
+      verdict: session.verdict ?? null,
+      ruleRefs: session.ruleRefs ?? [],
+      // Normalizovaný tvar: do otisku jde klíč, verdikt a odůvodnění.
+      // Popisek je jen zobrazovací text a jeho změna nemá otisk hýbat.
+      checks: (session.checks ?? []).map((c) => ({
+        key: c?.key ?? null,
+        ruleRef: c?.ruleRef ?? null,
+        ok: c?.ok === true || c?.ok === false ? c.ok : null,
+        rationale: c?.rationale ?? '',
+      })),
+    };
+  }
+
+  return base;
 }
 
 /** SHA-256 kanonické podoby. */

@@ -14,6 +14,12 @@
  *   method   jak to zjišťuje — aby šlo posoudit váhu nálezu
  *   limits   co z výsledku NEPLYNE; u compliance nástroje to není poznámka
  *            pod čarou, ale součást zjištění
+ *   automated  probíhá k tomuhle pravidlu SKUTEČNÉ automatické měření?
+ *            `false` znamená, že pravidlo je v registru kvůli úplnosti
+ *            výčtu povinností, ale nástroj ho neměří. Takové pravidlo NESMÍ
+ *            být v `AUDIT_RULE_SCOPE` — jinak by se jeho znění vytisklo
+ *            do spisu pod nadpisem „Znění použitých pravidel" a kontrolor
+ *            by z toho vyvodil kontrolu, která neproběhla.
  *
  * KDY ZVYŠOVAT VERZI
  * Když se změní, co kontrola považuje za splněné nebo za neprůkazné. Ne
@@ -26,7 +32,7 @@
 
 import { createHash } from 'crypto';
 
-/** @typedef {{id: string, version: number, title: string, method: string, limits: string, changelog?: Record<number, string>}} Rule */
+/** @typedef {{id: string, version: number, title: string, method: string, limits: string, automated?: boolean, changelog?: Record<number, string>}} Rule */
 
 /** @type {Rule[]} */
 const RULE_LIST = [
@@ -201,6 +207,7 @@ const RULE_LIST = [
   },
   {
     id: 'aiact.cl50.3.emotion-recognition',
+    automated: false,
     version: 1,
     title: 'Rozpoznávání emocí a biometrická kategorizace (čl. 50 odst. 3)',
     method: 'Hledají se náznaky v obsahu stránky (video, zmínky o rozpoznávání).',
@@ -210,6 +217,7 @@ const RULE_LIST = [
   },
   {
     id: 'aiact.cl50.4.deepfake-disclosure',
+    automated: false,
     version: 1,
     title: 'Zveřejnění, že obsah je umělý (čl. 50 odst. 4)',
     method: 'Neexistuje automatická kontrola.',
@@ -367,4 +375,15 @@ export function rulesetInfo() {
     count: RULE_LIST.length,
     digest: rulesetDigest(),
   };
+}
+
+/**
+ * Měří nástroj tohle pravidlo doopravdy?
+ *
+ * Výchozí je `true` — do registru se pravidlo přidává proto, že se podle
+ * něj měří. Výslovné `false` označuje povinnost, kterou registr uvádí kvůli
+ * úplnosti výčtu, ale nástroj ji neověřuje.
+ */
+export function isAutomated(rule) {
+  return rule?.automated !== false;
 }

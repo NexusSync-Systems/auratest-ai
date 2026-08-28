@@ -202,8 +202,12 @@ export default function CaseFilePanel({ getToken }) {
           <>
             <p className={chain.ok ? 'case-file-ok' : 'case-file-error'} role="status">
               {chain.ok
-                ? `Řetěz je neporušený — ${chain.count} položek.`
-                : `Řetěz je porušený — ${chain.problems.length} nálezů.`}
+                ? `Záznam je v pořádku — ${chain.count} vašich položek, řetěz i ukotvení prošly kontrolou.`
+                : chain.fullChainOk === false
+                  ? 'Řetěz neprošel úplnou kontrolou — s historií se hýbalo.'
+                  : chain.ownRecordsOk === false
+                    ? `Vaše záznamy jsou porušené — ${chain.problems.length} nálezů.`
+                    : 'Ukotvení neprošlo kontrolou — viz níž.'}
             </p>
 
             {!chain.ok && (
@@ -266,10 +270,11 @@ export default function CaseFilePanel({ getToken }) {
             )}
 
             <p className="card-note">
-              Řetězení dokazuje, že žádný záznam nebyl dodatečně změněn ani
-              odstraněn z prostřed historie. Nedokazuje nemožnost podvrhu: kdo
-              smí zapisovat, může přepsat celou historii a otisky přepočítat.
-              Právě proti tomu stojí ukotvení otisku mimo tenhle systém.
+              Úplná kontrola řetězu dokazuje, že žádný záznam nebyl dodatečně
+              změněn ani odstraněn z prostřed historie. Nedokazuje nemožnost
+              podvrhu: kdo smí zapisovat, může přepsat celou historii a otisky
+              přepočítat. Právě proti tomu stojí ukotvení otisku mimo tenhle
+              systém — ale jen ta kopie kotvy, kterou máte uloženou jinde.
             </p>
           </>
         )}

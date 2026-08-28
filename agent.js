@@ -2854,7 +2854,13 @@ export async function auditAIAct(url) {
       }
     });
 
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+    // Selhání navigace se poznamená. Povinnosti čl. 50 sice vycházejí
+    // neprůkazně i tak, ale report má říct PROČ — „nenašli jsme chat"
+    // a „nepodařilo se otevřít stránku" nejsou totéž.
+    let navigationError = null;
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch((err) => {
+      navigationError = err.message;
+    });
     // Chat widgety se často načítají opožděně, po `networkidle`.
     await page.waitForTimeout(3000);
 
@@ -2898,6 +2904,7 @@ export async function auditAIAct(url) {
     return {
       success: true,
       url,
+      navigationError,
       aiAct: {
         // Čtyři povinnosti čl. 50 zvlášť. Dřív se slučovaly do jednoho
         // výsledku, takže report tvrdil víc, než uměl doložit.
@@ -3209,8 +3216,17 @@ export async function auditStrictCookies(url) {
       }
     });
 
-    // Načteme stránku a NIKAM neklikáme
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+    // Načteme stránku a NIKAM neklikáme.
+    //
+    // Selhání navigace se NESMÍ spolknout. Když se stránka nenačte, sken
+    // logicky nenajde žádnou cookie ani požadavek na tracking doménu —
+    // a `isCompliant` z toho vyrobí `true`. Do neměnného záznamu by se
+    // pak zapsalo „SPLNĚNO: trackery před souhlasem" o webu, který se
+    // vůbec nepodařilo otevřít.
+    let navigationError = null;
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch((err) => {
+      navigationError = err.message;
+    });
     
     // Počkáme 5 sekund pro jistotu (často se trackery načítají opožděně)
     await new Promise(r => setTimeout(r, 5000));
@@ -3253,11 +3269,15 @@ export async function auditStrictCookies(url) {
       suspiciousFound.push(`Požadavek na tracking doménu: ${host}`);
     }
 
-    const isCompliant = suspiciousFound.length === 0;
+    // `null` = neprůkazné. Nenačtená stránka neznamená, že trackery nejsou;
+    // znamená, že jsme se na ně nedokázali podívat.
+    const isCompliant = navigationError ? null : suspiciousFound.length === 0;
 
     return {
       success: true,
       url,
+      // Doložitelnost: report i záznam musí vidět, že měření neproběhlo.
+      navigationError,
       // Příznaky cookies jsou samostatné zjištění, ne součást GDPR verdiktu.
       //
       // Trackery před souhlasem řeší ePrivacy; Secure, HttpOnly a SameSite
@@ -3284,9 +3304,11 @@ export async function auditStrictCookies(url) {
         isCompliant,
         // Seznam trackerů je nutně neúplný, takže "nic nenalezeno" neznamená
         // prokazatelný soulad — formulace to musí odrážet.
-        rating: isCompliant
-          ? 'BEZ NÁLEZU: Před udělením souhlasu nebyly nalezeny trackery ze sledovaného seznamu. Nejde o důkaz plného souladu — seznam není vyčerpávající.'
-          : 'FAIL: ePrivacy Violation. Aplikace ukládá analytické/marketingové trackery před udělením souhlasu.'
+        rating: navigationError
+          ? `NEPRŮKAZNÉ: Stránku se nepodařilo načíst (${navigationError}), takže nebylo co posoudit. Z toho neplyne, že trackery nejsou.`
+          : isCompliant
+            ? 'BEZ NÁLEZU: Před udělením souhlasu nebyly nalezeny trackery ze sledovaného seznamu. Nejde o důkaz plného souladu — seznam není vyčerpávající.'
+            : 'FAIL: ePrivacy Violation. Aplikace ukládá analytické/marketingové trackery před udělením souhlasu.'
       }
     };
   } catch (err) {

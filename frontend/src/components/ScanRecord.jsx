@@ -11,14 +11,29 @@
  * nástroje horší než hlasitý.
  */
 
-/** Tři stavy dílčí kontroly. Neprůkazné má vlastní barvu i slovo. */
+/**
+ * Tři stavy dílčí kontroly. Neprůkazné má vlastní barvu i slovo.
+ *
+ * „BEZ NÁLEZU", ne „SPLNĚNO" — absence nálezu není důkaz shody a slovník
+ * se nesmí rozcházet s verdiktem ve spisu, který se téhle formulaci vyhýbá.
+ */
 const MARK = {
-  true: { text: 'SPLNĚNO', color: '#10b981' },
-  false: { text: 'NESPLNĚNO', color: '#ef4444' },
+  true: { text: 'BEZ NÁLEZU', color: '#10b981' },
+  false: { text: 'NÁLEZ', color: '#ef4444' },
   null: { text: 'NEPRŮKAZNÉ', color: '#f59e0b' },
 };
 
-const markFor = (ok) => MARK[String(ok)] || MARK.null;
+/** Pozorování — zjištění, které žádný předpis nevyžaduje. */
+const ADVISORY = {
+  true: { text: 'ZJIŠTĚNO', color: '#94a3b8' },
+  false: { text: 'NEZJIŠTĚNO', color: '#94a3b8' },
+  null: { text: 'NEPRŮKAZNÉ', color: '#94a3b8' },
+};
+
+const markFor = (ok, advisory) => {
+  const table = advisory ? ADVISORY : MARK;
+  return table[String(ok)] || table.null;
+};
 
 export default function ScanRecord({ record }) {
   if (!record) return null;
@@ -43,7 +58,7 @@ export default function ScanRecord({ record }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '10px' }}>
           <tbody>
             {checks.map((c) => {
-              const mark = markFor(c.ok);
+              const mark = markFor(c.ok, c.advisory);
               return (
                 <tr key={c.key}>
                   <td

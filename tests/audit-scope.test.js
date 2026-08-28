@@ -6,7 +6,7 @@ import {
   overallVerdict,
   unknownRuleIds,
 } from '../audit-scope.js';
-import { RULES } from '../rule-registry.js';
+import { RULES, isAutomated } from '../rule-registry.js';
 
 /**
  * Vazba mezi skenem a pravidlem registru.
@@ -37,13 +37,29 @@ describe('mapa skener → pravidla', () => {
     }
   });
 
-  test('každé pravidlo registru někdo vyhodnocuje', () => {
-    // Osiřelé pravidlo znamená jedno ze dvou: buď se kontrola nedělá a
-    // registr slibuje víc, než nástroj umí, nebo se dělá a mapa ji zamlčuje.
-    // Obojí je pro doložitelnost problém.
+  test('každé měřené pravidlo je v rozsahu nějakého skenu', () => {
+    // Osiřelé měřené pravidlo znamená, že se kontrola dělá, ale mapa ji
+    // zamlčuje — do záznamu se pak nedostane odkaz na to, podle čeho se
+    // měřilo.
     const pokryta = new Set(Object.values(AUDIT_RULE_SCOPE).flat());
-    const osirela = RULES.map((r) => r.id).filter((id) => !pokryta.has(id));
+    const osirela = RULES.filter(isAutomated)
+      .map((r) => r.id)
+      .filter((id) => !pokryta.has(id));
     expect(osirela).toEqual([]);
+  });
+
+  test('pravidlo BEZ automatické kontroly v rozsahu naopak být nesmí', () => {
+    // REGRESE: `aiact.cl50.4.deepfake-disclosure` má v registru metodu
+    // „Neexistuje automatická kontrola" a přesto se dostalo do rozsahu.
+    // Spis by pak pod nadpisem „Znění použitých pravidel" vytiskl kontrolu,
+    // která nikdy neproběhla — a předchozí verze téhle sady testů tuhle
+    // nepravdu dokonce vynucovala.
+    const pokryta = new Set(Object.values(AUDIT_RULE_SCOPE).flat());
+    const neměřená = RULES.filter((r) => !isAutomated(r));
+    expect(neměřená.length).toBeGreaterThan(0);
+    for (const rule of neměřená) {
+      expect(pokryta.has(rule.id)).toBe(false);
+    }
   });
 
   test('chaos test se nehlásí k žádnému pravidlu', () => {
@@ -101,13 +117,29 @@ describe('čtení verdiktů z výsledků skenerů', () => {
     expect(v.find((x) => x.key === 'nis2.headers-tls').ok).toBeNull();
   });
 
-  test('NIS2: nepodporované PQC není porušení předpisu', () => {
+  test('NIS2: nepodporované PQC je pozorování, ne nález ani neprůkazné', () => {
     // Post-kvantovou výměnu klíčů dnes žádný předpis nevyžaduje.
+    //
+    // REGRESE: změřené `false` se balilo do `null`, což mělo dva zlé
+    // následky — spis tvrdil „nepodařilo se posoudit" o měření, které
+    // proběhlo, a NIS2 sken nemohl NIKDY vyjít bez nálezu.
     const v = verdictsForAudit('analyze-nis2', {
-      nis2: { isCompliant: true },
+      nis2: { isCompliant: true, scope: 's' },
       tls: { pqc: { supported: false, rationale: 'Nenabízí.' } },
     });
-    expect(v.find((x) => x.key === 'tls.pqc').ok).toBeNull();
+    const pqc = v.find((x) => x.key === 'tls.pqc');
+    expect(pqc.ok).toBe(false);
+    expect(pqc.advisory).toBe(true);
+    // A hlavně: celek tím nespadne.
+    expect(overallVerdict(v)).toBe(true);
+  });
+
+  test('pozorování nebrání ani nezpůsobí verdikt', () => {
+    const c = (ok, advisory) => ({ key: 'k', label: 'l', ok, rationale: '', advisory });
+    expect(overallVerdict([c(true, false), c(null, true)])).toBe(true);
+    expect(overallVerdict([c(true, false), c(false, true)])).toBe(true);
+    // Samotné pozorování bez jediné skutečné kontroly nedá verdikt žádný.
+    expect(overallVerdict([c(true, true)])).toBeNull();
   });
 
   test('AI Act: nepoužitelná povinnost se nevydává za splněnou', () => {
@@ -123,15 +155,28 @@ describe('čtení verdiktů z výsledků skenerů', () => {
     expect(v.map((x) => x.ok)).toEqual([true, null, null]);
   });
 
-  test('zranitelnosti: nula nálezů není splněno', () => {
-    // „Nic ze zjištěných verzí nesedí na známou zranitelnost" není totéž
-    // co „aplikace je bez zranitelností" — sken nevidí serverové závislosti
-    // a u části knihoven se verzi zjistit nedaří.
-    const v = verdictsForAudit('cra-vuln-audit', {
-      cra: { isCompliant: true, vulnerabilities: [], skipped: ['x'] },
-    });
-    expect(v[0].ok).toBeNull();
-    expect(v[0].rationale).toMatch(/neplyne, že aplikace zranitelná není/);
+  test('zranitelnosti: verdikt skeneru se přebírá, nepřepisuje', () => {
+    // REGRESE: `vulnVerdict` dřív každé `true` přepsalo na `null`, takže
+    // pravidlo nemohlo nikdy vyjít bez nálezu. Skener přitom `true` dává
+    // jen tehdy, když ověřil všechny nalezené knihovny — zahodit to
+    // znamenalo tvrdit „nepodařilo se posoudit" o měření, které proběhlo.
+    //
+    // Neúplný sken vrací `null` sám (nemá co ověřit u knihoven bez verze).
+    expect(
+      verdictsForAudit('cra-vuln-audit', {
+        cra: { isCompliant: true, vulnerabilities: [], skipped: [] },
+      })[0].ok
+    ).toBe(true);
+    expect(
+      verdictsForAudit('cra-vuln-audit', {
+        cra: { isCompliant: null, vulnerabilities: [], skipped: ['React'] },
+      })[0].ok
+    ).toBeNull();
+    expect(
+      verdictsForAudit('cra-vuln-audit', {
+        cra: { isCompliant: true, vulnerabilities: [], skipped: ['x'] },
+      })[0].rationale
+    ).toMatch(/neplyne, že aplikace zranitelná není/);
   });
 
   test('zranitelnosti: nalezené se hlásí jako porušení', () => {

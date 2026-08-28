@@ -34,7 +34,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { LEDGER_DIR, LEDGER_FILE, readLedger, headHash } from './audit-ledger.js';
+import { LEDGER_DIR, LEDGER_FILE, readLedger, headHash, GENESIS_HASH } from './audit-ledger.js';
 import { ensureDir } from './paths.js';
 
 export const ANCHOR_FILE = path.join(LEDGER_DIR, 'anchors.jsonl');
@@ -111,21 +111,53 @@ export function anchorMessage(anchor) {
   ].join('\n');
 }
 
-/** Načte kotvy. Poškozený řádek nezneplatní ostatní. */
+/**
+ * Načte kotvy.
+ *
+ * Poškozený řádek se NEZAHAZUJE — vrací se s příznakem `__malformed`.
+ *
+ * Tiché zahození bylo obcházecí cesta: po useknutí řetězu stačilo poškodit
+ * jeden znak v souboru kotev, kotva zmizela a nález „broken" se změnil na
+ * „neukotveno". Chybějící důkaz se tak proměnil v „nic tu nebylo" — přesně
+ * to, čemu se `readLedger` u samotného řetězu brání.
+ */
 export function readAnchors(file = ANCHOR_FILE) {
   if (!fs.existsSync(file)) return [];
   return fs
     .readFileSync(file, 'utf8')
     .split('\n')
     .filter((line) => line.trim() !== '')
-    .map((line) => {
+    .map((line, i) => {
       try {
-        return JSON.parse(line);
-      } catch {
-        return null;
+        const parsed = JSON.parse(line);
+        if (!isWellFormedAnchor(parsed)) {
+          return { __malformed: true, line: i + 1, reason: 'neúplná nebo nesmyslná kotva' };
+        }
+        return parsed;
+      } catch (err) {
+        return { __malformed: true, line: i + 1, reason: err.message };
       }
-    })
-    .filter((a) => a && typeof a.headHash === 'string');
+    });
+}
+
+/**
+ * Má kotva vůbec tvar kotvy?
+ *
+ * Kontroluje se i FORMÁT otisku. Bez toho prošel jako platná kotva
+ * i řetězec „deadbeef", který v žádném řetězu nikdy nebude — a taková
+ * kotva by trvale hlásila porušení tam, kde k žádnému nedošlo.
+ */
+function isWellFormedAnchor(a) {
+  return (
+    a &&
+    typeof a === 'object' &&
+    typeof a.headHash === 'string' &&
+    /^[0-9a-f]{64}$/i.test(a.headHash) &&
+    typeof a.anchoredAt === 'string' &&
+    !Number.isNaN(Date.parse(a.anchoredAt)) &&
+    Number.isInteger(a.recordCount) &&
+    a.recordCount >= 0
+  );
 }
 
 /**
@@ -147,35 +179,81 @@ export function verifyAnchors(records, anchors) {
   const list = Array.isArray(anchors) ? anchors : [];
   const recs = Array.isArray(records) ? records : [];
 
-  // Index otisku → pozice. Genesis je zvláštní případ: kotva pořízená nad
-  // prázdným řetězem nekryje nic, ale není chybná.
-  const positionOf = new Map();
-  recs.forEach((r, i) => {
-    if (!r.__malformed && typeof r.hash === 'string') positionOf.set(r.hash, i);
-  });
+  // Poškozený řádek v souboru kotev je nález, ne nepřítomnost.
+  const malformedAnchors = list.filter((a) => a?.__malformed);
+  const usable = list.filter((a) => a && !a.__malformed);
 
-  const evaluated = list
+  // Otisk → VŠECHNY pozice, na kterých se vyskytl.
+  //
+  // Duplicitní otisk je sám o sobě známka manipulace: útočník smazal
+  // záznam, přepočítal otisky za ním a na konec připojil kopii původní
+  // hlavy, aby ukotvený otisk „zůstal v řetězu". Držet jen poslední výskyt
+  // ten trik propouštělo.
+  const positionsOf = new Map();
+  recs.forEach((r, i) => {
+    if (r.__malformed || typeof r.hash !== 'string') return;
+    if (!positionsOf.has(r.hash)) positionsOf.set(r.hash, []);
+    positionsOf.get(r.hash).push(i);
+  });
+  const duplicateHashes = [...positionsOf.values()].filter((v) => v.length > 1).length;
+
+  const evaluated = usable
     .slice()
     .sort((a, b) => Date.parse(a.anchoredAt) - Date.parse(b.anchoredAt))
     .map((a) => {
-      const emptyChain = a.recordCount === 0;
-      const index = positionOf.has(a.headHash) ? positionOf.get(a.headHash) : null;
+      const positions = positionsOf.get(a.headHash) || [];
+
+      // Kotva ukotvuje HLAVU, ne „nějaký řádek".
+      //
+      // Hledat otisk kdekoli v řetězu znamenalo, že vložení podvrženého
+      // záznamu před ukotvené místo prošlo — a `coversRecords` dokonce
+      // vyrostlo nad počet záznamů v okamžiku ukotvení. Kotva musí sedět
+      // přesně na pozici `recordCount - 1`.
+      const expectedIndex = a.recordCount - 1;
+
+      if (a.recordCount === 0) {
+        // Prázdný řetěz má jedinou přípustnou hlavu. Bez téhle kontroly
+        // stačilo v kotvě přepsat `recordCount` na nulu a ověření se
+        // vyplo úplně, včetně už nalezeného porušení.
+        const genesisOk = a.headHash === GENESIS_HASH;
+        return {
+          anchoredAt: a.anchoredAt,
+          headHash: a.headHash,
+          note: a.note ?? null,
+          present: genesisOk,
+          coversUpToIndex: genesisOk ? -1 : null,
+          problem: genesisOk ? null : 'Kotva tvrdí prázdný řetěz, ale nenese výchozí otisk.',
+        };
+      }
+
+      const present = positions.includes(expectedIndex);
       return {
         anchoredAt: a.anchoredAt,
         headHash: a.headHash,
         note: a.note ?? null,
-        // Kotva nad prázdným řetězem je platná, jen nic nekryje.
-        present: emptyChain ? true : index !== null,
-        coversUpToIndex: emptyChain ? -1 : index,
+        present,
+        coversUpToIndex: present ? expectedIndex : null,
+        problem: present
+          ? null
+          : positions.length
+            ? `Ukotvený otisk je v řetězu na jiné pozici (${positions.join(', ')}), než na jaké byl ukotven (${expectedIndex}).`
+            : 'Ukotvený otisk se v řetězu nenachází.',
       };
     });
 
-  if (evaluated.length === 0) {
+  if (evaluated.length === 0 && malformedAnchors.length === 0) {
     // Bez kotvy se nedá tvrdit ani porušení, ani neporušenost konce.
-    return { anchors: [], latest: null, coveredUpToIndex: null, ok: null };
+    return {
+      anchors: [],
+      latest: null,
+      coveredUpToIndex: null,
+      malformedAnchors: 0,
+      duplicateHashes,
+      ok: null,
+    };
   }
 
-  const latest = evaluated[evaluated.length - 1];
+  const latest = evaluated.length ? evaluated[evaluated.length - 1] : null;
   const missing = evaluated.filter((a) => !a.present);
 
   // Kryto je to, kam sahá NEJDÁL potvrzená kotva. Chybějící kotva krytí
@@ -188,20 +266,50 @@ export function verifyAnchors(records, anchors) {
     anchors: evaluated,
     latest,
     coveredUpToIndex: covered >= 0 ? covered : null,
-    // `false` jen tehdy, když ukotvený otisk v řetězu CHYBÍ. To je tvrdý
-    // nález: řetěz se od ukotvení změnil způsobem, který řetězení samo
-    // neodhalí.
-    ok: missing.length === 0,
+    malformedAnchors: malformedAnchors.length,
+    duplicateHashes,
+    // `false` při jakémkoli z těchto stavů: chybějící nebo přesunutý
+    // ukotvený otisk, poškozená kotva, duplicitní otisky v řetězu.
+    // Všechny tři znamenají, že se s podkladem hýbalo.
+    ok: missing.length === 0 && malformedAnchors.length === 0 && duplicateHashes === 0,
   };
 }
 
 /**
  * Shrnutí ukotvení pro spis — v podobě, kterou lze ukázat uživateli.
  *
- * Neobsahuje počet položek ani nic dalšího o cizích nájemcích.
+ * NEOBSAHUJE počty záznamů. Řetěz je společný všem nájemcům, takže
+ * „kryje N záznamů" je údaj o cizích auditech; navíc si ho čtenář spisu
+ * přečte jako počet SVÝCH krytých běhů, což není. Krytí se vyjadřuje
+ * u jednotlivých běhů podle času, ne číslem.
+ *
+ * @param {Array} records  položky řetězu
+ * @param {Array} anchors  kotvy
+ * @param {boolean|null} chainOk výsledek ÚPLNÉ verifyChain; `false` znamená,
+ *   že ukotvení nedokládá nic
  */
-export function anchorSummary(records, anchors) {
+export function anchorSummary(records, anchors, chainOk = null) {
   const status = verifyAnchors(records, anchors);
+
+  // Kotva nad porušeným řetězem nedokazuje NIC.
+  //
+  // Ověření kotvy říká „ukotvený otisk sedí na své pozici". To dává smysl
+  // jen tehdy, když řetěz jako celek prochází kontrolou. Nad řetězem, kde
+  // otisky nenavazují, může sedět cokoli — a hlásit „ukotveno" by z toho
+  // udělalo doklad, který neexistuje.
+  if (chainOk === false) {
+    return {
+      state: 'broken',
+      anchoredAt: status.latest?.anchoredAt ?? null,
+      headHash: null,
+      coveredUpToIndex: null,
+      coversRecords: 0,
+      rationale:
+        'Řetěz záznamů neprošel úplnou kontrolou, takže ukotvení nedokládá nic. ' +
+        'Dokud se neporušenost řetězu neobnoví, nelze tento spis považovat ' +
+        'za doklad o tom, že se se záznamy nehýbalo.',
+    };
+  }
 
   if (status.ok === null) {
     return {
@@ -219,20 +327,41 @@ export function anchorSummary(records, anchors) {
 
   if (status.ok === false) {
     const chybi = status.anchors.filter((a) => !a.present);
+    // Rozhoduje NEJSTARŠÍ vadná kotva — ta ohraničuje, jak hluboko zásah
+    // sahá. Poslední by řekla jen to, kde skončil.
+    const prvni = chybi[0] || null;
+    const duvody = [];
+    if (chybi.length) {
+      duvody.push(
+        `${chybi.length === 1 ? 'Jeden dříve ukotvený otisk' : `${chybi.length} dříve ukotvených otisků`} ` +
+          'v řetězu chybí nebo je na jiné pozici, než na jaké byl ukotven.'
+      );
+    }
+    if (status.malformedAnchors) {
+      duvody.push(
+        `${status.malformedAnchors} záznam o ukotvení je poškozený a nelze ho ověřit.`
+      );
+    }
+    if (status.duplicateHashes) {
+      duvody.push(
+        `V řetězu se ${status.duplicateHashes}× opakuje týž otisk, což samo o sobě ` +
+          'znamená zásah do historie.'
+      );
+    }
     return {
       state: 'broken',
-      anchoredAt: chybi[chybi.length - 1].anchoredAt,
-      headHash: chybi[chybi.length - 1].headHash,
-      coveredUpToIndex: status.coveredUpToIndex,
-      coversRecords: status.coveredUpToIndex === null ? 0 : status.coveredUpToIndex + 1,
+      anchoredAt: prvni?.anchoredAt ?? null,
+      headHash: prvni?.headHash ?? null,
+      coveredUpToIndex: null,
+      coversRecords: 0,
       rationale:
-        `${chybi.length} dříve ukotvený otisk se v řetězu nenachází. ` +
-        'Buď byla historie přepsána, nebo záznam pochází z jiného řetězu. ' +
-        'Tenhle spis proto nelze považovat za doklad o neporušenosti.',
+        `${duvody.join(' ')} Buď byla historie přepsána, nebo záznam pochází ` +
+        'z jiného řetězu. Tenhle spis proto nelze považovat za doklad ' +
+        'o neporušenosti.',
     };
   }
 
-  // Kolik běhů kotva skutečně kryje. Nula znamená, že se ukotvoval prázdný
+  // Kolik záznamů kotva kryje. Nula znamená, že se ukotvoval prázdný
   // řetěz — kotva je platná, ale nedokládá nic.
   const coversRecords = status.coveredUpToIndex === null ? 0 : status.coveredUpToIndex + 1;
 
@@ -259,7 +388,7 @@ export function anchorSummary(records, anchors) {
     coversRecords,
     rationale:
       `Otisk řetězu byl naposledy ukotven ${status.latest.anchoredAt} a v řetězu ` +
-      `se stále nachází. Žádný z ${coversRecords} záznamů pořízených před tímto ` +
+      'se stále nachází na své pozici. Žádný ze záznamů pořízených před tímto ' +
       'okamžikem tedy nebyl změněn ani odstraněn — a to včetně odstranění ' +
       'z konce, které samotné řetězení neodhalí. Záznamy pořízené po tomto ' +
       'okamžiku kryté nejsou. Důkazní hodnotu má kopie kotvy uchovaná MIMO ' +

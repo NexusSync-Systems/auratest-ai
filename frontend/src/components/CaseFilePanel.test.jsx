@@ -12,11 +12,21 @@ import CaseFilePanel from './CaseFilePanel.jsx';
 
 const getToken = async () => 'tok';
 
+/**
+ * Odpověď `/api/ledger/verify`.
+ *
+ * `fullChainOk` a `ownRecordsOk` mají výchozí hodnoty odvozené od `ok`,
+ * aby starší fixtury dál dávaly smysl — endpoint je vrací vždy.
+ */
 const chainResponse = (payload) => ({
   ok: true,
   status: 200,
   headers: { get: () => 'application/json' },
-  json: async () => payload,
+  json: async () => ({
+    fullChainOk: payload.ok,
+    ownRecordsOk: payload.ok,
+    ...payload,
+  }),
 });
 
 beforeEach(() => {
@@ -33,7 +43,7 @@ describe('stav řetězu', () => {
   test('neporušený řetěz se ohlásí i s počtem položek', async () => {
     global.fetch = vi.fn(async () => chainResponse({ ok: true, count: 12, problems: [] }));
     render(<CaseFilePanel getToken={getToken} />);
-    expect(await screen.findByText(/Řetěz je neporušený — 12 položek/)).toBeInTheDocument();
+    expect(await screen.findByText(/12 vašich položek/)).toBeInTheDocument();
   });
 
   test('zelený stav nesvádí k závěru, že je záznam neprůstřelný', async () => {
@@ -57,12 +67,15 @@ describe('stav řetězu', () => {
     global.fetch = vi.fn(async () =>
       chainResponse({
         ok: false,
+        // Celý řetěz navazuje; porušený je konkrétní záznam uživatele.
+        fullChainOk: true,
+        ownRecordsOk: false,
         count: 5,
         problems: [{ index: 2, problem: 'Otisk nesedí s obsahem' }],
       })
     );
     render(<CaseFilePanel getToken={getToken} />);
-    expect(await screen.findByText(/Řetěz je porušený/)).toBeInTheDocument();
+    expect(await screen.findByText(/[Vv]aše záznamy jsou porušené/)).toBeInTheDocument();
     // sessionId se ve výpisu NEUVÁDÍ: ověření běží nad podmnožinou vlastníka,
     // ale identifikátory do hlášky o porušení stejně nepatří.
     expect(screen.getByText(/položka 2/)).toBeInTheDocument();
@@ -93,7 +106,7 @@ describe('export spisu', () => {
     });
 
     render(<CaseFilePanel getToken={getToken} />);
-    await screen.findByText(/neporušený/);
+    await screen.findByText(/v pořádku/);
 
     await userEvent.click(screen.getByRole('button', { name: /Stáhnout PDF/ }));
 
@@ -123,7 +136,7 @@ describe('export spisu', () => {
     });
 
     render(<CaseFilePanel getToken={getToken} />);
-    await screen.findByText(/neporušený/);
+    await screen.findByText(/v pořádku/);
 
     await userEvent.click(screen.getByRole('button', { name: /Stáhnout JSON/ }));
 
@@ -203,7 +216,7 @@ describe('ukotvení otisku (D6)', () => {
     });
 
     render(<CaseFilePanel getToken={getToken} />);
-    await screen.findByText(/neporušený/);
+    await screen.findByText(/v pořádku/);
     await userEvent.click(screen.getByRole('button', { name: /Ukotvit otisk nyní/ }));
 
     expect(await screen.findByText(/MIMO tenhle server/)).toBeInTheDocument();

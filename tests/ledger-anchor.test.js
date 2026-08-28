@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { appendRecord, readLedger, verifyChain } from '../audit-ledger.js';
+import { appendRecord, readLedger, verifyChain, digestOf } from '../audit-ledger.js';
 import {
   createAnchor,
   readAnchors,
@@ -33,7 +33,10 @@ const zapis = (n) =>
   appendRecord({ sessionId: `s${n}`, target: `https://x${n}.cz`, result: { n } }, ledger);
 
 const kotva = (note) => createAnchor({ ledgerFile: ledger, anchorFile: anchors, note });
-const stav = () => anchorSummary(readLedger(ledger), readAnchors(anchors));
+// Plná kontrola řetězu je součástí posouzení: nad porušeným řetězem
+// kotva nedokládá nic.
+const stav = () =>
+  anchorSummary(readLedger(ledger), readAnchors(anchors), verifyChain(ledger).ok);
 
 /** Odstraní z konce souboru posledních `n` řádků. */
 const useknoutKonec = (n) => {
@@ -53,7 +56,7 @@ describe('to, co řetězení samo neumí', () => {
 
     expect(verifyChain(ledger).ok).toBe(true); // řetěz nic nepozná
     expect(stav().state).toBe('broken'); // kotva ano
-    expect(stav().rationale).toMatch(/nenachází/);
+    expect(stav().rationale).toMatch(/chybí nebo je na jiné pozici/);
   });
 
   test('přírůstky po ukotvení nejsou kryté a spis to říká', () => {
@@ -143,12 +146,26 @@ describe('stavy ukotvení', () => {
 });
 
 describe('odolnost a poctivost', () => {
-  test('poškozený řádek v kotvách nezneplatní ostatní', () => {
+  test('poškozený řádek v kotvách se hlásí, nezahazuje', () => {
+    // REGRESE a obcházecí cesta: po useknutí řetězu stačilo poškodit jeden
+    // znak v souboru kotev, kotva zmizela a nález „broken" se změnil na
+    // „neukotveno". Chybějící důkaz se tak proměnil v „nic tu nebylo".
     zapis(1);
     kotva();
     fs.appendFileSync(anchors, 'tohle není JSON\n');
-    expect(readAnchors(anchors)).toHaveLength(1);
-    expect(stav().state).toBe('anchored');
+    expect(readAnchors(anchors)).toHaveLength(2);
+    expect(readAnchors(anchors)[1].__malformed).toBe(true);
+    expect(stav().state).toBe('broken');
+    expect(stav().rationale).toMatch(/poškozený/);
+  });
+
+  test('kotva s nesmyslným otiskem neprojde jako platná', () => {
+    zapis(1);
+    fs.writeFileSync(
+      anchors,
+      `${JSON.stringify({ anchoredAt: '2026-01-01T00:00:00Z', headHash: 'deadbeef', recordCount: 1 })}\n`
+    );
+    expect(readAnchors(anchors)[0].__malformed).toBe(true);
   });
 
   test('chybějící soubor kotev není chyba', () => {
@@ -184,5 +201,93 @@ describe('odolnost a poctivost', () => {
     const a = { anchoredAt: '2026-08-27T06:00:00.000Z', headHash: 'a'.repeat(64), recordCount: 3 };
     expect(anchorMessage(a)).toContain('a'.repeat(64));
     expect(anchorMessage(a)).toContain('2026-08-27T06:00:00.000Z');
+  });
+});
+
+describe('obejití kotvy (regrese kontrolní vlny)', () => {
+  test('duplikát hlavy na konci kotvu neudrží', () => {
+    // ÚTOK: smazat záznam, přepočítat otisky za ním a na konec připojit
+    // kopii původní hlavy, aby ukotvený otisk „zůstal v řetězu". Dokud se
+    // otisk hledal kdekoli, prošlo to jako „anchored".
+    zapis(1);
+    zapis(2);
+    zapis(3);
+    kotva();
+
+    const radky = fs.readFileSync(ledger, 'utf8').trim().split('\n');
+    fs.writeFileSync(ledger, `${[...radky, radky[2]].join('\n')}\n`);
+
+    // Zachytí to už úplná kontrola řetězu (duplikát rozbije navazování),
+    // takže do posouzení kotvy se to ani nedostane. Podstatné je, že
+    // výsledek NENÍ „anchored".
+    expect(stav().state).toBe('broken');
+
+    // Samotné ověření kotev duplikát pozná i bez plné kontroly.
+    const bezPlne = anchorSummary(readLedger(ledger), readAnchors(anchors), true);
+    expect(bezPlne.state).toBe('broken');
+    expect(bezPlne.rationale).toMatch(/opakuje týž otisk/);
+  });
+
+  test('vložený záznam před ukotvené místo se pozná', () => {
+    // ÚTOK: dopočítat self-konzistentní řádek a vložit ho. Navazování
+    // `prevHash` se v uživatelské cestě nekontroluje, takže dokud se kotva
+    // hledala kdekoli, krytí dokonce vzrostlo nad počet záznamů v okamžiku
+    // ukotvení.
+    zapis(1);
+    zapis(2);
+    kotva();
+
+    const radky = fs.readFileSync(ledger, 'utf8').trim().split('\n');
+    const podvrh = JSON.parse(radky[0]);
+    delete podvrh.hash;
+    podvrh.sessionId = 'podvrh';
+    podvrh.target = 'https://podvrh.cz';
+    const hash = digestOf(podvrh);
+    fs.writeFileSync(ledger, `${[...radky, JSON.stringify({ ...podvrh, hash })].join('\n')}\n`);
+
+    expect(stav().state).toBe('broken');
+  });
+
+  test('přepsání recordCount na nulu kontrolu nevypne', () => {
+    // ÚTOK: `recordCount: 0` dřív znamenal „prázdný řetěz, nekontroluj" —
+    // stačilo tedy po useknutí přepsat jedno číslo a nález zmizel.
+    zapis(1);
+    zapis(2);
+    zapis(3);
+    kotva();
+
+    const radky = fs.readFileSync(ledger, 'utf8').trim().split('\n');
+    fs.writeFileSync(ledger, `${radky.slice(0, 1).join('\n')}\n`);
+    expect(stav().state).toBe('broken');
+
+    const k = JSON.parse(fs.readFileSync(anchors, 'utf8').trim());
+    k.recordCount = 0;
+    fs.writeFileSync(anchors, `${JSON.stringify(k)}\n`);
+    expect(stav().state).toBe('broken');
+  });
+
+  test('kotva nad porušeným řetězem nedokládá nic', () => {
+    // Ověření kotvy říká „otisk sedí na své pozici". Nad řetězem, kde
+    // otisky nenavazují, může sedět cokoli.
+    zapis(1);
+    zapis(2);
+    kotva();
+    expect(anchorSummary(readLedger(ledger), readAnchors(anchors), false).state).toBe('broken');
+    expect(anchorSummary(readLedger(ledger), readAnchors(anchors), false).rationale).toMatch(
+      /neprošel úplnou kontrolou/
+    );
+  });
+
+  test('shrnutí neprozradí počet záznamů všech nájemců', () => {
+    // Řetěz je společný. „Kryje N záznamů" je údaj o cizích auditech a
+    // čtenář spisu si ho navíc přečte jako počet SVÝCH krytých běhů.
+    zapis(1);
+    zapis(2);
+    zapis(3);
+    kotva();
+    const s = stav();
+    expect(s.state).toBe('anchored');
+    expect(s.rationale).not.toMatch(/\d+ záznam/);
+    expect(JSON.stringify(s)).not.toMatch(/"recordCount"/);
   });
 });

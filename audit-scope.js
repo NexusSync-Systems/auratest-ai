@@ -44,12 +44,18 @@ export const AUDIT_RULE_SCOPE = {
     'tls.protocols.deprecated',
     'tls.certificate.validity',
   ],
-  'ai-act-audit': [
-    'aiact.cl50.1.chatbot-disclosure',
-    'aiact.cl50.2.synthetic-marking',
-    'aiact.cl50.3.emotion-recognition',
-    'aiact.cl50.4.deepfake-disclosure',
-  ],
+  // Odst. 3 a 4 se do rozsahu NEDÁVAJÍ.
+  //
+  // `aiact.cl50.4.deepfake-disclosure` má v registru metodu „Neexistuje
+  // automatická kontrola" a `evaluateOutOfScopeObligations` u obou vrací
+  // neprůkazné bez jakéhokoli měření. Vypsat jejich znění ve spisu pod
+  // nadpisem „Znění použitých pravidel" znamená tvrdit kontrolu, která
+  // neproběhla — přesně vada, kterou minulá kontrolní vlna už jednou
+  // odstranila a která se sem vrátila jinou cestou.
+  //
+  // Ve výsledku skenu jsou obě povinnosti dál uvedené jako neprůkazné
+  // s vysvětlením; jen se na ně neodkazuje záznam.
+  'ai-act-audit': ['aiact.cl50.1.chatbot-disclosure', 'aiact.cl50.2.synthetic-marking'],
   'analyze-cra': ['cra.sbom.bundle-fingerprint'],
   'cra-vuln-audit': ['cra.vulnerabilities.osv'],
   'analyze-accessibility': ['eaa.wcag21aa.axe'],
@@ -114,12 +120,22 @@ export function verdictsForAudit(slug, result) {
         {
           key: 'tls.pqc',
           label: 'Hybridní post-kvantová výměna klíčů',
-          // Nepodporovaná skupina NENÍ porušení předpisu — dnes ji žádný
-          // předpis nevyžaduje. Proto se z `false` dělá pozorování, ne vada.
-          ok: result.tls?.pqc?.supported === true ? true : null,
+          // POZOROVÁNÍ, ne kontrola. Post-kvantovou výměnu dnes žádný
+          // předpis nevyžaduje, takže „nepodporuje" není porušení.
+          //
+          // Dřív se změřené `false` balilo do `null`, což mělo dva zlé
+          // následky: spis tvrdil „nepodařilo se posoudit" o měření, které
+          // proběhlo, a NIS2 sken nemohl nikdy vyjít bez nálezu — bezvadný
+          // web s TLS 1.3 dostal trvale „Neprůkazné".
+          //
+          // `advisory` říká, že se výsledek do celkového verdiktu nepočítá.
+          advisory: true,
+          ok: tri(result.tls?.pqc?.supported),
           rationale:
-            result.tls?.pqc?.rationale ||
-            'Podporu se nepodařilo ověřit. Absence PQC dnes není porušením předpisu.',
+            (result.tls?.pqc?.rationale ||
+              'Podporu se nepodařilo ověřit.') +
+            ' Absence hybridní post-kvantové výměny klíčů dnes není porušením ' +
+            'předpisu — jde o pozorování, ne o nález.',
         },
       ];
 
@@ -167,7 +183,11 @@ export function verdictsForAudit(slug, result) {
         {
           key: 'eaa.wcag21aa',
           label: 'Přístupnost podle WCAG 2.1 AA',
-          ok: Array.isArray(result.violations) ? result.violations.length === 0 : null,
+          // Prázdný seznam porušení u nenačtené stránky NENÍ splnění.
+          ok:
+            result.navigationError || !Array.isArray(result.violations)
+              ? null
+              : result.violations.length === 0,
           rationale:
             `Automaticky zjištěno ${result.violations?.length ?? 0} porušení a ` +
             `${result.incomplete?.length ?? 0} položek k ručnímu posouzení. ` +
@@ -181,7 +201,10 @@ export function verdictsForAudit(slug, result) {
         {
           key: 'gdpr.cookies.pre-consent',
           label: 'Trackery před udělením souhlasu',
-          ok: tri(result.gdpr?.isCompliant),
+          // Nenačtená stránka → neprůkazné, ať skener vrátí cokoli.
+          // Druhá pojistka vedle té v agent.js: čtení výsledku se nesmí
+          // spoléhat na to, že si měřič vždy vzpomene.
+          ok: result.navigationError ? null : tri(result.gdpr?.isCompliant),
           rationale: result.gdpr?.rating || '',
         },
         {
@@ -236,7 +259,10 @@ export function verdictsForAudit(slug, result) {
  * neprovedl, vyšel jako „v pořádku".
  */
 export function overallVerdict(verdicts) {
-  const list = Array.isArray(verdicts) ? verdicts : [];
+  // Pozorování (`advisory`) se do verdiktu nepočítají. Jsou to zjištění,
+  // která žádný předpis nevyžaduje — jejich `false` není porušení a jejich
+  // `null` nesmí bránit tvrdit splnění.
+  const list = (Array.isArray(verdicts) ? verdicts : []).filter((v) => !v?.advisory);
   if (list.length === 0) return null;
   if (list.some((v) => v.ok === false)) return false;
   if (list.some((v) => v.ok === null)) return null;
@@ -273,8 +299,11 @@ function statusToTri(status) {
  * závislosti sken nevidí vůbec.
  */
 function vulnVerdict(result) {
-  if (result.cra?.isCompliant === false) return false;
-  return null;
+  // Skener sám vrací poctivý tři-stav a `true` dává jen tehdy, když byly
+  // ověřeny všechny nalezené knihovny, všechny skripty se přečetly
+  // a nenarazilo se na limit. Přepisovat to tady na `null` znamenalo mít
+  // dva soudce téže věci — a zahodit výsledek, který skener poctivě změřil.
+  return tri(result.cra?.isCompliant);
 }
 
 function vulnRationale(result) {

@@ -5,6 +5,7 @@ import {
   CASE_FILE_LIMITS,
 } from '../case-file.js';
 import { RULES } from '../rule-registry.js';
+import { auditResultOf, digestOf } from '../audit-ledger.js';
 
 /**
  * Spis za období.
@@ -319,14 +320,40 @@ describe('spis netvrdí víc, než co dokládá (regrese kontrolní vlny)', () =
     expect(JSON.stringify(file.ledger)).not.toMatch(/cizi-session/);
   });
 
-  test('tvrzení o řetězu se omezuje na střed historie', () => {
-    // Odmazání posledních položek je bez vnějšího ukotvení nedetekovatelné,
-    // a právě konec je to, co by útočník mazal. Konec řetězu proto pokrývá
-    // ukotvení (D6), ne tohle tvrzení.
-    const html = renderCaseFileHtml(build({ sessions: [session()] }));
-    expect(html).toMatch(/z prostřed řetězu/);
+  test('spis odliší kontrolu vlastních záznamů od kontroly celého řetězu', () => {
+    // REGRESE: spis tvrdil „řetěz je neporušený" na základě kontroly nad
+    // podmnožinou vlastníka. Ta ale odstranění položky odhalit NEUMÍ —
+    // mezi jeho záznamy leží cizí, takže navazování otisků ověřit nejde.
+    const html = renderCaseFileHtml(build({ sessions: [session()], fullChainOk: true }));
+    expect(html).toMatch(/Vaše záznamy/);
+    expect(html).toMatch(/Celý řetěz/);
+    expect(html).toMatch(/Prošel úplnou kontrolou/);
     // Bez kotvy musí spis říct, že vyloučit useknutí konce neumí.
     expect(html).toMatch(/vyloučit nelze/);
+  });
+
+  test('neprošlá úplná kontrola je ve spisu výstraha', () => {
+    const html = renderCaseFileHtml(build({ sessions: [session()], fullChainOk: false }));
+    expect(html).toMatch(/NEPROŠEL úplnou kontrolou/);
+    expect(html).toMatch(/není dokladem o neporušenosti/);
+  });
+
+  test('u každého běhu je vidět, jestli ho kotva kryje', () => {
+    // Souhrnné „kryje N záznamů" je údaj o celém řetězu včetně cizích
+    // auditů — čtenář si ho přečte jako počet svých krytých běhů.
+    const file = build({
+      sessions: [session({ timestamp: '2026-06-01T10:00:00.000Z' }), session({ id: 'pozdejsi', timestamp: '2026-06-20T10:00:00.000Z' })],
+      anchor: {
+        state: 'anchored',
+        anchoredAt: '2026-06-10T00:00:00.000Z',
+        headHash: 'a'.repeat(64),
+        rationale: 'Ukotveno.',
+      },
+    });
+    const byId = Object.fromEntries(file.runs.map((r) => [r.sessionId, r.coveredByAnchor]));
+    expect(byId['sess-1']).toBe(true);
+    expect(byId['pozdejsi']).toBe(false);
+    expect(renderCaseFileHtml(file)).toMatch(/vznikl až po posledním ukotvení/);
   });
 
   test('nález jako objekt se nevytiskne jako [object Object]', () => {
@@ -411,7 +438,10 @@ describe('předpisová kontrola ve spisu (D5)', () => {
     const html = renderCaseFileHtml(
       build({ sessions: [scan([check(true), check(null, { key: 'tls.pqc', label: 'PQC' })])] })
     );
-    expect(html).toMatch(/SPLNĚNO/);
+    // „BEZ NÁLEZU", ne „SPLNĚNO" — absence nálezu není důkaz shody a
+    // slovník kontrol se nesmí rozcházet s verdiktem o kapitolu níž.
+    expect(html).toMatch(/BEZ NÁLEZU/);
+    expect(html).not.toMatch(/SPLNĚNO/);
     expect(html).toMatch(/NEPRŮKAZNÉ/);
     expect(html).toMatch(/Předpisová kontrola/);
   });
@@ -465,5 +495,35 @@ describe('ukotvení ve spisu (D6)', () => {
 
   test('meze spisu uvádějí, že přírůstky po ukotvení kryté nejsou', () => {
     expect(CASE_FILE_LIMITS.join(' ')).toMatch(/po posledním ukotvení kryté nejsou/);
+  });
+});
+
+describe('ztráta důkazu (regrese druhé kontrolní vlny)', () => {
+  test('chybějící znění pravidla se ve spisu přizná, nezmizí', () => {
+    // Registr drží jen aktuální verzi. Záznam z doby, kdy platila starší,
+    // se s dnešní neshoduje — a dokud se takové znění tiše vynechávalo,
+    // viděl čtenář kontrolu s verdiktem a neměl podle čeho ho posoudit.
+    const file = build({
+      sessions: [session({ kind: 'compliance-scan', checks: [{ key: 'k', ok: true, rationale: 'r' }], ruleRefs: ['nis2.headers.csp.v1'] })],
+    });
+    expect(file.ruleset.rules).toHaveLength(1);
+    expect(file.ruleset.rules[0].unavailable).toBe(true);
+    expect(renderCaseFileHtml(file)).toMatch(/není k dispozici/);
+  });
+
+  test('otisk výsledku kryje verdikty předpisové kontroly', () => {
+    // REGRESE P0: `auditResultOf` nezahrnovalo `checks`, takže KAŽDÝ
+    // compliance sken měl týž otisk. Kdo uměl zapsat do databáze, přepsal
+    // „NÁLEZ" na „BEZ NÁLEZU" a ověření otisku dál hlásilo shodu — a spis
+    // to tiskl jako „Otisk souhlasí: Ano".
+    const scan = (ok) => ({
+      kind: 'compliance-scan',
+      auditSlug: 'cookie-audit',
+      status: 'completed',
+      checks: [{ key: 'k', ok, rationale: 'r' }],
+      verdict: ok,
+      ruleRefs: [],
+    });
+    expect(digestOf(auditResultOf(scan(true)))).not.toBe(digestOf(auditResultOf(scan(false))));
   });
 });

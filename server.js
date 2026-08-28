@@ -452,14 +452,25 @@ app.get('/api/ledger/verify', authenticateToken, (req, res) => {
       (r) => !r.__malformed && r.userId === req.user.userId
     );
     const result = verifyChain(undefined, mine);
-    const anchor = anchorSummary(readLedger(), readAnchors());
+
+    // Kontrola nad podmnožinou NEODHALÍ smazání ani vložení — mezi dvěma
+    // záznamy vlastníka leží cizí, takže navazování ověřit nelze. Tvrdit
+    // z ní „řetěz je neporušený" bylo nepodložené.
+    //
+    // Plná kontrola běží nad celým souborem, ale ven jde jen jediný boolean:
+    // počty ani cizí identifikátory ne.
+    const full = verifyChain();
+    const anchor = anchorSummary(readLedger(), readAnchors(), full.ok);
+
     res.json({
-      ok: result.ok,
+      // Celkový výsledek shrnuje obě kontroly i stav kotvy. Zelená fajfka
+      // vedle červeného řádku byla matoucí.
+      ok: result.ok && full.ok && anchor.state !== 'broken',
+      ownRecordsOk: result.ok,
+      fullChainOk: full.ok,
       count: result.count,
       scope: result.scope,
       problems: result.problems.map(({ index, problem }) => ({ index, problem })),
-      // Bez tohohle by zelená fajfka svedla k závěru, že je vyloučené
-      // i odstranění nejnovějších položek. Není — to vylučuje až kotva.
       anchor: {
         state: anchor.state,
         anchoredAt: anchor.anchoredAt,
@@ -486,7 +497,14 @@ app.post('/api/ledger/anchor', authenticateToken, async (req, res) => {
     const { anchor, message } = createAnchor({
       note: `ruční ukotvení (${req.user.email || req.user.userId})`,
     });
-    res.json({ anchoredAt: anchor.anchoredAt, headHash: anchor.headHash, message });
+    // `message` obsahuje počet záznamů CELÉHO řetězu, tedy i cizích auditů.
+    // Uživateli se posílá text bez toho řádku; provozovatel má úplné znění
+    // v logu a v CLI skriptu.
+    res.json({
+      anchoredAt: anchor.anchoredAt,
+      headHash: anchor.headHash,
+      message: message.replace(/^Položek v záznamu:.*$/m, '').replace(/\n{3,}/g, '\n\n'),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -524,6 +542,10 @@ app.get('/api/case-file', authenticateToken, (req, res, next) => {
       }
     }
 
+    // Úplná kontrola řetězu. Do spisu z ní jde jen boolean — počty ani
+    // cizí sessionId ne.
+    const fullChain = verifyChain();
+
     const sessions = await db.getSessionsDetailed(req.user.userId);
     // Záznam se filtruje na vlastníka stejně jako běhy — spis nesmí
     // prozradit, že v systému existují cizí audity.
@@ -540,7 +562,11 @@ app.get('/api/case-file', authenticateToken, (req, res, next) => {
       // Kotva se ověřuje proti CELÉMU řetězu, ne proti podmnožině uživatele:
       // ukotvuje se otisk hlavy, což je vlastnost celého souboru. Ven jde
       // jen stav a čas — počet položek ani cizí identifikátory ne.
-      anchor: anchorSummary(readLedger(), readAnchors()),
+      //
+      // Plná kontrola řetězu je podmínkou: nad porušeným řetězem kotva
+      // nedokládá nic, protože ukotvený otisk pak může sedět na čemkoli.
+      anchor: anchorSummary(readLedger(), readAnchors(), fullChain.ok),
+      fullChainOk: fullChain.ok,
     });
 
     if (format === 'json') {
@@ -1421,8 +1447,59 @@ const AUDIT_OPTIONS = {
  * výsledek platí, jen ho nebude čím doložit. To se pozná ve spisu.
  */
 async function recordComplianceScan({ slug, url, userId, result }) {
-  const verdicts = verdictsForAudit(slug, result);
   const sessionId = `session_scan_${randomUUID()}`;
+
+  // Sestavení JE uvnitř try.
+  //
+  // `rulesForAudit` vyhazuje u neznámého id pravidla, `verdictsForAudit`
+  // čte cizí strukturu. Dokud to stálo mimo, překlep v registru shodil
+  // hotový sken: uživatel dostal 500 a prohlížeč běžel desítky sekund
+  // pro nic.
+  let sessionData;
+  try {
+    sessionData = buildScanSession({ slug, url, userId, sessionId, result });
+  } catch (err) {
+    console.error(`Sestavení záznamu skenu ${slug} selhalo:`, err.message);
+    return {
+      id: sessionId,
+      checks: [],
+      verdict: null,
+      ruleRefs: [],
+      ledger: { recorded: false, error: err.message },
+    };
+  }
+
+  // Pořadí je záměrné: NEJDŘÍV session, potom neměnný záznam.
+  //
+  // Obráceně vznikala při výpadku databáze položka v řetězu bez protějšku.
+  // Spis iteruje přes běhy, ne přes záznamy, takže se taková položka nikdy
+  // neobjevila — důkaz se ztratil tiše. Klient navíc dostal „zaznamenáno"
+  // a sessionId, které nikde neexistovalo.
+  try {
+    await db.saveSession(sessionId, sessionData);
+  } catch (err) {
+    console.error(`Uložení skenu ${slug} selhalo:`, err.message);
+    sessionData.ledger = { recorded: false, error: `Běh se nepodařilo uložit: ${err.message}` };
+    return sessionData;
+  }
+
+  recordInLedger(sessionData, sessionData.ruleRefs);
+
+  // Otisk a stav zápisu doplní `recordInLedger` až teď, takže se session
+  // musí uložit znovu. Selhání téhle aktualizace není ztráta důkazu —
+  // záznam v řetězu už existuje.
+  try {
+    await db.saveSession(sessionId, sessionData);
+  } catch (err) {
+    console.error(`Doplnění otisku k skenu ${slug} selhalo:`, err.message);
+  }
+
+  return sessionData;
+}
+
+/** Sestaví běh předpisové kontroly. Oddělené, aby šlo testovat bez databáze. */
+function buildScanSession({ slug, url, userId, sessionId, result }) {
+  const verdicts = verdictsForAudit(slug, result);
   const sessionData = {
     id: sessionId,
     userId,
@@ -1444,14 +1521,6 @@ async function recordComplianceScan({ slug, url, userId, result }) {
     runErrors: [],
     steps: [],
   };
-
-  try {
-    recordInLedger(sessionData, sessionData.ruleRefs);
-    await db.saveSession(sessionId, sessionData);
-  } catch (err) {
-    // Sken proběhl; nepovedlo se ho jen doložit.
-    console.error(`Záznam skenu ${slug} selhal:`, err.message);
-  }
   return sessionData;
 }
 

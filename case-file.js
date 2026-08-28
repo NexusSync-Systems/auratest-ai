@@ -82,7 +82,11 @@ export const CASE_FILE_LIMITS = [
  * kontrol neproběhla, vyšel jako v pořádku.
  */
 function complianceVerdict(session) {
-  const checks = Array.isArray(session.checks) ? session.checks : [];
+  // Pozorování se do verdiktu nepočítají — viz `overallVerdict`.
+  // Ve výpisu kontrol zůstávají, jen se od nich neodvozuje závěr.
+  const checks = (Array.isArray(session.checks) ? session.checks : []).filter(
+    (c) => !c?.advisory
+  );
   if (session.status !== 'completed' || checks.length === 0) {
     return {
       value: 'inconclusive',
@@ -238,7 +242,7 @@ function periodMembership(timestamp, from, to) {
  * @param {string} [input.head]    otisk hlavy; pro testy
  * @param {object} [input.anchor]  shrnutí ukotvení z anchorSummary()
  */
-export function buildCaseFile({ sessions, records, from, to, subject, chain, head, anchor }) {
+export function buildCaseFile({ sessions, records, from, to, subject, chain, head, anchor, fullChainOk }) {
   const recordList = records || [];
 
   // Duplicitní sessionId se NEPŘEHLÍŽÍ.
@@ -271,6 +275,12 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
     (chainStatus.problems || []).map((p) => p.sessionId).filter(Boolean)
   );
 
+  // Kotva kryje běhy pořízené PŘED ukotvením. Vyjadřuje se to u každého
+  // běhu zvlášť, ne souhrnným číslem: „kryje 14 záznamů" je údaj o celém
+  // řetězu včetně cizích auditů a čtenář si ho přečte jako počet svých.
+  const anchoredAtMs =
+    anchor?.state === 'anchored' ? Date.parse(anchor.anchoredAt) : NaN;
+
   const runs = inPeriodSessions
     .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
     .map((session) => {
@@ -287,6 +297,11 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
         // co je měření podle pravidla a co posouzení jazykovým modelem.
         kind: session.kind === 'compliance-scan' ? 'compliance-scan' : 'agent-run',
         performedAt: session.timestamp,
+        // Je tenhle běh krytý ukotvením? `null` = není kotva nebo se to
+        // nedá určit.
+        coveredByAnchor: Number.isNaN(anchoredAtMs)
+          ? null
+          : Date.parse(session.timestamp) <= anchoredAtMs,
         verdict,
         // Dílčí kontroly u předpisového skenu. Každá nese vlastní verdikt
         // i odůvodnění, takže ve spisu je vidět nejen kolik, ale co přesně.
@@ -347,8 +362,30 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
     const refs = record?.rules?.length ? record.rules : session.ruleRefs || [];
     for (const ref of refs) usedRefs.add(ref);
   }
-  const ruleSnapshot = RULES.filter((r) => usedRefs.has(`${r.id}.v${r.version}`)).map(
-    ({ id, version, title, method, limits, changelog }) => ({
+  const byRef = new Map(RULES.map((r) => [`${r.id}.v${r.version}`, r]));
+  const ruleSnapshot = [...usedRefs].sort().map((ref) => {
+    const rule = byRef.get(ref);
+    if (!rule) {
+      // Registr drží jen AKTUÁLNÍ verzi pravidla. Záznam z doby, kdy platila
+      // starší, se s dnešní neshoduje — a dokud se takové znění tiše
+      // vynechávalo, viděl čtenář kontrolu s verdiktem a neměl podle čeho
+      // ho posoudit. Vynechaná položka bez zmínky je horší než chybějící
+      // text, protože o ní nikdo neví.
+      return {
+        ref,
+        unavailable: true,
+        title: 'Znění této verze pravidla není k dispozici',
+        method:
+          'Podle tohoto pravidla se měřilo, ale registr už jeho tehdejší ' +
+          'znění neobsahuje — mezitím byla vydána novější verze.',
+        limits:
+          'Výsledek dotčené kontroly nelze z tohoto spisu posoudit. Znění ' +
+          'je potřeba dohledat ve verzi nástroje uvedené u daného běhu.',
+        changelog: null,
+      };
+    }
+    const { id, version, title, method, limits, changelog } = rule;
+    return {
       ref: `${id}.v${version}`,
       title,
       method,
@@ -356,8 +393,8 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
       // Changelog patří do spisu: bez něj nejde po roce doložit, proč se týž
       // web posuzuje jinak než dřív.
       changelog: changelog || null,
-    })
-  );
+    };
+  });
 
   const counts = runs.reduce(
     (acc, r) => {
@@ -405,6 +442,9 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
       chainOk: chainStatus.ok,
       // Ukotvení mimo systém — jediné, co vylučuje useknutí konce řetězu.
       // Bez něj zůstává tvrzení o neporušenosti omezené na střed historie.
+      // Prošel CELÝ řetěz kontrolou? Podmnožina vlastníka to říct neumí:
+      // mezi jeho záznamy leží cizí, takže navazování ověřit nelze.
+      fullChainOk: fullChainOk ?? null,
       anchor: anchor || {
         state: 'none',
         anchoredAt: null,
@@ -481,8 +521,18 @@ const czDate = (iso) => {
  * Tři stavy dílčí kontroly. Neprůkazné má vlastní značku, ne přeškrtnutí —
  * čtenář musí na první pohled poznat, že se to neměřilo.
  */
-const checkLabel = (ok) => (ok === true ? 'SPLNĚNO' : ok === false ? 'NESPLNĚNO' : 'NEPRŮKAZNÉ');
-const checkClass = (ok) => (ok === true ? 'pass' : ok === false ? 'fail' : 'unknown');
+const checkLabel = (ok, advisory) => {
+  // Pozorování se neoznačuje jako splnění nebo porušení — žádný předpis ho
+  // nevyžaduje, takže „NESPLNĚNO" by z něj dělalo vadu, kterou není.
+  if (advisory) return ok === true ? 'ZJIŠTĚNO' : ok === false ? 'NEZJIŠTĚNO' : 'NEPRŮKAZNÉ';
+  // „BEZ NÁLEZU", ne „SPLNĚNO": absence nálezu není důkaz shody a slovník
+  // se nesmí rozcházet s verdiktem o dvě kapitoly níž.
+  return ok === true ? 'BEZ NÁLEZU' : ok === false ? 'NÁLEZ' : 'NEPRŮKAZNÉ';
+};
+const checkClass = (ok, advisory) => {
+  if (advisory) return 'advisory';
+  return ok === true ? 'pass' : ok === false ? 'fail' : 'unknown';
+};
 
 const findingText = (f) => {
   if (f == null) return '—';
@@ -533,7 +583,7 @@ export function renderCaseFileHtml(caseFile) {
             ? `<table class="checks">${run.checks
                 .map(
                   (c) => `<tr>
-                    <td class="check-mark ${checkClass(c.ok)}">${checkLabel(c.ok)}</td>
+                    <td class="check-mark ${checkClass(c.ok, c.advisory)}">${checkLabel(c.ok, c.advisory)}</td>
                     <td><strong>${escapeHtml(c.label || c.key)}</strong><br>
                         <span class="dim">${escapeHtml(c.rationale || '')}</span></td>
                   </tr>`
@@ -574,7 +624,8 @@ export function renderCaseFileHtml(caseFile) {
                        : 'Nelze ověřit (záznam bez otisku výsledku).'
                  }</td></tr>
                  <tr><th>Otisk záznamu</th><td class="mono">${escapeHtml(run.evidence.recordHash)}</td></tr>
-                 <tr><th>Verze nástroje</th><td>${escapeHtml(run.evidence.toolVersion)}</td></tr>${
+                 <tr><th>Verze nástroje</th><td>${escapeHtml(run.evidence.toolVersion)}</td></tr>
+${
                    run.evidence.chainProblem
                      ? '<tr><th>Výstraha</th><td class="warn">Ověření řetězu u tohoto záznamu nalezlo problém — viz oddíl Neporušenost záznamu.</td></tr>'
                      : ''
@@ -585,6 +636,13 @@ export function renderCaseFileHtml(caseFile) {
                  }`
               : `<tr><th>Záznam</th><td class="warn">${escapeHtml(run.evidence.note)}</td></tr>`
           }
+          <tr><th>Kryto ukotvením</th><td>${
+            run.coveredByAnchor === true
+              ? 'Ano — odstranění ani změna tohoto běhu by se poznaly.'
+              : run.coveredByAnchor === false
+                ? '<span class="warn">Ne — běh vznikl až po posledním ukotvení.</span>'
+                : 'Nelze určit (chybí ukotvení).'
+          }</td></tr>
         </table>
       </article>`
     )
@@ -629,6 +687,7 @@ export function renderCaseFileHtml(caseFile) {
   .check-mark.pass { color: #1e8449; }
   .check-mark.fail { color: #c0392b; }
   .check-mark.unknown { color: #b9770e; }
+  .check-mark.advisory { color: #555; font-weight: 400; }
   .rules th { text-align: left; }
   .rules td { padding: 3pt 6pt 3pt 0; vertical-align: top; font-size: 9pt; border-top: 1px solid #eee; }
   footer { margin-top: 16pt; color: #777; font-size: 8.5pt; }
@@ -652,12 +711,20 @@ export function renderCaseFileHtml(caseFile) {
 
   <h2>Neporušenost záznamu</h2>
   <table class="evidence">
-    <tr><th>Stav řetězu</th><td>${
+    <tr><th>Vaše záznamy</th><td>${
       caseFile.ledger.chainOk
-        ? 'Neporušený — žádný záznam nebyl dodatečně změněn ani odstraněn ' +
-          '<em>z prostřed řetězu</em>.'
-        : `<span class="warn">PORUŠENÝ — ${caseFile.ledger.problems.length} nálezů.</span>`
+        ? 'Otisk každého z nich odpovídá obsahu — žádný nebyl po zapsání změněn.'
+        : `<span class="warn">PORUŠENÉ — ${caseFile.ledger.problems.length} nálezů.</span>`
     }</td></tr>
+    <tr><th>Celý řetěz</th><td class="${caseFile.ledger.fullChainOk === false ? 'warn' : ''}">${
+      caseFile.ledger.fullChainOk === true
+        ? 'Prošel úplnou kontrolou — otisky navazují, takže z prostřed historie ' +
+          'nikdo nic neodstranil ani nezměnil.'
+        : caseFile.ledger.fullChainOk === false
+          ? 'NEPROŠEL úplnou kontrolou. Odstranění nebo změnu záznamu proto ' +
+            'vyloučit nelze a tento spis není dokladem o neporušenosti.'
+          : 'Úplná kontrola pro tento spis neproběhla.'
+    }<br><span class="dim">Kontrola jen nad vašimi záznamy by odstranění položky odhalit nedokázala — mezi nimi leží záznamy jiných uživatelů, takže navazování otisků z ní ověřit nejde.</span></td></tr>
     <tr><th>Ukotvení</th><td class="${
       caseFile.ledger.anchor?.state === 'broken' ||
       caseFile.ledger.anchor?.state === 'empty'
@@ -665,10 +732,7 @@ export function renderCaseFileHtml(caseFile) {
         : ''
     }">${
       caseFile.ledger.anchor?.state === 'anchored'
-        ? `Ukotveno ${czDate(caseFile.ledger.anchor.anchoredAt)}` +
-          (caseFile.ledger.anchor.coversRecords
-            ? ` — kryje ${caseFile.ledger.anchor.coversRecords} záznamů.`
-            : '.')
+        ? `Ukotveno ${czDate(caseFile.ledger.anchor.anchoredAt)}.`
         : caseFile.ledger.anchor?.state === 'broken'
           ? 'POZOR — dříve ukotvený otisk se v řetězu nenachází.'
           : caseFile.ledger.anchor?.state === 'empty'
@@ -713,9 +777,9 @@ export function renderCaseFileHtml(caseFile) {
         <table class="rules">
           ${caseFile.ruleset.rules
             .map(
-              (r) => `<tr>
+              (r) => `<tr${r.unavailable ? ' class="rule-missing"' : ''}>
                 <td class="mono">${escapeHtml(r.ref)}</td>
-                <td><strong>${escapeHtml(r.title)}</strong><br>
+                <td><strong${r.unavailable ? ' class="warn"' : ''}>${escapeHtml(r.title)}</strong><br>
                     ${escapeHtml(r.method)}<br>
                     <em>Neplyne z toho:</em> ${escapeHtml(r.limits)}${
                       r.changelog
