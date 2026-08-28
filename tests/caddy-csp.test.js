@@ -88,7 +88,9 @@ describe('access log neobsahuje query string', () => {
     // První nový parametr, na který se zapomene, začne tiše téct.
     const logBlock = caddyfile.slice(caddyfile.indexOf('log {'));
     expect(logBlock).toMatch(/format filter/);
-    expect(logBlock).toMatch(/uri regexp/);
+    // Pole musí být adresované celou cestou. Samotné `uri` filtr netrefí —
+    // v JSON logu je vnořené pod `request` — a tiše se neaplikuje.
+    expect(logBlock).toMatch(/request>uri regexp/);
     // Výčet konkrétních jmen by znamenal návrat ke slabší variantě.
     expect(logBlock).not.toMatch(/delete \w/);
   });

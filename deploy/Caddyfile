@@ -118,10 +118,13 @@ auraguard.example.com {
 		# Cesta v logu zůstává, takže je pořád vidět, který endpoint se volal
 		# a s jakým výsledkem. Pro provoz to stačí; obsah parametrů k ničemu
 		# nepotřebujeme.
+		# Pole se adresuje CELOU cestou v JSON struktuře: `request>uri`.
+		# Samotné `uri` filtr netrefil — v logu je vnořené pod `request`,
+		# takže se tiše neaplikoval a query string tekl dál.
 		format filter {
 			wrap json
 			fields {
-				uri regexp "\?.*" ""
+				request>uri regexp "[?].*" ""
 			}
 		}
 	}
