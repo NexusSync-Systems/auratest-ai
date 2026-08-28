@@ -25,7 +25,16 @@ import {
  * (push), kdežto srovnání adresy při startu krok navíc není (replace). Jinak
  * by první Zpět jen vrátilo výchozí adresu a nic viditelného by se nestalo.
  *
- * @param {boolean} isAuthenticated je uživatel přihlášený?
+ * STAV PŘIHLÁŠENÍ MÁ TŘI HODNOTY, NE DVĚ
+ * `null` znamená „ještě nevíme" — Firebase obnovuje relaci asynchronně a
+ * chvíli po startu není jasné, jestli je uživatel přihlášený.
+ *
+ * Dokud se to bralo jako „nepřihlášen", obnovení stránky na `/agent`
+ * skončilo jinde: hook uživatele odkopl na `/prihlaseni`, pak se relace
+ * obnovila a druhý efekt ho z `login` poslal na výchozí `/hub`. Uživatel
+ * skončil v sekci, kterou si nevybral, a nechápal proč.
+ *
+ * @param {boolean|null} isAuthenticated true / false / null = zatím neznámé
  */
 export function useRoutedTab(isAuthenticated = false) {
   const [tab, setTabState] = useState(() => {
@@ -56,7 +65,8 @@ export function useRoutedTab(isAuthenticated = false) {
   // proklikávat zpátky. Ukázkový report se ale nechává: má smysl ho
   // ukázat i po přihlášení.
   useEffect(() => {
-    if (typeof window === 'undefined' || !isAuthenticated) return;
+    // `!== true` schválně: `null` (zatím nevíme) se sem nesmí dostat.
+    if (typeof window === 'undefined' || isAuthenticated !== true) return;
     if (tab === 'landing' || tab === 'login') {
       const target = pathFromTab(DEFAULT_TAB);
       window.history.replaceState({ tab: DEFAULT_TAB }, '', target + window.location.search);
@@ -70,7 +80,10 @@ export function useRoutedTab(isAuthenticated = false) {
   // zůstala viset na `/hub` s prázdným obsahem a přihlašovací formulář by
   // uživatel musel hledat.
   useEffect(() => {
-    if (typeof window === 'undefined' || isAuthenticated) return;
+    // `!== false` schválně: dokud se relace obnovuje (`null`), NIKAM se
+    // nepřesměrovává. Odkopnout uživatele na přihlášení jen proto, že
+    // Firebase ještě neodpověděl, znamená ztratit sekci, kterou si otevřel.
+    if (typeof window === 'undefined' || isAuthenticated !== false) return;
     if (isProtectedTab(tab)) {
       const target = pathFromTab('login');
       window.history.replaceState({ tab: 'login' }, '', target + window.location.search);

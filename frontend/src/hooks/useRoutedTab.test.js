@@ -127,3 +127,52 @@ describe('přístup podle přihlášení', () => {
     expect(result.current[0]).toBe('sample');
   });
 });
+
+describe('obnovování relace (regrese)', () => {
+  beforeEach(() => {
+    goTo('/');
+  });
+
+  test('dokud se relace obnovuje, sekce se nemění', () => {
+    // JÁDRO VĚCI: Firebase odpovídá asynchronně, takže chvíli po startu
+    // není jasné, jestli je uživatel přihlášený. Brát to jako „nepřihlášen"
+    // znamenalo odkopnout ho na přihlášení a odtud na výchozí sekci —
+    // obnovení stránky na /agent skončilo na /hub.
+    goTo(TAB_TO_PATH.agent);
+    const { result } = renderHook(() => useRoutedTab(null));
+    expect(result.current[0]).toBe('agent');
+    expect(window.location.pathname).toBe(TAB_TO_PATH.agent);
+  });
+
+  test('po potvrzení přihlášení uživatel zůstane, kde byl', () => {
+    goTo(TAB_TO_PATH.evidence);
+    const { result, rerender } = renderHook(({ auth }) => useRoutedTab(auth), {
+      initialProps: { auth: null },
+    });
+    expect(result.current[0]).toBe('evidence');
+
+    rerender({ auth: true });
+    expect(result.current[0]).toBe('evidence');
+    expect(window.location.pathname).toBe(TAB_TO_PATH.evidence);
+  });
+
+  test('teprve potvrzené odhlášení odvede ze zamčené sekce', () => {
+    goTo(TAB_TO_PATH.agent);
+    const { result, rerender } = renderHook(({ auth }) => useRoutedTab(auth), {
+      initialProps: { auth: null },
+    });
+    expect(result.current[0]).toBe('agent');
+
+    rerender({ auth: false });
+    expect(result.current[0]).toBe('login');
+    expect(window.location.pathname).toBe(PUBLIC_TAB_TO_PATH.login);
+  });
+
+  test('neznámý stav nepřesměruje ani z úvodní stránky', () => {
+    // Přihlášeného posílá z landingu dál až potvrzené `true`.
+    goTo('/');
+    const { result } = renderHook(() => useRoutedTab(null));
+    expect(result.current[0]).toBe('landing');
+    expect(result.current[0]).not.toBe(DEFAULT_TAB);
+  });
+});

@@ -29,6 +29,7 @@ import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
 import { useRoutedTab } from './hooks/useRoutedTab.js';
+import { isProtectedTab } from './lib/routes.js';
 import LandingPage from './components/public/LandingPage.jsx';
 import { runWithConcurrency, fetchConcurrencyLimit } from './lib/run-queue.js';
 import ScanRecord from './components/ScanRecord.jsx';
@@ -45,6 +46,12 @@ import {
 
 export default function App() {
   const [user, setUser] = useState(null);
+  // Tři stavy, ne dva: `null` = Firebase ještě neodpověděl.
+  //
+  // Bez toho vypadal každý start jako „odhlášen", takže obnovení stránky
+  // na zamčené sekci uživatele odkoplo na přihlášení a odtud na výchozí
+  // sekci — skončil jinde, než kde byl.
+  const [authState, setAuthState] = useState(null);
   const [selectedTestType, setSelectedTestType] = useState('agent');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -69,7 +76,7 @@ export default function App() {
   //
   // Hook zároveň hlídá, že odhlášený uživatel neuvízne na zamčené sekci
   // a přihlášený na úvodní stránce.
-  const [activeTab, setActiveTab] = useRoutedTab(!!user);
+  const [activeTab, setActiveTab] = useRoutedTab(authState);
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const [activeSession, setActiveSession] = useState(null);
@@ -739,6 +746,7 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(firebaseAuth, async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
+        setAuthState(true);
 
         // Načtení profilu
         try {
@@ -794,6 +802,7 @@ export default function App() {
         wsRef.current = ws;
       } else {
         setUser(null);
+        setAuthState(false);
         setSessions([]);
         setMonitors([]);
         setAuraGuardEvents([]);
@@ -1186,6 +1195,15 @@ export default function App() {
   // Cizí návštěvník dřív viděl kompletní postranní menu a nad ním přihlašovací
   // kartu — tedy rozhraní, na které nemá přístup, plus žádné vysvětlení, co ta
   // aplikace vlastně dělá. Landing a ukázka proto stojí samostatně.
+  // Dokud Firebase neodpoví, zamčená sekce se nevykresluje.
+  //
+  // Bez toho problikla skořápka aplikace bez menu a s prázdnými kartami —
+  // vypadalo to jako rozbitá stránka, přestože se jen obnovovala relace.
+  // Veřejné obrazovky se na nic nečeká, ty přihlášení nepotřebují.
+  if (authState === null && isProtectedTab(activeTab)) {
+    return <div className="public-page">Ověřuji přihlášení…</div>;
+  }
+
   if (activeTab === 'landing') {
     return (
       <LandingPage
