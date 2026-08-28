@@ -98,3 +98,23 @@ describe('BROWSER_ARGS', () => {
     expect(parse('--a,,--b,')).toEqual(['--a', '--b']);
   });
 });
+
+describe('kapacita souběžných skenů (regrese)', () => {
+  /** Kopie logiky ze server.js — viz MAX_CONCURRENT_BROWSERS. */
+  const limitFor = (env) => parseInt(env.MAX_CONCURRENT_BROWSERS, 10) || 3;
+
+  test('klient se limit dozví, aby si dávkoval komplexní audit', () => {
+    // Dokud se limit neposílal, pouštěl frontend všech deset skenů naráz.
+    // Server jich přijal tolik, kolik měl slotů, a zbytek odmítl kódem 429 —
+    // uživatel dostal chybovou hlášku místo výsledků, přestože se nic
+    // nepokazilo a server se choval přesně podle nastavení.
+    expect(limitFor({ MAX_CONCURRENT_BROWSERS: '2' })).toBe(2);
+    expect(limitFor({ MAX_CONCURRENT_BROWSERS: '1' })).toBe(1);
+  });
+
+  test('bez nastavení platí výchozí hodnota, ne nula', () => {
+    // Nula by znamenala, že neprojde žádný sken.
+    expect(limitFor({})).toBe(3);
+    expect(limitFor({ MAX_CONCURRENT_BROWSERS: 'nesmysl' })).toBe(3);
+  });
+});

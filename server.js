@@ -621,6 +621,13 @@ app.get('/api/capabilities', (req, res) => {
       : ['monkey', 'smoke_test'],
     // Compliance skenery na LLM nezávisí — běží vždycky.
     complianceAudits: ['nis2', 'cra', 'cve', 'eaa', 'ai-act', 'gdpr', 'dora', 'green'],
+    // Kolik skenů smí běžet zároveň.
+    //
+    // Klient to potřebuje vědět, aby si dávkoval „komplexní audit". Dokud to
+    // nevěděl, poslal všech deset naráz, server jich devět odmítl kódem 429
+    // a uživatel dostal chybovou hlášku místo výsledků — přestože server
+    // fungoval přesně tak, jak měl.
+    maxConcurrentBrowsers: MAX_CONCURRENT_BROWSERS,
   });
 });
 

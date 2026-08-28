@@ -30,6 +30,7 @@ import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
 import { useRoutedTab } from './hooks/useRoutedTab.js';
 import LandingPage from './components/public/LandingPage.jsx';
+import { runWithConcurrency, fetchConcurrencyLimit } from './lib/run-queue.js';
 import ScanRecord from './components/ScanRecord.jsx';
 import CaseFilePanel from './components/CaseFilePanel.jsx';
 import { authErrorMessage } from './lib/auth-errors.js';
@@ -284,7 +285,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setA11yResult(data);
     } catch (err) {
-      alert('Chyba auditu: ' + err.message);
+      reportAuditError('Chyba auditu: ' + err.message);
     } finally {
       setA11yLoading(false);
     }
@@ -307,7 +308,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setNis2Result(data);
     } catch (err) {
-      alert('Chyba auditu: ' + err.message);
+      reportAuditError('Chyba auditu: ' + err.message);
     } finally {
       setNis2Loading(false);
     }
@@ -330,7 +331,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setGreenResult(data);
     } catch (err) {
-      alert('Chyba auditu: ' + err.message);
+      reportAuditError('Chyba auditu: ' + err.message);
     } finally {
       setGreenLoading(false);
     }
@@ -353,7 +354,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setCraResult(data);
     } catch (err) {
-      alert('Chyba auditu: ' + err.message);
+      reportAuditError('Chyba auditu: ' + err.message);
     } finally {
       setCraLoading(false);
     }
@@ -403,7 +404,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setChaosResult(data);
     } catch (err) {
-      alert('Chyba Chaos testu: ' + err.message);
+      reportAuditError('Chyba Chaos testu: ' + err.message);
     } finally {
       setChaosLoading(false);
     }
@@ -421,7 +422,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setAiActResult(data);
     } catch (err) {
-      alert('Chyba auditu: ' + err.message);
+      reportAuditError('Chyba auditu: ' + err.message);
     } finally {
       setAiActLoading(false);
     }
@@ -439,7 +440,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setCookieResult(data);
     } catch (err) {
-      alert('Chyba auditu: ' + err.message);
+      reportAuditError('Chyba auditu: ' + err.message);
     } finally {
       setCookieLoading(false);
     }
@@ -457,7 +458,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setCraVulnResult(data);
     } catch (err) {
-      alert('Chyba auditu: ' + err.message);
+      reportAuditError('Chyba auditu: ' + err.message);
     } finally {
       setCraVulnLoading(false);
     }
@@ -474,7 +475,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setMonitorPageResult(data);
     } catch (err) {
-      alert('Chyba auditu: ' + err.message);
+      reportAuditError('Chyba auditu: ' + err.message);
     } finally {
       setMonitorPageLoading(false);
     }
@@ -492,7 +493,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
       setMonitorFormResult(data);
     } catch (err) {
-      alert('Chyba auditu: ' + err.message);
+      reportAuditError('Chyba auditu: ' + err.message);
     } finally {
       setMonitorFormLoading(false);
     }
@@ -523,6 +524,23 @@ export default function App() {
     }
   };
 
+  /**
+   * Chyba jednoho skenu v dávce nesmí vyskočit jako modální okno.
+   *
+   * Deset skenů znamenalo až deset po sobě jdoucích `alert()`, které
+   * uživatel odklikával — a poslední z nich překryl výsledky těch, co
+   * prošly. V dávce se chyby sbírají a shrnou jednou na konci.
+   */
+  const batchMode = useRef(false);
+  const batchErrors = useRef([]);
+  const reportAuditError = (message) => {
+    if (batchMode.current) {
+      batchErrors.current.push(message);
+      return;
+    }
+    alert(message);
+  };
+
   const handleRunAllTests = async () => {
     if (!agentUrl) {
       alert('Zadejte URL pro komplexní audit.');
@@ -543,19 +561,33 @@ export default function App() {
     setMonitorFormLoading(true);
     setChaosLoading(true);
 
+    // Souběžnost se řídí kapacitou serveru, ne optimismem klienta.
+    //
+    // Dřív tu bylo `Promise.allSettled` nad všemi deseti skeny naráz. Server
+    // má ale omezený počet slotů pro prohlížeč, takže přijal dva a zbytek
+    // odmítl kódem 429. Uživatel dostal hlášku „Server právě zpracovává
+    // maximum souběžných testů" a žádné výsledky — přestože se nic
+    // nepokazilo a server se choval správně.
+    batchMode.current = true;
+    batchErrors.current = [];
+
     try {
-      await Promise.allSettled([
-        handleRunA11yAudit(true),
-        handleRunNis2Audit(true),
-        handleRunGreenAudit(true),
-        handleRunCraAudit(true),
-        handleRunAiActAudit(true),
-        handleRunCookieAudit(true),
-        handleRunCraVulnAudit(true),
-        handleRunMonitorPage(),
-        handleRunMonitorForm(),
-        handleRunChaosTest()
-      ]);
+      const limit = await fetchConcurrencyLimit();
+      await runWithConcurrency(
+        [
+          () => handleRunA11yAudit(true),
+          () => handleRunNis2Audit(true),
+          () => handleRunGreenAudit(true),
+          () => handleRunCraAudit(true),
+          () => handleRunAiActAudit(true),
+          () => handleRunCookieAudit(true),
+          () => handleRunCraVulnAudit(true),
+          () => handleRunMonitorPage(),
+          () => handleRunMonitorForm(),
+          () => handleRunChaosTest(),
+        ],
+        limit
+      );
 
       if (user) {
         try {
@@ -570,6 +602,20 @@ export default function App() {
       }
     } catch (e) {
       console.error("Komplexní audit selhal:", e);
+    } finally {
+      batchMode.current = false;
+      // Jedno shrnutí místo deseti oken. A hlavně: neúspěch části skenů
+      // neznamená, že je neúspěšný celek — výsledky těch ostatních platí.
+      const chyby = batchErrors.current;
+      batchErrors.current = [];
+      if (chyby.length) {
+        alert(
+          `Komplexní audit dokončen, ale ${chyby.length} z 10 skenů neproběhlo:\n\n` +
+            `${chyby.join('\n')}\n\n` +
+            'Výsledky ostatních skenů níž platí. Neproběhlé skeny nejsou nález — ' +
+            'jen se nezměřily.'
+        );
+      }
     }
   };
 
