@@ -285,84 +285,91 @@ async function queryLLM(prompt, systemPrompt, provider = 'ollama', model = 'llam
 async function extractInteractiveElements(page) {
   try {
     return await page.evaluate(() => {
-      const interactiveTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL'];
+      const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL']);
       const elements = Array.from(document.querySelectorAll('*'));
       const interactiveList = [];
       let qaIdCounter = 1;
 
-    const nonVisualTags = new Set(['SCRIPT', 'STYLE', 'META', 'HEAD', 'LINK', 'NOSCRIPT', 'TITLE', 'BASE']);
-    const elementsToMutate = [];
+      const nonVisualTags = new Set(['SCRIPT', 'STYLE', 'META', 'HEAD', 'LINK', 'NOSCRIPT', 'TITLE', 'BASE']);
+      const elementsToMutate = [];
 
-    // Phase 1: Read-only (Gathering elements and reading DOM properties without mutations)
-    elements.forEach((el) => {
-      // Vnitřek SVG (path, g, circle…) NENÍ HTMLElement, takže `offsetWidth`
-      // je undefined a rychlá kontrola viditelnosti ho nezachytí. Zároveň
-      // dědí `cursor: pointer` od tlačítka, ve kterém leží, takže se dřív
-      // registroval jako klikatelný prvek. Agent pak klikal na <path>,
-      // Playwright hlásil "element is not stable / not visible" a z toho
-      // vznikl FALEŠNÝ BUG na naprosto funkčním webu.
-      if (!(el instanceof HTMLElement)) return;
+      // FÁZE 1 — jen čtení. Zápisy do DOM se odkládají do fáze 2, aby
+      // prohlížeč nemusel po každé změně přepočítávat rozvržení.
+      //
+      // Indexovaná smyčka místo `forEach`: u stránek s desítkami tisíc
+      // prvků je znatelně rychlejší a nevytváří closure na každý průchod.
+      const elementsLen = elements.length;
+      for (let i = 0; i < elementsLen; i++) {
+        const el = elements[i];
 
-      const tagName = el.tagName;
-      if (nonVisualTags.has(tagName)) return;
+        // Vnitřek SVG (path, g, circle…) NENÍ HTMLElement, takže
+        // `offsetWidth` je undefined a rychlá kontrola viditelnosti ho
+        // nezachytí. Zároveň dědí `cursor: pointer` od tlačítka, ve kterém
+        // leží, takže se dřív registroval jako klikatelný prvek. Agent pak
+        // klikal na <path>, Playwright hlásil „element is not stable"
+        // a z toho vznikl FALEŠNÝ BUG na naprosto funkčním webu.
+        if (!(el instanceof HTMLElement)) continue;
 
-      // ⚡ Bolt: Fast visibility check using layout properties BEFORE slow getComputedStyle
-      if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+        const tagName = el.tagName;
+        if (nonVisualTags.has(tagName)) continue;
 
-      const isInteractiveTag = interactiveTags.includes(tagName);
-      const hasClickAttribute = el.hasAttribute('onclick') || el.getAttribute('role') === 'button';
+        // Rychlá kontrola viditelnosti PŘED pomalým getComputedStyle.
+        if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
 
-      let style = null;
+        const isInteractiveTag = interactiveTags.has(tagName);
+        const hasClickAttribute = el.hasAttribute('onclick') || el.getAttribute('role') === 'button';
 
-      if (!isInteractiveTag && !hasClickAttribute) {
-        style = window.getComputedStyle(el);
-        if (style.cursor !== 'pointer') return;
+        let style = null;
 
-        // `cursor: pointer` se dědí, takže každý <span> uvnitř tlačítka by se
-        // registroval zvlášť. Klikat se má na skutečný ovládací prvek, ne na
-        // jeho vnitřek — pokud takový předek existuje, tenhle prvek přeskočíme.
-        const control = el.closest('a, button, [role="button"], input, select, textarea, label');
-        if (control && control !== el) return;
+        if (!isInteractiveTag && !hasClickAttribute) {
+          style = window.getComputedStyle(el);
+          if (style.cursor !== 'pointer') continue;
+
+          // `cursor: pointer` se dědí, takže každý <span> uvnitř tlačítka by
+          // se registroval zvlášť. Klikat se má na skutečný ovládací prvek,
+          // ne na jeho vnitřek — pokud takový předek existuje, přeskočíme.
+          const control = el.closest('a, button, [role="button"], input, select, textarea, label');
+          if (control && control !== el) continue;
+        }
+
+        if (!style) style = window.getComputedStyle(el);
+        const isVisible = style.display !== 'none' &&
+                          style.visibility !== 'hidden' &&
+                          style.opacity !== '0';
+
+        if (!isVisible) continue;
+
+        if (isInteractiveTag || hasClickAttribute || style.cursor === 'pointer') {
+          let text = (el.innerText || el.value || '').trim().replace(/\s+/g, ' ');
+          if (text.length > 100) text = text.substring(0, 100) + '...';
+
+          interactiveList.push({
+            id: qaIdCounter,
+            tagName,
+            text,
+            type: el.getAttribute('type') || '',
+            placeholder: el.getAttribute('placeholder') || '',
+            name: el.getAttribute('name') || '',
+            role: el.getAttribute('role') || '',
+            href: el.getAttribute('href') || '',
+            // Bez těchto tří polí byly hasElementValue() i isDisabledElement()
+            // vždy false, takže logika „nepřepisuj vyplněné pole" a „neklikej
+            // na disabled tlačítko" nikdy nefungovala.
+            value: typeof el.value === 'string' ? el.value : '',
+            disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
+            checked: el.checked === true
+          });
+
+          elementsToMutate.push({ el, id: String(qaIdCounter) });
+          qaIdCounter++;
+        }
       }
 
-      // Basic visibility check for display and opacity using computed style
-      if (!style) style = window.getComputedStyle(el);
-      const isVisible = style.display !== 'none' &&
-                        style.visibility !== 'hidden' && 
-                        style.opacity !== '0';
-      
-      if (!isVisible) return;
-
-      if (isInteractiveTag || hasClickAttribute || style.cursor === 'pointer') {
-        let text = (el.innerText || el.value || '').trim().replace(/\s+/g, ' ');
-        if (text.length > 100) text = text.substring(0, 100) + '...';
-
-        interactiveList.push({
-          id: qaIdCounter,
-          tagName,
-          text,
-          type: el.getAttribute('type') || '',
-          placeholder: el.getAttribute('placeholder') || '',
-          name: el.getAttribute('name') || '',
-          role: el.getAttribute('role') || '',
-          href: el.getAttribute('href') || '',
-          // Bez těchto dvou polí byly hasElementValue() i isDisabledElement()
-          // vždy false, takže logika "nepřepisuj vyplněné pole" a "neklikej na
-          // disabled tlačítko" nikdy nefungovala.
-          value: typeof el.value === 'string' ? el.value : '',
-          disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
-          checked: el.checked === true
-        });
-
-        elementsToMutate.push({ el, id: String(qaIdCounter) });
-        qaIdCounter++;
+      // FÁZE 2 — jen zápis. Dávkově, aby se rozvržení přepočítalo jednou.
+      const mutationsLen = elementsToMutate.length;
+      for (let i = 0; i < mutationsLen; i++) {
+        elementsToMutate[i].el.setAttribute('data-qa-id', elementsToMutate[i].id);
       }
-    });
-
-    // ⚡ Bolt: Phase 2: Write-only (Batch DOM mutations to prevent Layout Thrashing)
-    elementsToMutate.forEach(({ el, id }) => {
-      el.setAttribute('data-qa-id', id);
-    });
 
     return interactiveList;
     });
@@ -878,18 +885,38 @@ async function extractPageTexts(page) {
       }
     );
 
+    // Selektor a výsledek getComputedStyle se pamatují podle rodiče.
+    // U hlubokých stromů má jeden rodič desítky textových uzlů a bez cache
+    // se pro každý z nich počítalo znovu totéž.
+    const parentCache = new Map();
     let node;
+
     while ((node = treeWalker.nextNode())) {
       const text = node.nodeValue.trim();
       const parent = node.parentElement;
 
       if (!parent || nonVisualTags.has(parent.tagName)) continue;
 
-      // ⚡ Bolt: Fast geometry check before slow getComputedStyle
-      if (parent.offsetWidth === 0 || parent.offsetHeight === 0) continue;
+      // `null` v cache znamená „tenhle rodič je neviditelný" — ať se
+      // nezjišťuje znovu u každého jeho textového uzlu.
+      const cached = parentCache.get(parent);
+      if (cached !== undefined) {
+        if (cached === null) continue;
+        results.push({ text, selector: cached, tagName: parent.tagName });
+        continue;
+      }
+
+      // Rychlá kontrola rozměrů PŘED pomalým getComputedStyle.
+      if (parent.offsetWidth === 0 || parent.offsetHeight === 0) {
+        parentCache.set(parent, null);
+        continue;
+      }
 
       const style = window.getComputedStyle(parent);
-      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      if (style.display === 'none' || style.visibility === 'hidden') {
+        parentCache.set(parent, null);
+        continue;
+      }
 
       // Generate a simple CSS selector path
       let path = '';
@@ -901,15 +928,24 @@ async function extractPageTexts(page) {
           path = part + (path ? ' > ' + path : '');
           break; // Stop at ID for shorter selector
         } else if (current.className) {
-          part += `.${Array.from(current.classList).join('.')}`;
+          // Bez `Array.from` — u prvků s mnoha třídami se tím ušetří
+          // vytvoření pole na každý uzel.
+          let cls = '';
+          const classList = current.classList;
+          const len = classList.length;
+          for (let i = 0; i < len; i++) cls += `.${classList[i]}`;
+          part += cls;
         }
         path = part + (path ? ' > ' + path : '');
         current = current.parentNode;
       }
 
+      const selector = path || 'body';
+      parentCache.set(parent, selector);
+
       results.push({
         text,
-        selector: path || 'body',
+        selector,
         tagName: parent.tagName
       });
     }
@@ -1044,7 +1080,6 @@ async function determineNextAction(llmConfig, currentUrl, title, interactiveElem
         if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
           let val = 'test';
           const nameLower = (el.name || '').toLowerCase();
-          const labelLower = (el.text || '').toLowerCase();
 
           if (el.type === 'email' || nameLower.includes('email')) {
             val = `monkey_tester_${Date.now()}@example.com`;
@@ -1181,7 +1216,9 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
     } catch (err) {
       console.error('LLM parsing failed:', err);
       // Pozn.: dřív tu byl try/catch, který tuto zprávu bezpodmínečně přepsal
-      // konstantou a zahodil tak err.message. Diagnostiku si ponecháváme.
+      // konstantou a zahodil tak err.message. Diagnostiku si ponecháváme —
+      // při sloučení s master se ta vada vracela, tak znovu: bez ní se
+      // ladí naslepo.
       const extractedReasoning = `(Záchranný krok) AI vygenerovalo nečitelný nebo utržený JSON: ${err.message}. Agent zkouší posunout stránku a pokračovat.`;
 
       actionResponse = {
