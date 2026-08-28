@@ -105,7 +105,9 @@ auraguard.example.com {
 		#
 		# Tokeny už v URL nejsou (artefakty se načítají ověřeným požadavkem),
 		# ale adresy zůstávají. Filtr je proto na místě tak jako tak.
-		format json
+		#
+		# `format filter` s `wrap json` nahrazuje samotné `format json` —
+		# obojí vedle sebe by bylo přinejmenším matoucí.
 		format filter {
 			wrap json
 			fields {
