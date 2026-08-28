@@ -262,7 +262,9 @@ code, pre {
   border-radius: 50%;
 }
 
-.status-dot.active {
+/* Tři stavy, ne dva. „Běh bez odezvy" není ani jedno z těch dvou —
+   nevíme, jestli doběhl, takže nesmí vypadat jako klid ani jako práce. */
+.status-dot.running {
   background-color: var(--success);
   box-shadow: 0 0 8px var(--success);
   animation: pulse 1.5s infinite;
@@ -270,6 +272,11 @@ code, pre {
 
 .status-dot.idle {
   background-color: var(--text-dark);
+}
+
+.status-dot.unknown {
+  background-color: var(--warning, #f59e0b);
+  box-shadow: 0 0 8px var(--warning, #f59e0b);
 }
 
 @keyframes pulse {

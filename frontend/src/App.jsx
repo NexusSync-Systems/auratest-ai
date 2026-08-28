@@ -32,6 +32,7 @@ import { useRoutedTab } from './hooks/useRoutedTab.js';
 import { isProtectedTab } from './lib/routes.js';
 import LandingPage from './components/public/LandingPage.jsx';
 import { runWithConcurrency, fetchConcurrencyLimit } from './lib/run-queue.js';
+import { runStatus, runningSessions } from './lib/run-status.js';
 import ScanRecord from './components/ScanRecord.jsx';
 import CaseFilePanel from './components/CaseFilePanel.jsx';
 import { authErrorMessage } from './lib/auth-errors.js';
@@ -742,6 +743,25 @@ export default function App() {
     }
   };
 
+  /**
+   * Dokud má uživatel rozdělaný běh na serveru, obnovuje se seznam.
+   *
+   * Bez toho by ukazatel po obnovení stránky správně řekl „běží", ale
+   * zůstal by na tom viset i po dokončení — seznam běhů se natahuje jen
+   * při přihlášení a po spuštění testu z tohohle panelu.
+   *
+   * Dotazuje se jen tehdy, když je na co čekat, a přestane, jakmile
+   * poslední rozdělaný běh zmizí.
+   */
+  useEffect(() => {
+    if (!user) return undefined;
+    if (runningSessions(sessions).length === 0) return undefined;
+    const id = setInterval(fetchSessions, 10_000);
+    return () => clearInterval(id);
+    // `sessions` schválně: po každé změně se přehodnotí, jestli se má dál
+    // ptát. `fetchSessions` je stabilní closure nad `authFetch`.
+  }, [user, sessions]);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(firebaseAuth, async (currentUser) => {
       if (currentUser) {
@@ -1190,6 +1210,14 @@ export default function App() {
     || craVulnLoading || monitorPageLoading || monitorFormLoading || securityAnalysisLoading
     || cookieLoading || aiActLoading || chaosLoading;
 
+  // Ukazatel v hlavičce se skládá z lokálního stavu i z běhů na serveru,
+  // takže přežije obnovení stránky. Viz lib/run-status.js.
+  const runState = runStatus({
+    localRunning: isRunning,
+    auditsLoading: isAnyAuditLoading,
+    sessions,
+  });
+
   // Veřejné obrazovky se vykreslují MÍSTO aplikace, ne uvnitř ní.
   //
   // Cizí návštěvník dřív viděl kompletní postranní menu a nad ním přihlašovací
@@ -1406,9 +1434,9 @@ export default function App() {
                 </span>
               </div>
             )}
-            <div className="status-badge" role="status" aria-live="polite">
-              <span className={`status-dot ${isRunning ? 'active' : 'idle'}`} aria-hidden="true" />
-              <span>{isRunning ? 'Agent běží...' : 'Připraven'}</span>
+            <div className="status-badge" role="status" aria-live="polite" title={runState.title}>
+              <span className={`status-dot ${runState.state}`} aria-hidden="true" />
+              <span>{runState.label}</span>
             </div>
           </div>
         </header>
