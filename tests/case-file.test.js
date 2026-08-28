@@ -319,12 +319,14 @@ describe('spis netvrdí víc, než co dokládá (regrese kontrolní vlny)', () =
     expect(JSON.stringify(file.ledger)).not.toMatch(/cizi-session/);
   });
 
-  test('tvrzení o řetězu nevylučuje useknutí konce', () => {
+  test('tvrzení o řetězu se omezuje na střed historie', () => {
     // Odmazání posledních položek je bez vnějšího ukotvení nedetekovatelné,
-    // a právě konec je to, co by útočník mazal.
+    // a právě konec je to, co by útočník mazal. Konec řetězu proto pokrývá
+    // ukotvení (D6), ne tohle tvrzení.
     const html = renderCaseFileHtml(build({ sessions: [session()] }));
     expect(html).toMatch(/z prostřed řetězu/);
-    expect(html).toMatch(/[Uu]seknutí konce/);
+    // Bez kotvy musí spis říct, že vyloučit useknutí konce neumí.
+    expect(html).toMatch(/vyloučit nelze/);
   });
 
   test('nález jako objekt se nevytiskne jako [object Object]', () => {
@@ -420,5 +422,48 @@ describe('předpisová kontrola ve spisu (D5)', () => {
     // běhu netiskl žádné znění pravidel.
     const file = build({ sessions: [scan([check(true)])], records: [] });
     expect(file.ruleset.rules.length).toBe(1);
+  });
+});
+
+describe('ukotvení ve spisu (D6)', () => {
+  test('bez kotvy spis netvrdí, že je konec řetězu neporušený', () => {
+    const html = renderCaseFileHtml(build({ sessions: [session()] }));
+    expect(html).toMatch(/Neukotveno/);
+    expect(html).not.toMatch(/z prostřed řetězu[\s\S]{0,200}Useknutí konce/);
+  });
+
+  test('kotva nahradí výhradu tvrzením', () => {
+    const file = build({
+      sessions: [session()],
+      anchor: {
+        state: 'anchored',
+        anchoredAt: '2026-08-20T06:00:00.000Z',
+        headHash: 'a'.repeat(64),
+        rationale: 'Otisk byl ukotven a v řetězu se stále nachází.',
+      },
+    });
+    const html = renderCaseFileHtml(file);
+    expect(html).toMatch(/Ukotveno/);
+    expect(html).toMatch(/stále nachází/);
+  });
+
+  test('chybějící ukotvený otisk je ve spisu výstraha, ne poznámka', () => {
+    // Řetěz sám může vypadat v pořádku — právě proto to musí být vidět.
+    const file = build({
+      sessions: [session()],
+      anchor: {
+        state: 'broken',
+        anchoredAt: '2026-08-20T06:00:00.000Z',
+        headHash: 'a'.repeat(64),
+        rationale: 'Dříve ukotvený otisk se v řetězu nenachází.',
+      },
+    });
+    const html = renderCaseFileHtml(file);
+    expect(html).toMatch(/POZOR/);
+    expect(html).toMatch(/class="warn"/);
+  });
+
+  test('meze spisu uvádějí, že přírůstky po ukotvení kryté nejsou', () => {
+    expect(CASE_FILE_LIMITS.join(' ')).toMatch(/po posledním ukotvení kryté nejsou/);
   });
 });

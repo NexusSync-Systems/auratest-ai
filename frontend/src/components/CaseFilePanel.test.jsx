@@ -41,16 +41,16 @@ describe('stav řetězu', () => {
     // než dokazuje.
     global.fetch = vi.fn(async () => chainResponse({ ok: true, count: 1, problems: [] }));
     render(<CaseFilePanel getToken={getToken} />);
-    expect(await screen.findByText(/nedokazuje\s+to nemožnost podvrhu/i)).toBeInTheDocument();
+    expect(await screen.findByText(/[Nn]edokazuje nemožnost podvrhu/)).toBeInTheDocument();
   });
 
-  test('zelený stav nevylučuje useknutí konce řetězu', async () => {
+  test('tvrzení o řetězu se omezuje na střed historie', async () => {
     // Odmazání nejnovějších položek je bez vnějšího ukotvení nedetekovatelné,
-    // a právě konec je to, co by útočník mazal. Věta „žádný záznam nebyl
-    // odstraněn" bez téhle výhrady tvrdí víc, než ověření dokládá.
+    // a právě konec je to, co by útočník mazal. Konec řetězu proto pokrývá
+    // ukotvení (D6), ne tahle věta.
     global.fetch = vi.fn(async () => chainResponse({ ok: true, count: 1, problems: [] }));
     render(<CaseFilePanel getToken={getToken} />);
-    expect(await screen.findByText(/[Uu]seknutí konce/)).toBeInTheDocument();
+    expect(await screen.findByText(/z prostřed historie/)).toBeInTheDocument();
   });
 
   test('porušený řetěz vypíše, kde k zásahu došlo', async () => {
@@ -137,5 +137,76 @@ describe('export spisu', () => {
     render(<CaseFilePanel getToken={getToken} />);
     expect(await screen.findByLabelText('Od')).toBeInTheDocument();
     expect(screen.getByLabelText('Do')).toBeInTheDocument();
+  });
+});
+
+
+describe('ukotvení otisku (D6)', () => {
+  test('bez kotvy se zelený stav nevydává za neprůstřelný', async () => {
+    // Řetěz může být „neporušený" a přesto mu chybět konec. Uživatel se to
+    // musí dozvědět dřív, než spis odevzdá.
+    global.fetch = vi.fn(async () =>
+      chainResponse({
+        ok: true,
+        count: 3,
+        problems: [],
+        anchor: {
+          state: 'none',
+          anchoredAt: null,
+          rationale: 'Otisk řetězu nebyl dosud ukotven mimo tento systém.',
+        },
+      })
+    );
+    render(<CaseFilePanel getToken={getToken} />);
+    expect(await screen.findByText(/nebyl ukotven mimo tenhle systém/)).toBeInTheDocument();
+  });
+
+  test('chybějící ukotvený otisk se hlásí jako problém', async () => {
+    global.fetch = vi.fn(async () =>
+      chainResponse({
+        ok: true,
+        count: 3,
+        problems: [],
+        anchor: {
+          state: 'broken',
+          anchoredAt: '2026-08-20T06:00:00.000Z',
+          rationale: 'Dříve ukotvený otisk se v řetězu nenachází.',
+        },
+      })
+    );
+    render(<CaseFilePanel getToken={getToken} />);
+    // Výstraha nahoře, odůvodnění pod ní — hledá se ta výstraha.
+    expect(await screen.findByText(/Pozor: dříve ukotvený otisk/)).toBeInTheDocument();
+  });
+
+  test('ukotvení vrátí text určený k uložení mimo systém', async () => {
+    // Kopie vedle záznamu důkazní hodnotu nemá — uživateli to musí být
+    // řečeno přímo u textu, ne jen v dokumentaci.
+    global.fetch = vi.fn(async (url, opts) => {
+      if (String(url).includes('/api/ledger/anchor') && opts?.method === 'POST') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            anchoredAt: '2026-08-27T06:00:00.000Z',
+            headHash: 'a'.repeat(64),
+            message: 'AuraGuard — ukotvení otisku\nOtisk hlavy: ' + 'a'.repeat(64),
+          }),
+        };
+      }
+      return chainResponse({
+        ok: true,
+        count: 1,
+        problems: [],
+        anchor: { state: 'none', anchoredAt: null, rationale: 'Neukotveno.' },
+      });
+    });
+
+    render(<CaseFilePanel getToken={getToken} />);
+    await screen.findByText(/neporušený/);
+    await userEvent.click(screen.getByRole('button', { name: /Ukotvit otisk nyní/ }));
+
+    expect(await screen.findByText(/MIMO tenhle server/)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp('a'.repeat(20)))).toBeInTheDocument();
   });
 });

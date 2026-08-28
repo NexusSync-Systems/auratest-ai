@@ -29,6 +29,7 @@ export default function CaseFilePanel({ getToken }) {
   const [busy, setBusy] = useState(null);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
+  const [anchorText, setAnchorText] = useState(null);
 
   const loadChain = useCallback(async () => {
     setChainError(null);
@@ -48,6 +49,34 @@ export default function CaseFilePanel({ getToken }) {
   useEffect(() => {
     loadChain();
   }, [loadChain]);
+
+  /**
+   * Ruční ukotvení.
+   *
+   * Automatické ukotvení nechává na konci nekrytou mezeru danou periodou.
+   * Před odevzdáním spisu se proto hodí ukotvit ručně — jinak nejnovější
+   * záznamy kryté nejsou.
+   */
+  const anchorNow = async () => {
+    setBusy('anchor');
+    setError(null);
+    setMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch('/api/ledger/anchor', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setAnchorText(data.message);
+      await loadChain();
+    } catch (err) {
+      setError(`Ukotvení selhalo: ${err.message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const exportCaseFile = async (format) => {
     setBusy(format);
@@ -187,15 +216,58 @@ export default function CaseFilePanel({ getToken }) {
               </ul>
             )}
 
-            {/* Bez tohohle by zelená fajfka svedla k závěru, že je záznam
-                neprůstřelný. Není — dokazuje jen, že s ním nikdo nehýbal. */}
+            {/* Ukotvení je to jediné, co vylučuje useknutí konce řetězu.
+                Dokud chybí, musí to zelená fajfka říct nahlas — jinak svádí
+                k závěru, že je záznam neprůstřelný. */}
+            {chain.anchor && (
+              <p
+                className={
+                  chain.anchor.state === 'broken'
+                    ? 'case-file-error'
+                    : chain.anchor.state === 'anchored'
+                      ? 'case-file-ok'
+                      : 'card-note'
+                }
+                role="status"
+              >
+                {chain.anchor.state === 'anchored'
+                  ? `Otisk ukotven ${new Date(chain.anchor.anchoredAt).toLocaleString('cs-CZ')}.`
+                  : chain.anchor.state === 'broken'
+                    ? 'Pozor: dříve ukotvený otisk se v řetězu nenachází.'
+                    : 'Otisk zatím nebyl ukotven mimo tenhle systém.'}
+              </p>
+            )}
+
+            {chain.anchor && (
+              <p className="card-note">{chain.anchor.rationale}</p>
+            )}
+
+            <button
+              type="button"
+              onClick={anchorNow}
+              disabled={busy === 'anchor'}
+              className="secondary"
+            >
+              {busy === 'anchor' ? 'Ukotvuji…' : 'Ukotvit otisk nyní'}
+            </button>
+
+            {anchorText && (
+              <>
+                <p className="card-note">
+                  Zkopírujte text níž a uložte ho MIMO tenhle server — do
+                  e-mailu, do jiného systému, na papír. Kopie, která zůstane
+                  vedle záznamu, důkazní hodnotu nemá: kdo smí zapisovat do
+                  řetězu, smí zapisovat i do ní.
+                </p>
+                <pre className="case-file-anchor">{anchorText}</pre>
+              </>
+            )}
+
             <p className="card-note">
-              Dokazuje to, že žádný záznam nebyl dodatečně změněn ani odstraněn
-              z prostřed řetězu. Useknutí konce — odstranění nejnovějších
-              položek — takhle prokázat nelze; vyloučí ho až porovnání otisku
-              hlavy s hodnotou ukotvenou dřív mimo tenhle systém. A nedokazuje
-              to nemožnost podvrhu: kdo smí zapisovat, může přepsat celou
-              historii a otisky přepočítat.
+              Řetězení dokazuje, že žádný záznam nebyl dodatečně změněn ani
+              odstraněn z prostřed historie. Nedokazuje nemožnost podvrhu: kdo
+              smí zapisovat, může přepsat celou historii a otisky přepočítat.
+              Právě proti tomu stojí ukotvení otisku mimo tenhle systém.
             </p>
           </>
         )}

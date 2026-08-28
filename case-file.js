@@ -53,10 +53,12 @@ export const CASE_FILE_LIMITS = [
   'Neprůkazný výsledek znamená, že kontrola neproběhla dost spolehlivě na ' +
     'závěr. Není to ani splnění, ani porušení — a nelze ho tak vykládat ' +
     'v žádném směru.',
-  'Řetězení záznamů dokazuje, že s historií nikdo dodatečně nehýbal. ' +
-    'Nedokazuje nemožnost podvrhu: kdo má právo zapisovat, může přepsat celý ' +
-    'řetěz a otisky přepočítat. Průkaznost dodává až ukotvení otisku mimo ' +
-    'systém.',
+  'Řetězení záznamů dokazuje, že s historií nikdo dodatečně nehýbal ' +
+    'doprostřed. Samo o sobě nedokazuje nemožnost podvrhu: kdo má právo ' +
+    'zapisovat, může přepsat celý řetěz a otisky přepočítat, a odstranění ' +
+    'nejnovějších položek po sobě nezanechá stopu. Obojí vylučuje až ' +
+    'ukotvení otisku mimo systém — viz oddíl Neporušenost záznamu. ' +
+    'Záznamy pořízené po posledním ukotvení kryté nejsou.',
   'Časová razítka pocházejí z hodin serveru, ne od autority časových razítek.',
   'Spis není právní posouzení shody. Je to doklad o provedených měřeních.',
   'Nálezy z autonomního průzkumu aplikace pocházejí z posouzení jazykovým ' +
@@ -234,8 +236,9 @@ function periodMembership(timestamp, from, to) {
  * @param {string} [input.subject] pro koho je spis vystaven
  * @param {object} [input.chain]   výsledek verifyChain(); pro testy
  * @param {string} [input.head]    otisk hlavy; pro testy
+ * @param {object} [input.anchor]  shrnutí ukotvení z anchorSummary()
  */
-export function buildCaseFile({ sessions, records, from, to, subject, chain, head }) {
+export function buildCaseFile({ sessions, records, from, to, subject, chain, head, anchor }) {
   const recordList = records || [];
 
   // Duplicitní sessionId se NEPŘEHLÍŽÍ.
@@ -400,6 +403,16 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
     ledger: {
       headHash: head || headHash(),
       chainOk: chainStatus.ok,
+      // Ukotvení mimo systém — jediné, co vylučuje useknutí konce řetězu.
+      // Bez něj zůstává tvrzení o neporušenosti omezené na střed historie.
+      anchor: anchor || {
+        state: 'none',
+        anchoredAt: null,
+        headHash: null,
+        rationale:
+          'Ukotvení nebylo pro tento spis zjišťováno; odstranění nejnovějších ' +
+          'položek proto vyloučit nelze.',
+      },
       recordsTotal: chainStatus.count,
       // Problémy bez `sessionId`: index a popis stačí k doložení, identifikátory
       // cizích auditů do spisu nepatří.
@@ -642,11 +655,18 @@ export function renderCaseFileHtml(caseFile) {
     <tr><th>Stav řetězu</th><td>${
       caseFile.ledger.chainOk
         ? 'Neporušený — žádný záznam nebyl dodatečně změněn ani odstraněn ' +
-          '<em>z prostřed řetězu</em>. Useknutí konce (odstranění nejnovějších ' +
-          'položek) tímto ověřením prokázat nelze; vyloučí ho až porovnání ' +
-          'otisku hlavy s hodnotou ukotvenou dřív mimo tento systém.'
+          '<em>z prostřed řetězu</em>.'
         : `<span class="warn">PORUŠENÝ — ${caseFile.ledger.problems.length} nálezů.</span>`
     }</td></tr>
+    <tr><th>Ukotvení</th><td class="${
+      caseFile.ledger.anchor?.state === 'broken' ? 'warn' : ''
+    }">${
+      caseFile.ledger.anchor?.state === 'anchored'
+        ? `Ukotveno ${czDate(caseFile.ledger.anchor.anchoredAt)}.`
+        : caseFile.ledger.anchor?.state === 'broken'
+          ? 'POZOR — dříve ukotvený otisk se v řetězu nenachází.'
+          : 'Neukotveno.'
+    }<br><span class="dim">${escapeHtml(caseFile.ledger.anchor?.rationale || '')}</span></td></tr>
     <tr><th>Položek v tomto spisu</th><td>${caseFile.ledger.recordsTotal}</td></tr>
     <tr><th>Otisk hlavy</th><td class="mono">${escapeHtml(caseFile.ledger.headHash)}</td></tr>
     <tr><th>Otisk sady pravidel</th><td class="mono">${escapeHtml(caseFile.ruleset.digest)}</td></tr>

@@ -1506,6 +1506,21 @@ button:focus-visible,
   margin: 12px 0 0;
 }
 
+/* Text kotvy je určený ke zkopírování ven ze systému, takže musí být
+   čitelný a vybratelný celý — proto pre, ne zkrácený řádek. */
+.case-file-anchor {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+
 .case-file-problems {
   margin: 8px 0 0;
   padding-left: 20px;

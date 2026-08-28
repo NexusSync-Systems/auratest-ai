@@ -62,6 +62,13 @@ ok "Práva servisního klíče: 600"
 
 # Proměnné, bez kterých se aplikace chová špatně, ale nespadne — tedy ty,
 # jejichž chybění se pozná až za provozu.
+# Ukotvení bez odchozího kanálu skončí jen v logu kontejneru. To je lepší
+# než nic (log se archivuje jinam než záznam), ale provozovatel o tom musí
+# vědět — kopie uložená vedle záznamu důkazní hodnotu nemá.
+if ! grep -qE "^(ANCHOR_SLACK_CHANNEL|SLACK_CHANNEL)=.+" .env; then
+    warn "Kotva otisku nemá kam odcházet (ANCHOR_SLACK_CHANNEL ani SLACK_CHANNEL). Otisk zůstane jen v logu — uschovejte ho ručně, jinak nelze vyloučit useknutí konce řetězu."
+fi
+
 for var in ALLOWED_ORIGINS PUBLIC_BASE_URL; do
     if ! grep -qE "^${var}=.+" .env; then
         warn "${var} není v .env vyplněné — CORS a odkazy na artefakty nebudou fungovat správně."
@@ -189,6 +196,8 @@ echo "  docker compose exec auratest-ai node scripts/verify-ledger.mjs"
 echo "      → neporušenost záznamu auditů (D1–D3)"
 echo "  docker compose exec auratest-ai node scripts/verify-case-file.mjs"
 echo "      → vytiskne se spis do PDF (Chromium chybí v CI, jde ověřit jen tady)"
+echo "  docker compose exec auratest-ai node scripts/anchor-ledger.mjs"
+echo "      → ukotví otisk řetězu; VÝSTUP USCHOVEJTE MIMO TENTO SERVER"
 echo
 echo "Logy:    docker compose logs -f"
 echo "Restart: docker compose restart"

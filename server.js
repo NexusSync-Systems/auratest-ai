@@ -28,6 +28,12 @@ import { buildCaseFile, renderCaseFileHtml } from './case-file.js';
 import { renderCaseFilePdf } from './case-file-pdf.js';
 import { accessWarnings } from './access-control.js';
 import {
+  createAnchor,
+  readAnchors,
+  anchorSummary,
+  DEFAULT_ANCHOR_INTERVAL_MS,
+} from './ledger-anchor.js';
+import {
   rulesForAudit,
   verdictsForAudit,
   overallVerdict,
@@ -446,12 +452,41 @@ app.get('/api/ledger/verify', authenticateToken, (req, res) => {
       (r) => !r.__malformed && r.userId === req.user.userId
     );
     const result = verifyChain(undefined, mine);
+    const anchor = anchorSummary(readLedger(), readAnchors());
     res.json({
       ok: result.ok,
       count: result.count,
       scope: result.scope,
       problems: result.problems.map(({ index, problem }) => ({ index, problem })),
+      // Bez tohohle by zelená fajfka svedla k závěru, že je vyloučené
+      // i odstranění nejnovějších položek. Není — to vylučuje až kotva.
+      anchor: {
+        state: anchor.state,
+        anchoredAt: anchor.anchoredAt,
+        rationale: anchor.rationale,
+      },
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Ruční ukotvení otisku.
+ *
+ * Automatické ukotvení nechává na konci řetězu nekrytou mezeru danou
+ * periodou. Před předáním spisu se proto hodí ukotvit ručně, aby byl kryt
+ * i nejnovější záznam.
+ *
+ * Vrací text kotvy — ten je potřeba uschovat MIMO tento systém. Kopie
+ * uložená vedle záznamu důkazní hodnotu nemá.
+ */
+app.post('/api/ledger/anchor', authenticateToken, async (req, res) => {
+  try {
+    const { anchor, message } = createAnchor({
+      note: `ruční ukotvení (${req.user.email || req.user.userId})`,
+    });
+    res.json({ anchoredAt: anchor.anchoredAt, headHash: anchor.headHash, message });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -502,6 +537,10 @@ app.get('/api/case-file', authenticateToken, (req, res, next) => {
       from,
       to,
       subject: req.user.email || req.user.userId,
+      // Kotva se ověřuje proti CELÉMU řetězu, ne proti podmnožině uživatele:
+      // ukotvuje se otisk hlavy, což je vlastnost celého souboru. Ven jde
+      // jen stav a čas — počet položek ani cizí identifikátory ne.
+      anchor: anchorSummary(readLedger(), readAnchors()),
     });
 
     if (format === 'json') {
@@ -1069,8 +1108,68 @@ function scheduleNextTick() {
   if (typeof schedulerTimer.unref === 'function') schedulerTimer.unref();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Ukotvení otisku řetězu (D6).
+//
+// Řetězení odhalí zásah doprostřed historie, ale ne useknutí konce — zbylý
+// řetěz je po odstranění posledních položek dokonale konzistentní. Vyloučit
+// to jde jedině tak, že otisk hlavy pravidelně opustí systém a provozovatel
+// si kopii uschová.
+//
+// Kotva uložená vedle záznamu důkazem NENÍ: kdo smí zapisovat do řetězu,
+// smí zapisovat i do ní. Slouží jen k porovnání. Proto se odesílá ven a při
+// neúspěchu odeslání se to hlásí nahlas.
+// ─────────────────────────────────────────────────────────────────────────────
+const ANCHOR_INTERVAL_MS = Number(process.env.ANCHOR_INTERVAL_MS) || DEFAULT_ANCHOR_INTERVAL_MS;
+let anchorTimer = null;
+
+async function anchorTick() {
+  try {
+    const { anchor, message } = createAnchor({ note: 'automatické ukotvení' });
+
+    // Do logu vždy. I když odeslání selže, zůstane otisk aspoň v logu
+    // kontejneru, který se archivuje jinam než záznam sám.
+    console.log(`[AuraGuard] Ukotvení otisku: ${anchor.headHash} (${anchor.anchoredAt})`);
+
+    const channel = process.env.ANCHOR_SLACK_CHANNEL || process.env.SLACK_CHANNEL;
+    if (channel) {
+      const sent = await sendSlackNotification(
+        channel,
+        'Ukotvení otisku záznamu auditů',
+        message,
+        false,
+        [],
+        'compliance'
+      );
+      if (!sent) {
+        console.warn(
+          '[AuraGuard] Kotvu se nepodařilo odeslat. Kopie uvnitř systému ' +
+            'sama o sobě nic nedokazuje — zkontrolujte nastavení Slacku.'
+        );
+      }
+    } else {
+      console.warn(
+        '[AuraGuard] Kotva nikam neodešla (ANCHOR_SLACK_CHANNEL ani ' +
+          'SLACK_CHANNEL nejsou nastavené). Uchovejte otisk z logu ručně, ' +
+          'jinak ukotvení nemá důkazní hodnotu.'
+      );
+    }
+  } catch (err) {
+    console.error('Ukotvení otisku selhalo:', err.message);
+  }
+}
+
+function scheduleNextAnchor() {
+  anchorTimer = setTimeout(async () => {
+    await anchorTick();
+    scheduleNextAnchor();
+  }, ANCHOR_INTERVAL_MS);
+  if (typeof anchorTimer.unref === 'function') anchorTimer.unref();
+}
+
 if (process.env.NODE_ENV !== 'test') {
   scheduleNextTick();
+  scheduleNextAnchor();
 }
 
 // Bez tohohle se `schedulerTimer` jen přiřazoval a nikdy nerušil, takže
@@ -1079,6 +1178,7 @@ if (process.env.NODE_ENV !== 'test') {
 function gracefulShutdown(signal) {
   console.log(`Přijat ${signal}, ukončuji…`);
   if (schedulerTimer) clearTimeout(schedulerTimer);
+  if (anchorTimer) clearTimeout(anchorTimer);
   wss.clients.forEach((ws) => ws.close(1001, 'Server se ukončuje'));
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 10_000);
