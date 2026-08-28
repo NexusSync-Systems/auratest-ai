@@ -183,6 +183,31 @@ else
     warn "Endpoint /api/capabilities neodpověděl podle očekávání: ${CAPS}"
 fi
 
+# ── Caddyfile ────────────────────────────────────────────────────────────
+#
+# Caddy čte z /etc/caddy/Caddyfile, ne z repozitáře. Dokud se to nekontrolovalo,
+# platilo: `git pull && deploy.sh` změnu v `deploy/Caddyfile` NENASADIL a
+# nikdo se to nedozvěděl. Změna hlaviček nebo filtru logu tak zůstala ležet
+# v gitu, zatímco server jel dál po staru.
+#
+# Skript to nekopíruje sám — je v něm zástupná doména, takže by přepis
+# shodil web. Jen upozorní, když se obsah liší.
+CADDY_LIVE=/etc/caddy/Caddyfile
+if [[ -f "$CADDY_LIVE" ]]; then
+    # Porovnává se bez řádku s doménou, ten se při instalaci mění sedem.
+    if ! diff -q \
+        <(grep -v '^auraguard\.' deploy/Caddyfile) \
+        <(grep -v '^auraguard\.' "$CADDY_LIVE") >/dev/null 2>&1; then
+        warn "deploy/Caddyfile se liší od nasazeného /etc/caddy/Caddyfile."
+        echo "      Nasadíte ho takto (doménu si sed doplní podle .env):"
+        echo "        sudo cp deploy/Caddyfile $CADDY_LIVE"
+        echo "        sudo sed -i 's/auraguard.example.com/VASE.DOMENA/' $CADDY_LIVE"
+        echo "        sudo caddy validate --config $CADDY_LIVE && sudo systemctl reload caddy"
+    else
+        ok "Caddyfile odpovídá nasazenému"
+    fi
+fi
+
 echo
 echo "${GREEN}✔ Nasazeno.${RESET}"
 echo
