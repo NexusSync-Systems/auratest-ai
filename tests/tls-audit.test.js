@@ -100,9 +100,13 @@ describe('classifyCertificate', () => {
     expect(r.issues[0]).toMatch(/vypršel/);
   });
 
-  it('varuje před brzkým vypršením', () => {
+  it('na brzké vypršení upozorní, ale nálezem to není', () => {
+    // Bývalo to v `issues`, a tím to shazovalo verdikt. Certifikát, který
+    // vyprší za týden, je dnes platný; u krátkodobých ACME certifikátů je
+    // to dokonce běžný stav správně spravovaného webu.
     const r = classifyCertificate({ ...base, valid_to: 'Aug 25 00:00:00 2026 GMT' }, now);
-    expect(r.issues[0]).toMatch(/vyprší za \d+ dnů/);
+    expect(r.issues).toEqual([]);
+    expect(r.notes.join(' ')).toMatch(/vyprší za \d+ (?:den|dnů)/);
   });
 
   it('pozná slabý RSA klíč', () => {
@@ -440,7 +444,9 @@ describe('sady šifer (S1)', () => {
     const r = classifyCiphers({ noForwardSecrecy: false, sha1Mac: false, tripleDes: null });
     expect(r.ok).toBeNull();
     expect(r.untested).toHaveLength(1);
-    expect(r.rationale).toMatch(/Netestováno/);
+    // Bez uvedeného důvodu se neví, jestli za to může náš build, nebo síť.
+    // Neprůkazné je bezpečnější odhad než tvrdit vlastní neschopnost.
+    expect(r.rationale).toMatch(/Neprůkazné/);
   });
 
   test('žádná sonda neproběhla → neprůkazné', () => {
@@ -480,5 +486,202 @@ describe('řetěz důvěry a OCSP (S1)', () => {
   test('neověřený stapling je neprůkazný', () => {
     expect(classifyOcsp({ reachable: true, ocspStapled: null }).ok).toBeNull();
     expect(classifyOcsp({ reachable: false }).ok).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regrese z kontrolní vlny
+//
+// Všechny testy níž vznikly proto, že sonda tvrdila změřený výsledek tam,
+// kde se k měření vůbec nedostala. Stávající sada je nechytla, protože
+// klasifikační funkce testovala ručně dosazenými hodnotami — tedy vlastní
+// domněnkou o tom, co sonda vrátí, ne tím, co doopravdy vrací.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('sondy na sady šifer proti skutečnému serveru', () => {
+  it('server, který slabé sady PŘIJÍMÁ, je změřený jako true', async () => {
+    const server = await startServer({
+      ciphers: 'ALL:@SECLEVEL=0', minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2',
+    });
+    try {
+      const ins = await inspectTls('127.0.0.1', server.address().port);
+      expect(ins.ciphers.noForwardSecrecy).toBe(true);
+      expect(ins.ciphers.sha1Mac).toBe(true);
+    } finally {
+      await close(server);
+    }
+  }, 60000);
+
+  it('server, který je ODMÍTÁ, je změřený jako false', async () => {
+    const server = await startServer({
+      ciphers: 'ECDHE-RSA-AES128-GCM-SHA256', minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2',
+    });
+    try {
+      const ins = await inspectTls('127.0.0.1', server.address().port);
+      expect(ins.ciphers.noForwardSecrecy).toBe(false);
+      expect(ins.ciphers.sha1Mac).toBe(false);
+    } finally {
+      await close(server);
+    }
+  }, 60000);
+
+  it('appliance odpovídající HTTP místo TLS je NEPRŮKAZNÁ, ne odmítnutí', async () => {
+    // Přesně scénář, kvůli kterému oprava vznikla: mezi námi a serverem
+    // stojí něco, co na ClientHello odpoví plaintextem. Node z toho udělá
+    // ERR_SSL_WRONG_VERSION_NUMBER. Dřív to spadlo do „všechno neznámé je
+    // false" a do reportu se zapsalo, že server slabé sady prokazatelně
+    // odmítá — o serveru přitom sonda nezjistila vůbec nic.
+    const sockets = new Set();
+    const plain = net.createServer((s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+      s.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      s.end();
+    });
+    await new Promise((r) => plain.listen(0, '127.0.0.1', r));
+    try {
+      const ins = await inspectTls('127.0.0.1', plain.address().port);
+      expect(ins.ciphers.noForwardSecrecy).toBeNull();
+      expect(ins.ciphers.sha1Mac).toBeNull();
+      expect(ins.cipherReasons.noForwardSecrecy).toBe('ERR_SSL_WRONG_VERSION_NUMBER');
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise((r) => plain.close(r));
+    }
+  }, 60000);
+});
+
+describe('mlčení serveru není odmítnutí verze', () => {
+  it('zavření spojení bez odpovědi je neprůkazné', async () => {
+    // Dřív se z toho vyvozovalo supported: false. Filtr na CDN, který
+    // zahodí nestandardní hello, je od odmítnutí verze nerozeznatelný.
+    const sockets = new Set();
+    const tichy = net.createServer((s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+      s.end();
+    });
+    await new Promise((r) => tichy.listen(0, '127.0.0.1', r));
+    try {
+      const res = await probeLegacyVersion('127.0.0.1', tichy.address().port, 'TLSv1');
+      expect(res.supported).toBeNull();
+      expect(res.reason).toBe('closed_without_response');
+    } finally {
+      // `s.end()` nechá spojení polootevřené a `close()` by na něj čekal.
+      for (const s of sockets) s.destroy();
+      await new Promise((r) => tichy.close(r));
+    }
+  }, 30000);
+
+  it('filtr před serverem shodí i verze, které server umí', async () => {
+    // Server TLS 1.0 doopravdy přijímá. Před ním stojí filtr, který zahodí
+    // ClientHello se starou verzí — přesně jako anomaly filtry na CDN.
+    // Sonda o TLS 1.0 nesmí tvrdit nic.
+    const server = await startServer({
+      minVersion: 'TLSv1', maxVersion: 'TLSv1.2', ciphers: 'DEFAULT:@SECLEVEL=0',
+    });
+    const backendPort = server.address().port;
+
+    const sockets = new Set();
+    const filtr = net.createServer((klient) => {
+      sockets.add(klient);
+      klient.once('data', (chunk) => {
+        // Verze v ClientHellu je na offsetu 9 (5 record + 4 handshake).
+        const verze = chunk.length >= 11 ? chunk.readUInt16BE(9) : 0x0303;
+        if (verze < 0x0303) return klient.destroy(); // zahodit bez alertu
+        const backend = net.connect({ host: '127.0.0.1', port: backendPort }, () => {
+          backend.write(chunk);
+          klient.pipe(backend);
+          backend.pipe(klient);
+        });
+        backend.on('error', () => klient.destroy());
+        sockets.add(backend);
+      });
+      klient.on('error', () => {});
+      klient.on('close', () => sockets.delete(klient));
+    });
+    await new Promise((r) => filtr.listen(0, '127.0.0.1', r));
+
+    try {
+      const ins = await inspectTls('127.0.0.1', filtr.address().port);
+      expect(ins.protocols['TLSv1']).toBeNull();
+      expect(ins.protocols['TLSv1.1']).toBeNull();
+
+      const summary = summarizeTls(ins);
+      // Nesmí z toho vzniknout „zastaralé verze prokazatelně odmítá".
+      expect(summary.protocols.refused || []).not.toContain('TLSv1');
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise((r) => filtr.close(r));
+      await close(server);
+    }
+  }, 60000);
+});
+
+describe('nezměřitelná sonda neblokuje kladný verdikt', () => {
+  it('sada, kterou náš build neumí nabídnout, se z verdiktu vyřadí', () => {
+    // Sady 3DES z novějších buildů OpenSSL zmizely úplně, takže je klient
+    // nenabídne ani se @SECLEVEL=0. Dokud se to počítalo jako neúspěšné
+    // měření, nemohl verdikt vyjít kladně NIKDY — bezvadný web dostal
+    // natrvalo „neprůkazné" a celý NIS2 sken s ním.
+    const r = classifyCiphers(
+      { noForwardSecrecy: false, sha1Mac: false, tripleDes: null },
+      { tripleDes: 'ERR_SSL_NO_CIPHER_MATCH' }
+    );
+    expect(r.ok).toBe(true);
+    expect(r.unmeasurable).toHaveLength(1);
+    expect(r.inconclusive).toEqual([]);
+    expect(r.rationale).toMatch(/Nezměřitelné naším prostředím/);
+  });
+
+  it('neprůkazné měření verdikt kladně vyjít nenechá', () => {
+    // Rozdíl proti předchozímu: tady se sonda odeslala a jen se nedozvěděla
+    // odpověď. To se zopakovat dá, takže se vyřadit nesmí.
+    const r = classifyCiphers(
+      { noForwardSecrecy: false, sha1Mac: false, tripleDes: null },
+      { tripleDes: 'ECONNRESET' }
+    );
+    expect(r.ok).toBeNull();
+    expect(r.unmeasurable).toEqual([]);
+    expect(r.inconclusive).toHaveLength(1);
+    // Nesmí tvrdit, že za to může náš klient — nevíme to.
+    expect(r.rationale).not.toMatch(/klient nedokázal nabídnout/);
+  });
+
+  it('žádná měřitelná sonda = neprůkazné, ne v pořádku', () => {
+    const r = classifyCiphers(
+      { noForwardSecrecy: null, sha1Mac: null, tripleDes: null },
+      {
+        noForwardSecrecy: 'unsupported_option',
+        sha1Mac: 'unsupported_option',
+        tripleDes: 'ERR_SSL_NO_CIPHER_MATCH',
+      }
+    );
+    expect(r.ok).toBeNull();
+  });
+});
+
+describe('blížící se expirace není porušení', () => {
+  const cert = (dny) => ({
+    valid_from: 'Jan 1 00:00:00 2020 GMT',
+    valid_to: new Date(Date.now() + dny * 86400000).toUTCString(),
+    bits: 2048,
+    subject: { CN: 'example.com' },
+    issuer: { CN: 'Nějaká CA' },
+  });
+
+  it('certifikát platný ještě 5 dnů není nález', () => {
+    // Let's Encrypt vydává krátkodobé certifikáty; web, který je obnovuje
+    // často a správně, byl dřív trvale „nevyhovující".
+    const r = classifyCertificate(cert(5));
+    expect(r.issues).toEqual([]);
+    // Přesné číslo se počítá zaokrouhlením dolů, takže se na něj neváže.
+    expect(r.notes.join(' ')).toMatch(/vyprší za \d+ (?:den|dnů)/);
+    expect(r.notes.join(' ')).toMatch(/Není to nález/);
+  });
+
+  it('prošlý certifikát nálezem zůstává', () => {
+    const r = classifyCertificate(cert(-3));
+    expect(r.issues.join(' ')).toMatch(/vypršel/);
   });
 });

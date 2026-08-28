@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import AxeBuilder from '@axe-core/playwright';
 import geoip from 'geoip-lite';
-import { assertPublicHttpUrl, guardNavigation } from './ssrf-guard.js';
+import { assertPublicHttpUrl, resolvePublicHttpTarget, guardNavigation } from './ssrf-guard.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, GENERATED_SCRIPTS_DIR, ensureDir, safeFileToken } from './paths.js';
 import { inspectTls, summarizeTls, PQC_GROUP } from './tls-audit.js';
 import { createSeededRandom, generateRunSeed } from './seeded-random.js';
@@ -2214,9 +2214,16 @@ export async function auditNIS2AndPQC(url) {
         // přesměrováních, kterou ovládá cizí strana — bez opětovného ověření
         // by šlo skener donutit otevřít TCP spojení na interní službu
         // a její certifikát vrátit uživateli v odpovědi.
-        await assertPublicHttpUrl(finalUrl.href);
-        const port = finalUrl.port ? Number(finalUrl.port) : 443;
-        tls = summarizeTls(await inspectTls(finalUrl.hostname, port));
+        //
+        // Ověřená adresa se PŘEDÁVÁ dál. Dřív se jen zahodila a `inspectTls`
+        // si u každého z osmi spojení udělal vlastní překlad — tedy osm
+        // příležitostí, kdy útočníkem řízený DNS záznam s krátkou platností
+        // vrátí podruhé adresu z vnitřní sítě. Ověření platilo pro jinou
+        // adresu, než na kterou se spojení nakonec otevřelo.
+        const cil = await resolvePublicHttpTarget(finalUrl.href);
+        tls = summarizeTls(
+          await inspectTls(cil.hostname, cil.port, { address: cil.address })
+        );
       } catch (tlsErr) {
         // Selhání sondy nesmí shodit celý audit — jen se to nedozvíme.
         console.warn('TLS sonda neproběhla:', tlsErr.message);

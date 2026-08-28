@@ -1,4 +1,4 @@
-import { assertPublicHttpUrl, guardNavigation } from '../ssrf-guard.js';
+import { assertPublicHttpUrl, resolvePublicHttpTarget, guardNavigation } from '../ssrf-guard.js';
 
 describe('ssrf-guard — blokace neveřejných/nebezpečných cílů', () => {
   const blocked = [
@@ -165,5 +165,39 @@ describe('guardNavigation — hlídá i přesměrování (regrese kontrolní vln
 
   test('kontext bez route() hlídač nezapne, ale nespadne', async () => {
     await expect(guardNavigation({})).resolves.toBeUndefined();
+  });
+});
+
+describe('port a připnutá adresa (kontrolní vlna)', () => {
+  // Veřejná IP jako literál: kontrola pak neprochází přes DNS, takže test
+  // nezávisí na tom, jestli má běhové prostředí překlad jmen. Na obou
+  // vlastnostech, které se tu ověřují, to nic nemění.
+  const VEREJNA_IP = '93.184.216.34';
+
+  it('odmítne port, na kterém web neběží', async () => {
+    // Bez omezení stačilo přesměrování na :25 a z auditního nástroje byl
+    // skener portů běžící pod naší adresou a naší pověstí.
+    await expect(assertPublicHttpUrl(`https://${VEREJNA_IP}:25/`)).rejects.toThrow(/Port 25/);
+  });
+
+  it('povolí běžné webové porty', async () => {
+    for (const port of [443, 8443, 8080]) {
+      await expect(assertPublicHttpUrl(`https://${VEREJNA_IP}:${port}/`)).resolves.toBeTruthy();
+    }
+  });
+
+  it('vrátí ověřenou adresu, aby se spojení neotevřelo jinam', async () => {
+    // Jádro opravy: ověření a spojení musí platit pro TUTÉŽ adresu.
+    // Dokud se adresa zahazovala, měl útočník mezi kontrolou a spojením
+    // osm příležitostí podstrčit jinou odpověď z DNS.
+    const cil = await resolvePublicHttpTarget(`https://${VEREJNA_IP}:8443/`);
+    expect(cil.hostname).toBe(VEREJNA_IP);
+    expect(cil.port).toBe(8443);
+    expect(cil.address).toBe(VEREJNA_IP);
+    expect(cil.addresses).toContain(VEREJNA_IP);
+  });
+
+  it('neveřejnou adresu odmítne i na povoleném portu', async () => {
+    await expect(assertPublicHttpUrl('https://127.0.0.1:8443/')).rejects.toThrow(/neveřejn/);
   });
 });

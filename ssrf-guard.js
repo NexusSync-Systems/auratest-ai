@@ -134,7 +134,43 @@ function isBlockedIp(ip) {
  * Ověří, že URL je veřejná http(s) adresa. Vrací normalizovaný URL string,
  * jinak vyhodí Error se srozumitelnou zprávou.
  */
-export async function assertPublicHttpUrl(rawUrl) {
+/**
+ * Porty, na které smí nástroj sáhnout.
+ *
+ * PROČ VŮBEC OMEZOVAT
+ * Bez omezení stačilo přesměrování na `https://cizi-host.example:25/` a
+ * skener poslal ručně sestavený ClientHello na poštovní port libovolného
+ * veřejného stroje — a výsledek („na tomhle portu něco běží a je/není to
+ * TLS") vrátil zadavateli. Z auditního nástroje se tím stane pomalý, ale
+ * funkční skener portů, který běží pod naší adresou a naší pověstí.
+ *
+ * Allowlist, ne blocklist: seznam portů, kde běží web, je krátký a známý,
+ * kdežto seznam všeho, co jinde poslouchat může, nikdy úplný nebude.
+ */
+export const ALLOWED_TARGET_PORTS = new Set([80, 443, 8000, 8080, 8443, 8888]);
+
+/**
+ * Ověří URL a vrátí i adresy, na které se přeložila.
+ *
+ * PROČ NESTAČÍ VRÁTIT JEN ŘETĚZEC
+ * `assertPublicHttpUrl` adresy ověřila a zahodila. Volající pak předal
+ * hostname dál a `tls.connect` i `net.connect` si udělaly VLASTNÍ překlad —
+ * u jedné TLS sondy osmkrát. Mezi kontrolou a spojením tak byla díra, do
+ * které se vejde záznam s TTL 0, který napoprvé vrátí veřejnou adresu a
+ * podruhé `169.254.169.254`. Ověření se dá obejít prostě tím, že se počká
+ * na druhý dotaz.
+ *
+ * Vrácená adresa se proto předává až do místa, kde se otevírá socket, a
+ * jméno se používá jen pro SNI a ověření certifikátu.
+ *
+ * @returns {Promise<{url: string, hostname: string, port: number, address: string, addresses: string[]}>}
+ */
+export async function resolvePublicHttpTarget(rawUrl) {
+  const url = await assertPublicHttpUrl(rawUrl, { returnDetails: true });
+  return url;
+}
+
+export async function assertPublicHttpUrl(rawUrl, { returnDetails = false } = {}) {
   if (!rawUrl || typeof rawUrl !== 'string') {
     throw new Error('Chybí nebo neplatná URL.');
   }
@@ -157,12 +193,26 @@ export async function assertPublicHttpUrl(rawUrl) {
   // ale náhodou, ne záměrem — a legitimní IPv6 cíle to blokovalo taky.
   const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
 
+  const port = parsed.port ? Number(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80);
+  if (!ALLOWED_TARGET_PORTS.has(port)) {
+    throw new Error(
+      `Port ${port} není mezi povolenými (${[...ALLOWED_TARGET_PORTS].join(', ')}). ` +
+        'Nástroj audituje weby, takže na jiné porty nesahá — jinak by z něj ' +
+        'šlo udělat skener portů.'
+    );
+  }
+
+  const vysledek = (address, addresses) =>
+    returnDetails
+      ? { url: parsed.toString(), hostname, port, address, addresses }
+      : parsed.toString();
+
   // Když je hostname přímo IP, ověř ji rovnou.
   if (net.isIP(hostname)) {
     if (isBlockedIp(hostname)) {
       throw new Error('Cílová adresa míří na neveřejný/interní rozsah IP.');
     }
-    return parsed.toString();
+    return vysledek(hostname, [hostname]);
   }
 
   // Zablokuj zjevné lokální názvy.
@@ -187,7 +237,10 @@ export async function assertPublicHttpUrl(rawUrl) {
     }
   }
 
-  return parsed.toString();
+  // První ověřená adresa je ta, na kterou se smí připojit. Ostatní se vracejí
+  // jen pro úplnost; kdyby se volající rozhodl zkusit jinou, musí být taky
+  // z tohohle seznamu, ne z nového překladu.
+  return vysledek(addresses[0].address, addresses.map((a) => a.address));
 }
 
 /**

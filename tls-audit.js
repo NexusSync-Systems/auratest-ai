@@ -68,7 +68,57 @@ const CLIENT_LIMITATION_CODES = new Set([
   'ERR_SSL_NO_PROTOCOLS_AVAILABLE',
   'ERR_TLS_INVALID_PROTOCOL_VERSION',
   'ERR_CRYPTO_OPERATION_FAILED',
+  // Sada v tomhle buildu OpenSSL neexistuje, takže ji klient nemůže
+  // nabídnout. Skutečný kód je `NO_CIPHER_MATCH`; dřív tu stálo
+  // `ERR_SSL_NO_CIPHERS_AVAILABLE`, což OpenSSL nikdy nevydá — ta větev
+  // byla mrtvá a nikdo si toho nevšiml, protože se nikdy netestovala.
+  'ERR_SSL_NO_CIPHER_MATCH',
 ]);
+
+/**
+ * Odmítl nabídku SERVER, nebo jsme se k odpovědi vůbec nedostali?
+ *
+ * PROČ SE TO MUSÍ POZNAT
+ * Dosud byla klasifikace postavená obráceně: `null` se vracelo pro výčet
+ * známých chyb a VŠECHNO OSTATNÍ padalo na `false`, tedy „změřeno, server
+ * to nepřijímá". Stačilo, aby mezi námi a serverem stála appliance, která
+ * na nestandardní ClientHello odpoví prostým HTTP 403 — Node z toho udělá
+ * `ERR_SSL_WRONG_VERSION_NUMBER`, ten v žádném seznamu nebyl a do reportu
+ * se zapsalo, že server slabé sady prokazatelně odmítá. Ověřeno: sonda se
+ * přitom k TLS vrstvě serveru vůbec nedostala.
+ *
+ * Odmítnutí umí server sdělit jedině TLS alertem. Bezpečné je proto
+ * obrátit logiku: `false` jen po alertu, cokoli jiného je neprůkazné.
+ *
+ * Poznávají se tři alerty:
+ *   40 handshake_failure     — na nabídku nemá server co odpovědět
+ *   70 protocol_version      — verzi protokolu nepodporuje
+ *   71 insufficient_security — nabídku považuje za příliš slabou
+ *
+ * Porovnává se VZOREM, ne doslovným řetězcem: OpenSSL 3.5 hlásí
+ * `ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE`, starší buildy
+ * `ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE`. Doslovný seznam by po povýšení
+ * OpenSSL tiše přestal platit a měření by se rozešlo s realitou přesně tak,
+ * jak se to už jednou stalo.
+ */
+const REFUSAL_ALERTS = /_ALERT_(HANDSHAKE_FAILURE|PROTOCOL_VERSION|INSUFFICIENT_SECURITY)$/;
+
+export function serverRefused(reason) {
+  return typeof reason === 'string' && REFUSAL_ALERTS.test(reason);
+}
+
+/**
+ * Nemohl sondu provést NÁŠ klient?
+ *
+ * Rozdíl proti prostému „neprůkazné" je podstatný. Neprůkazné měření se
+ * dá zopakovat a příště vyjít může; sonda, kterou tenhle build OpenSSL
+ * neumí sestavit, nevyjde nikdy. Kdyby se obojí slévalo, jediná trvale
+ * nedostupná sonda by natrvalo srazila celý verdikt na „neprůkazné" —
+ * a přesně to se dělo se sadami 3DES, které z novějších buildů zmizely.
+ */
+export function unmeasurableByClient(reason) {
+  return reason === 'unsupported_option' || CLIENT_LIMITATION_CODES.has(reason);
+}
 
 /**
  * Skupiny šifer, jejichž přijímání je dnes nedostatek.
@@ -127,7 +177,7 @@ function isIpLiteral(host) {
  * Jeden handshake. Vrací výsledek, nikdy nevyhazuje — selhání handshaku
  * je legitimní informace, ne chyba běhu.
  */
-function handshake(hostname, port, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+function handshake(hostname, port, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS, address = null) {
   return new Promise((resolve) => {
     let socket;
     let settled = false;
@@ -150,9 +200,15 @@ function handshake(hostname, port, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS)
     try {
       socket = tls.connect(
         {
-          host: hostname,
+          // Připojuje se na PŘEDEM OVĚŘENOU adresu, když ji volající dodá.
+          // Bez toho by si `tls.connect` udělal vlastní překlad a ověření
+          // SSRF guardem by platilo pro jinou adresu, než na kterou se
+          // spojení nakonec otevře.
+          host: address || hostname,
           port,
           // SNI jen pro doménu — u IP adresy to RFC 6066 zakazuje a Node varuje.
+          // Jméno se posílá i při připojení na IP, jinak by server vydal
+          // výchozí certifikát a ověření by posuzovalo cizí doklad.
           ...(isIpLiteral(hostname) ? {} : { servername: hostname }),
           rejectUnauthorized: false, // neplatný certifikát je NÁLEZ, ne důvod skončit
           ...options,
@@ -198,6 +254,20 @@ function handshake(hostname, port, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS)
 
 /** Verze, které vlastní klient odmítne — musí se poslat ručně. */
 const LEGACY_VERSION_CODES = { 'TLSv1': 0x0301, 'TLSv1.1': 0x0302 };
+
+/**
+ * Verze, které umí `buildClientHello` sestavit.
+ *
+ * Navíc oproti `LEGACY_VERSION_CODES` obsahuje TLS 1.2 — ne proto, že by
+ * se ručně zkoumala (na to stačí `tls.connect`), ale jako POZITIVNÍ
+ * KONTROLA: verze, kterou dnes umí prakticky každý server. Když na ni
+ * ruční ClientHello nedostane odpověď, není chyba na straně verze, ale
+ * v tom, že naše hello někdo cestou zahazuje.
+ */
+const MANUAL_HELLO_VERSION_CODES = { ...LEGACY_VERSION_CODES, 'TLSv1.2': 0x0303 };
+
+/** Verze pro pozitivní kontrolu ručního ClientHella. */
+const CONTROL_VERSION = 'TLSv1.2';
 
 /**
  * Cipher suites nabízené v ručním ClientHellu.
@@ -266,8 +336,10 @@ function buildClientHello(version, hostname) {
  * `false` při alertu nebo zavření spojení, `null` když se odpověď nepodařilo
  * přečíst (timeout, síťová chyba) — tedy netestováno.
  */
-export function probeLegacyVersion(hostname, port, versionName, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const version = LEGACY_VERSION_CODES[versionName];
+export function probeLegacyVersion(
+  hostname, port, versionName, timeoutMs = DEFAULT_TIMEOUT_MS, address = null
+) {
+  const version = MANUAL_HELLO_VERSION_CODES[versionName];
   if (version === undefined) {
     return Promise.resolve({ supported: null, reason: 'unknown_version' });
   }
@@ -293,7 +365,8 @@ export function probeLegacyVersion(hostname, port, versionName, timeoutMs = DEFA
     if (typeof timer.unref === 'function') timer.unref();
 
     try {
-      socket = net.connect({ host: hostname, port });
+      // Ověřená adresa, ne nový překlad jména — stejný důvod jako u `handshake`.
+      socket = net.connect({ host: address || hostname, port });
     } catch (err) {
       // Např. ERR_SOCKET_BAD_PORT hází synchronně. Kontrakt téhle funkce je,
       // že nikdy nevyhodí — výsledek je informace, ne chyba běhu.
@@ -351,9 +424,18 @@ export function probeLegacyVersion(hostname, port, versionName, timeoutMs = DEFA
     // Síťová chyba = k serveru jsme se nedostali → netestováno, ne „odmítl".
     socket.on('error', (err) => done({ supported: null, reason: err.code || 'socket_error' }));
     socket.on('end', () => {
-      // Zavřel BEZ jediného bajtu = odmítl. Zavřel uprostřed odpovědi =
-      // odpověď přišla, jen neúplná — o podpoře verze pak nevíme nic.
-      if (buf.length === 0) return done({ supported: false, reason: 'closed_without_response' });
+      // Nulová odpověď je NEPRŮKAZNÁ, ne odmítnutí.
+      //
+      // Dřív se z toho vyvozovalo `supported: false`. Jenže mlčení
+      // nerozliší server, který verzi odmítá, od filtru před ním, který
+      // nestandardní ClientHello zahodí bez alertu — a to je přesně to,
+      // co dělají anomaly filtry na CDN. Ověřeno proti serveru, který
+      // TLS 1.0 doopravdy přijímal: report tvrdil, že ho prokazatelně
+      // odmítá. Odmítnutí umí server sdělit jedině alertem.
+      //
+      // Že filtr zahazuje naše ruční hello plošně, se pozná až pozitivní
+      // kontrolou v `inspectTls` — odsud to vidět není.
+      if (buf.length === 0) return done({ supported: null, reason: 'closed_without_response' });
       done({ supported: null, reason: `truncated_response_${buf.length}B` });
     });
   });
@@ -365,33 +447,49 @@ export function probeLegacyVersion(hostname, port, versionName, timeoutMs = DEFA
  * @param {string} hostname  MUSÍ být předem ověřený SSRF guardem
  * @param {number} port
  */
-export async function inspectTls(hostname, port = 443) {
+export async function inspectTls(hostname, port = 443, { address = null } = {}) {
   // Základní spojení — z něj bereme certifikát, vyjednané parametry
   // a odpověď OCSP, pokud ji server přiloží (stapling).
-  const base = await handshake(hostname, port, { requestOCSP: true });
+  const base = await handshake(hostname, port, { requestOCSP: true }, DEFAULT_TIMEOUT_MS, address);
 
   // Verze protokolu. Zastaralé jdou ručním ClientHellem (klient je neumí),
   // moderní přes tls.connect s min=max.
+  // Pozitivní kontrola ručního ClientHella.
+  //
+  // Ruční hello se posílá jen u TLS 1.0 a 1.1, protože ty vlastní klient
+  // odmítne. Když na něj server neodpoví, jsou dvě vysvětlení: buď ty verze
+  // nepodporuje, nebo někdo cestou zahazuje nestandardní hello úplně.
+  // Rozliší je to, že totéž hello pošleme s verzí, kterou dnes umí skoro
+  // každý. Dojde-li odpověď na kontrolu, je mlčení u starých verzí jejich
+  // vlastností; nedojde-li, neříká o nich sonda nic.
+  const control = await probeLegacyVersion(hostname, port, CONTROL_VERSION, DEFAULT_TIMEOUT_MS, address);
+  const manualHelloProchazi =
+    control.supported === true || /alert/.test(control.reason || '');
+
   const versionResults = await Promise.all(
     PROTOCOL_VERSIONS.map(async (version) => {
       if (LEGACY_VERSION_CODES[version] !== undefined) {
-        const r = await probeLegacyVersion(hostname, port, version);
+        const r = await probeLegacyVersion(hostname, port, version, DEFAULT_TIMEOUT_MS, address);
+        // Bez průchozí kontroly se výsledek ručního hella nedá číst ani
+        // tehdy, když sám o sobě vypadá jednoznačně.
+        if (!manualHelloProchazi) return [version, null];
         return [version, r.supported];
       }
-      const r = await handshake(hostname, port, { minVersion: version, maxVersion: version });
+      const r = await handshake(
+        hostname, port, { minVersion: version, maxVersion: version }, DEFAULT_TIMEOUT_MS, address
+      );
       if (r.ok) return [version, true];
-      // null = netestováno (klient to neumí, nebo jsme se k serveru nedostali)
-      if (CLIENT_LIMITATION_CODES.has(r.reason) || NETWORK_ERROR_CODES.has(r.reason)
-          || r.reason === 'unsupported_option') {
-        return [version, null];
-      }
-      return [version, false];
+      // Stejné pravidlo jako u sad šifer: `false` jen po alertu od serveru.
+      // Dřív sem padalo cokoli neznámého, takže třeba useknuté spojení
+      // vypadalo jako prokázané odmítnutí verze.
+      if (serverRefused(r.reason)) return [version, false];
+      return [version, null];
     })
   );
   const protocols = Object.fromEntries(versionResults);
 
   // Post-kvantová skupina: nabídneme JEN ji. Projde-li handshake, server ji umí.
-  const pqcProbe = await handshake(hostname, port, { ecdhCurve: PQC_GROUP });
+  const pqcProbe = await handshake(hostname, port, { ecdhCurve: PQC_GROUP }, DEFAULT_TIMEOUT_MS, address);
   let pqcSupported;
   if (pqcProbe.ok) {
     pqcSupported = true;
@@ -411,32 +509,33 @@ export async function inspectTls(hostname, port = 443) {
 
   // Sady šifer. Každá skupina zvlášť, aby výsledek říkal, CO přesně server
   // přijímá — ne jen „něco slabého tam je".
-  const cipherEntries = await Promise.all(
+  const cipherProbes = await Promise.all(
     CIPHER_PROBES.map(async (probe) => {
-      const r = await handshake(hostname, port, {
-        ciphers: probe.ciphers,
-        maxVersion: 'TLSv1.2',
-        minVersion: 'TLSv1.2',
-      });
-      if (r.ok) return [probe.key, true];
-      // Náš klient tu sadu neumí nabídnout → netestováno, ne „nepřijímá".
-      // Vydávat neschopnost klienta za odmítnutí serverem by znamenalo
-      // tvrdit výsledek testu, který neproběhl.
-      if (
-        CLIENT_LIMITATION_CODES.has(r.reason)
-        || NETWORK_ERROR_CODES.has(r.reason)
-        || r.reason === 'unsupported_option'
-        || r.reason === 'ERR_SSL_NO_CIPHERS_AVAILABLE'
-      ) {
-        return [probe.key, null];
-      }
-      return [probe.key, false];
+      const r = await handshake(
+        hostname,
+        port,
+        { ciphers: probe.ciphers, maxVersion: 'TLSv1.2', minVersion: 'TLSv1.2' },
+        DEFAULT_TIMEOUT_MS,
+        address
+      );
+      if (r.ok) return [probe.key, true, null];
+      // `false` JEN po alertu od serveru. Cokoli jiného — síťová chyba,
+      // timeout, plaintextová odpověď od appliance — znamená, že se sonda
+      // k rozhodnutí nedostala, a musí zůstat neprůkazná.
+      if (serverRefused(r.reason)) return [probe.key, false, r.reason];
+      return [probe.key, null, r.reason || 'unknown'];
     })
   );
+  const cipherEntries = cipherProbes.map(([key, value]) => [key, value]);
+  // Důvod se drží zvlášť, aby se nezměnil tvar `ciphers`, který čtou testy
+  // i spis. Bez důvodu by ale `classifyCiphers` nedokázala rozlišit sondu,
+  // kterou náš build nesestaví, od sondy, která doopravdy nic nezjistila.
+  const cipherReasons = Object.fromEntries(cipherProbes.map(([key, , reason]) => [key, reason]));
 
   return {
     reachable: base.ok,
     ciphers: Object.fromEntries(cipherEntries),
+    cipherReasons,
     // Stapling: `true` přiložil, `false` nepřiložil, `null` nedosažitelný.
     ocspStapled: base.ok ? base.ocsp === true : null,
     negotiated: base.ok
@@ -463,62 +562,107 @@ export async function inspectTls(hostname, port = 443) {
  *
  * @returns {{ok: boolean|null, accepted: string[], untested: string[], findings: Array, rationale: string}}
  */
-export function classifyCiphers(ciphers = {}) {
+export function classifyCiphers(ciphers = {}, reasons = {}) {
   const accepted = [];
-  const untested = [];
   const findings = [];
+  // Zkusili jsme to a nedozvěděli se nic — příště to vyjít může.
+  const neprukazne = [];
+  // Tenhle build OpenSSL sadu neumí nabídnout — nevyjde to nikdy.
+  const nemeritelne = [];
 
   for (const probe of CIPHER_PROBES) {
     const result = ciphers[probe.key];
     if (result === true) {
       accepted.push(probe.key);
       findings.push({ severity: probe.severity, key: probe.key, message: probe.finding });
-    } else if (result !== false) {
-      // `undefined` i `null` znamenají netestováno.
-      untested.push(probe.label);
+    } else if (result === false) {
+      continue;
+    } else if (unmeasurableByClient(reasons[probe.key])) {
+      nemeritelne.push(probe.label);
+    } else {
+      neprukazne.push(probe.label);
     }
   }
 
-  const untestedNote = untested.length
-    ? ` Netestováno: ${untested.join('; ')} — tyhle sady náš klient nedokázal nabídnout, ` +
-      'takže o nich sonda neříká nic.'
-    : '';
+  // Dvě různé věty pro dvě různé věci. Dřív tu stálo u obojího „tyhle sady
+  // náš klient nedokázal nabídnout" — což u serveru, který nás po osmi
+  // rychlých spojeních začal resetovat, byla nepravda svalující vinu na nás.
+  const poznamky = [];
+  if (nemeritelne.length) {
+    poznamky.push(
+      ` Nezměřitelné naším prostředím: ${nemeritelne.join('; ')} — tyhle sady ` +
+        'v našem buildu OpenSSL neexistují, takže je klient nemůže nabídnout. ' +
+        'O serveru to neříká nic a do verdiktu se to nepočítá.'
+    );
+  }
+  if (neprukazne.length) {
+    poznamky.push(
+      ` Neprůkazné: ${neprukazne.join('; ')} — sonda se nedostala k odpovědi, ` +
+        'ze které by šlo poznat, jestli server sadu přijímá.'
+    );
+  }
+  const note = poznamky.join('');
 
   if (findings.length > 0) {
     return {
       ok: false,
       accepted,
-      untested,
+      untested: [...nemeritelne, ...neprukazne],
+      unmeasurable: nemeritelne,
+      inconclusive: neprukazne,
       findings,
       rationale:
         `Server přijímá ${findings.length} ${findings.length === 1 ? 'skupinu' : 'skupiny'} ` +
-        `slabých sad šifer.${untestedNote}`,
+        `slabých sad šifer.${note}`,
     };
   }
 
-  if (untested.length === CIPHER_PROBES.length) {
-    // Žádnou sondu se nepodařilo provést — nevíme nic.
+  // Nezměřitelné sondy se z posuzování VYŘAZUJÍ, ne počítají jako neúspěch.
+  //
+  // Dokud se to slévalo, stačila jediná trvale nedostupná sonda (3DES zmizel
+  // z novějších buildů OpenSSL) a verdikt už nemohl vyjít kladně nikdy —
+  // bezvadný web dostal natrvalo „NEPRŮKAZNÉ" a celý NIS2 sken s ním.
+  // Vyřadit měření, které nemůže proběhnout, není zamlčení: report obě
+  // skupiny vypisuje a rozlišuje.
+  const meritelnych = CIPHER_PROBES.length - nemeritelne.length;
+
+  if (meritelnych === 0) {
     return {
       ok: null,
       accepted,
-      untested,
+      untested: [...nemeritelne, ...neprukazne],
+      unmeasurable: nemeritelne,
+      inconclusive: neprukazne,
       findings,
       rationale:
-        'Žádnou ze slabých sad se nepodařilo nabídnout, takže o jejich ' +
-        'přijímání serverem nelze říct nic.',
+        'Žádnou ze slabých sad nedokáže náš build OpenSSL nabídnout, takže ' +
+        `o jejich přijímání serverem nelze říct nic.${note}`,
+    };
+  }
+
+  if (neprukazne.length > 0) {
+    return {
+      ok: null,
+      accepted,
+      untested: [...nemeritelne, ...neprukazne],
+      unmeasurable: nemeritelne,
+      inconclusive: neprukazne,
+      findings,
+      rationale: `Zkoušené sady server odmítl, ale ne všechny se podařilo posoudit.${note}`,
     };
   }
 
   return {
-    ok: untested.length === 0 ? true : null,
+    ok: true,
     accepted,
-    untested,
+    untested: nemeritelne,
+    unmeasurable: nemeritelne,
+    inconclusive: [],
     findings,
     rationale:
-      untested.length === 0
-        ? 'Server odmítl všechny zkoušené slabé sady šifer. Zkoušel se ' +
-          'uzavřený seznam, takže z toho neplyne, že přijímá jen ty nejlepší.'
-        : `Zkoušené sady server odmítl.${untestedNote}`,
+      `Server odmítl všechny sady, které šlo změřit (${meritelnych} ze ` +
+      `${CIPHER_PROBES.length}). Zkoušel se uzavřený seznam, takže z toho ` +
+      `neplyne, že přijímá jen ty nejlepší.${note}`,
   };
 }
 
@@ -649,9 +793,26 @@ export function classifyCertificate(cert, now = new Date()) {
     : null;
 
   const issues = [];
+  // Blížící se expirace patří do POZNÁMEK, ne mezi nálezy.
+  //
+  // Prošlý certifikát je porušení — prohlížeč spojení odmítne. Certifikát,
+  // který vyprší za týden, je dnes platný a žádný předpis kratší platnost
+  // nezakazuje. Dokud to shazovalo verdikt, vycházel web s krátkodobými
+  // ACME certifikáty (Let's Encrypt je vydává na dny) TRVALE jako
+  // nevyhovující, právě proto, že je obnovuje často a správně.
+  //
+  // Provozovatele to zajímá, tak se to říká — ale jako provozní upozornění,
+  // ne jako doklad porušení k předložení úřadu.
+  const expiryNotes = [];
   if (daysRemaining !== null) {
     if (daysRemaining < 0) issues.push(`Certifikát vypršel před ${Math.abs(daysRemaining)} dny.`);
-    else if (daysRemaining < 14) issues.push(`Certifikát vyprší za ${daysRemaining} dnů.`);
+    else if (daysRemaining < 14) {
+      expiryNotes.push(
+        `Certifikát vyprší za ${daysRemaining} ${daysRemaining === 1 ? 'den' : 'dnů'}. ` +
+          'Není to nález — u certifikátů obnovovaných automaticky je krátká ' +
+          'zbývající platnost běžný stav.'
+      );
+    }
   }
   if (validFrom && !Number.isNaN(validFrom.getTime()) && validFrom > now) {
     issues.push('Certifikát ještě není platný.');
@@ -678,7 +839,7 @@ export function classifyCertificate(cert, now = new Date()) {
 
   // Když se platnost ani délka klíče nedaly přečíst, není co prohlásit
   // za v pořádku. `true` znamená „ověřeno", ne „nic mě nenapadlo".
-  const notes = [];
+  const notes = [...expiryNotes];
   if (daysRemaining === null) notes.push('Datum platnosti certifikátu se nepodařilo přečíst.');
   if (keyBits === null) notes.push('Délku klíče certifikátu se nepodařilo přečíst.');
 
@@ -754,7 +915,7 @@ export function summarizeTls(inspection, now = new Date()) {
   const protocols = classifyProtocols(inspection.protocols);
   const certificate = classifyCertificate(inspection.certificate, now);
   const pqc = classifyPqc(inspection.pqc);
-  const ciphers = classifyCiphers(inspection.ciphers);
+  const ciphers = classifyCiphers(inspection.ciphers, inspection.cipherReasons);
   const chain = classifyChain(inspection);
   const ocsp = classifyOcsp(inspection);
 
