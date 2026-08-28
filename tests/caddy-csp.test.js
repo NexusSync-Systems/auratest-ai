@@ -79,15 +79,17 @@ describe('CSP v Caddyfile', () => {
   });
 });
 
-describe('access log neobsahuje citlivé query parametry', () => {
-  test('token artefaktu a adresy skenů se z logu vyřazují', () => {
-    // Log s retencí 720 h je špatné místo pro historii zákazníkových
-    // auditů — a dřív i pro capability tokeny k artefaktům.
+describe('access log neobsahuje query string', () => {
+  test('maže se celý query, ne vyjmenované parametry', () => {
+    // Log s retencí 720 h je špatné místo pro historii zákazníkových auditů
+    // — a dřív i pro capability tokeny k artefaktům.
+    //
+    // Filtr na vyjmenované parametry chrání jen ty, které někoho napadly.
+    // První nový parametr, na který se zapomene, začne tiše téct.
     const logBlock = caddyfile.slice(caddyfile.indexOf('log {'));
     expect(logBlock).toMatch(/format filter/);
-    expect(logBlock).toMatch(/uri query/);
-    for (const param of ['delete t', 'delete url', 'delete from', 'delete to']) {
-      expect(logBlock).toContain(param);
-    }
+    expect(logBlock).toMatch(/uri regexp/);
+    // Výčet konkrétních jmen by znamenal návrat ke slabší variantě.
+    expect(logBlock).not.toMatch(/delete \w/);
   });
 });

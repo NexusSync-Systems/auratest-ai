@@ -108,15 +108,20 @@ auraguard.example.com {
 		#
 		# `format filter` s `wrap json` nahrazuje samotné `format json` —
 		# obojí vedle sebe by bylo přinejmenším matoucí.
+		# Maže se CELÝ query string, ne vyjmenované parametry.
+		#
+		# Původní podoba mazala `t`, `url`, `from` a `to` — tedy ty, které mě
+		# napadly. Jenže filtr, který chrání jen známé případy, je u nástroje
+		# tohohle druhu slabý: první parametr, na který někdo v budoucnu
+		# zapomene, začne tiše téct do logu s retencí 720 hodin.
+		#
+		# Cesta v logu zůstává, takže je pořád vidět, který endpoint se volal
+		# a s jakým výsledkem. Pro provoz to stačí; obsah parametrů k ničemu
+		# nepotřebujeme.
 		format filter {
 			wrap json
 			fields {
-				uri query {
-					delete t
-					delete url
-					delete from
-					delete to
-				}
+				uri regexp "\?.*" ""
 			}
 		}
 	}
