@@ -15,6 +15,7 @@ import { auditCsp } from './csp-audit.js';
 import { assessDisclosurePlacement } from './disclosure-placement.js';
 import { inspectImageBytes, summarizeC2pa } from './c2pa.js';
 import { auditCookieFlags } from './cookie-flags.js';
+import { auditHsts } from './hsts-audit.js';
 
 // Volby pro Chromium jsou ve vlastním modulu — potřebuje je i generátor PDF
 // spisu a duplikát by se jednou opravil jen na jednom místě.
@@ -2000,11 +2001,13 @@ export async function auditAccessibility(url) {
  * `Strict-Transport-Security: max-age=0` HSTS fakticky vypíná, ale dřívější
  * `!!header` ho hlásilo jako splněno. Vyžadujeme aspoň rok.
  */
-function hasStrongHsts(header) {
-  if (!header) return false;
-  const match = /max-age\s*=\s*(\d+)/i.exec(header);
-  return Boolean(match) && parseInt(match[1], 10) >= 31536000;
-}
+// `hasStrongHsts` nahrazeno modulem `hsts-audit.js`.
+//
+// Původní podoba vracela `false` u všeho pod rokem, takže hlavička
+// s půlroční platností se v reportu objevila mezi CHYBĚJÍCÍMI. To je totéž
+// pochybení, které se u CSP muselo opravovat: tvrdit „chybí hlavička"
+// o hlavičce, která existuje a chrání — jen kratší dobu — je nepravdivé.
+// Nově je to nález nízké závažnosti s uvedenou hodnotou.
 
 
 export async function auditNIS2AndPQC(url) {
@@ -2043,8 +2046,23 @@ export async function auditNIS2AndPQC(url) {
     // posuzovatelé si dřív protiřečili.
     const cspDetail = auditCsp(headers['content-security-policy']);
 
+    // Obsah hlavičky HSTS, ne jen její přítomnost. Stejný vzor jako
+    // `cspDetail` — jeden posuzovatel, jehož výsledek čte i verdikt.
+    //
+    // Protokol se bere z FINÁLNÍ adresy po přesměrováních: na http:// se
+    // HSTS neposuzuje, protože ji tam prohlížeč ignoruje.
+    const hstsDetail = auditHsts(headers['strict-transport-security'], {
+      https: (() => {
+        try {
+          return new URL(response.url()).protocol === 'https:';
+        } catch {
+          return true;
+        }
+      })(),
+    });
+
     const headerChecks = {
-      hsts: hasStrongHsts(headers['strict-transport-security']),
+      hsts: hstsDetail.ok === true,
       // Jediný posuzovatel CSP.
       //
       // Dřív tu byla vlastní funkce `hasMeaningfulCsp`, která neznala nonce
@@ -2132,6 +2150,7 @@ export async function auditNIS2AndPQC(url) {
       // „Chybí hlavička: chybí base-uri" — nesmysl, který u nálezů z TLS
       // jednou vznikl a musel se rozdělovat zpátky.
       cspDetail,
+      hstsDetail,
 
       // Poctivé vymezení rozsahu. Zákon č. 264/2025 Sb. žádné konkrétní HTTP
       // hlavičky nepředepisuje — § 14 mluví o organizačních a technických

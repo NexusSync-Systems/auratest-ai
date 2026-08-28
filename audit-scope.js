@@ -43,6 +43,9 @@ export const AUDIT_RULE_SCOPE = {
     'tls.pqc.x25519mlkem768',
     'tls.protocols.deprecated',
     'tls.certificate.validity',
+    'tls.certificate.chain',
+    'tls.ciphers.weak',
+    'tls.ocsp.stapling',
   ],
   // Odst. 3 a 4 se do rozsahu NEDÁVAJÍ.
   //
@@ -116,6 +119,32 @@ export function verdictsForAudit(slug, result) {
           rationale:
             result.nis2?.scope ||
             'Kontrola hlaviček a TLS vrstvy. Nejde o posouzení shody s NIS2 jako celkem.',
+        },
+        {
+          key: 'tls.ciphers',
+          label: 'Sady šifer',
+          ok: tri(result.tls?.ciphers?.ok),
+          rationale:
+            result.tls?.ciphers?.rationale ||
+            'Sady šifer se nepodařilo prozkoumat.',
+        },
+        {
+          key: 'tls.chain',
+          label: 'Ověření řetězu certifikátů',
+          ok: tri(result.tls?.chain?.ok),
+          rationale:
+            result.tls?.chain?.rationale ||
+            'Řetěz certifikátů se nepodařilo ověřit.',
+        },
+        {
+          key: 'tls.ocsp',
+          label: 'Přikládání OCSP odpovědi',
+          // POZOROVÁNÍ jako PQC: stapling žádný předpis nevyžaduje.
+          advisory: true,
+          ok: tri(result.tls?.ocsp?.ok),
+          rationale:
+            result.tls?.ocsp?.rationale ||
+            'Přiložení OCSP odpovědi se nepodařilo ověřit.',
         },
         {
           key: 'tls.pqc',

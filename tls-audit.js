@@ -70,6 +70,51 @@ const CLIENT_LIMITATION_CODES = new Set([
   'ERR_CRYPTO_OPERATION_FAILED',
 ]);
 
+/**
+ * Skupiny šifer, jejichž přijímání je dnes nedostatek.
+ *
+ * Každá se zkouší SAMOSTATNĚ: klient nabídne jen ji. Projde-li handshake,
+ * server ji prokazatelně přijímá — to je měření, ne odhad z výchozí sady.
+ *
+ * `@SECLEVEL=0` je nutné, protože OpenSSL 3 slabé sady u vyšších úrovní
+ * odmítá nabídnout už na straně klienta. Bez toho by sonda hlásila
+ * „netestováno" i u serveru, který je ochotně přijímá.
+ *
+ * Vše se posílá s `maxVersion: 'TLSv1.2'` — u TLS 1.3 je sada šifer pevná
+ * a volbou `ciphers` se neřídí.
+ */
+export const CIPHER_PROBES = [
+  {
+    key: 'noForwardSecrecy',
+    label: 'Sady bez dopředné utajenosti (výměna klíče přes RSA)',
+    ciphers: 'AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:@SECLEVEL=0',
+    severity: 'high',
+    // Bez dopředné utajenosti stačí jednou získat privátní klíč serveru
+    // a odposlechnutý provoz z minulosti se dá zpětně dešifrovat.
+    finding:
+      'Server přijímá sady bez dopředné utajenosti. Kdo někdy získá privátní ' +
+      'klíč, rozšifruje jím i dříve odposlechnutý provoz.',
+  },
+  {
+    key: 'sha1Mac',
+    label: 'Sady s SHA-1 pro ověření zpráv',
+    ciphers: 'ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:@SECLEVEL=0',
+    severity: 'medium',
+    finding:
+      'Server přijímá sady používající SHA-1. Ta je pro ověření zpráv v TLS ' +
+      'považovaná za dožitou.',
+  },
+  {
+    key: 'tripleDes',
+    label: 'Sady s 3DES',
+    ciphers: 'DES-CBC3-SHA:ECDHE-RSA-DES-CBC3-SHA:@SECLEVEL=0',
+    severity: 'high',
+    finding:
+      'Server přijímá 3DES. Krátký blok ho vystavuje útoku Sweet32 ' +
+      '(CVE-2016-2183) na dlouho běžících spojeních.',
+  },
+];
+
 function isIpLiteral(host) {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
 }
@@ -86,6 +131,7 @@ function handshake(hostname, port, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS)
   return new Promise((resolve) => {
     let socket;
     let settled = false;
+    let ocspResponse = null;
 
     const done = (result) => {
       if (settled) return;
@@ -118,12 +164,22 @@ function handshake(hostname, port, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS)
             ok: true,
             protocol: socket.getProtocol(),
             cipher: socket.getCipher(),
+            // `undefined` = o stapling jsme nežádali; `null` = žádali
+            // a nepřišlo. Ty dva stavy se nesmí slévat.
+            ocsp: options.requestOCSP ? ocspResponse !== null : undefined,
             authorized: socket.authorized,
             authorizationError: socket.authorizationError?.message || socket.authorizationError || null,
             certificate: cert && Object.keys(cert).length ? cert : null,
           });
         }
       );
+      // OCSP odpověď přijde JEŠTĚ PŘED dokončením handshaku, takže se
+      // posluchač musí navěsit hned. Zachytí se do proměnné, kterou pak
+      // callback výše přiloží k výsledku.
+      socket.on('OCSPResponse', (response) => {
+        ocspResponse = response && response.length > 0 ? response : null;
+      });
+
       socket.on('error', (err) => {
         clearTimeout(timer);
         done({ ok: false, reason: err.code || 'handshake_failed', message: err.message });
@@ -310,8 +366,9 @@ export function probeLegacyVersion(hostname, port, versionName, timeoutMs = DEFA
  * @param {number} port
  */
 export async function inspectTls(hostname, port = 443) {
-  // Základní spojení — z něj bereme certifikát a vyjednané parametry.
-  const base = await handshake(hostname, port);
+  // Základní spojení — z něj bereme certifikát, vyjednané parametry
+  // a odpověď OCSP, pokud ji server přiloží (stapling).
+  const base = await handshake(hostname, port, { requestOCSP: true });
 
   // Verze protokolu. Zastaralé jdou ručním ClientHellem (klient je neumí),
   // moderní přes tls.connect s min=max.
@@ -352,8 +409,36 @@ export async function inspectTls(hostname, port = 443) {
     pqcSupported = false;
   }
 
+  // Sady šifer. Každá skupina zvlášť, aby výsledek říkal, CO přesně server
+  // přijímá — ne jen „něco slabého tam je".
+  const cipherEntries = await Promise.all(
+    CIPHER_PROBES.map(async (probe) => {
+      const r = await handshake(hostname, port, {
+        ciphers: probe.ciphers,
+        maxVersion: 'TLSv1.2',
+        minVersion: 'TLSv1.2',
+      });
+      if (r.ok) return [probe.key, true];
+      // Náš klient tu sadu neumí nabídnout → netestováno, ne „nepřijímá".
+      // Vydávat neschopnost klienta za odmítnutí serverem by znamenalo
+      // tvrdit výsledek testu, který neproběhl.
+      if (
+        CLIENT_LIMITATION_CODES.has(r.reason)
+        || NETWORK_ERROR_CODES.has(r.reason)
+        || r.reason === 'unsupported_option'
+        || r.reason === 'ERR_SSL_NO_CIPHERS_AVAILABLE'
+      ) {
+        return [probe.key, null];
+      }
+      return [probe.key, false];
+    })
+  );
+
   return {
     reachable: base.ok,
+    ciphers: Object.fromEntries(cipherEntries),
+    // Stapling: `true` přiložil, `false` nepřiložil, `null` nedosažitelný.
+    ocspStapled: base.ok ? base.ocsp === true : null,
     negotiated: base.ok
       ? { protocol: base.protocol, cipher: base.cipher?.name, cipherVersion: base.cipher?.version }
       : null,
@@ -372,6 +457,132 @@ export async function inspectTls(hostname, port = 443) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Klasifikace (bez sítě, testovatelná jednotkově)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Přijímá server slabé sady šifer?
+ *
+ * @returns {{ok: boolean|null, accepted: string[], untested: string[], findings: Array, rationale: string}}
+ */
+export function classifyCiphers(ciphers = {}) {
+  const accepted = [];
+  const untested = [];
+  const findings = [];
+
+  for (const probe of CIPHER_PROBES) {
+    const result = ciphers[probe.key];
+    if (result === true) {
+      accepted.push(probe.key);
+      findings.push({ severity: probe.severity, key: probe.key, message: probe.finding });
+    } else if (result !== false) {
+      // `undefined` i `null` znamenají netestováno.
+      untested.push(probe.label);
+    }
+  }
+
+  const untestedNote = untested.length
+    ? ` Netestováno: ${untested.join('; ')} — tyhle sady náš klient nedokázal nabídnout, ` +
+      'takže o nich sonda neříká nic.'
+    : '';
+
+  if (findings.length > 0) {
+    return {
+      ok: false,
+      accepted,
+      untested,
+      findings,
+      rationale:
+        `Server přijímá ${findings.length} ${findings.length === 1 ? 'skupinu' : 'skupiny'} ` +
+        `slabých sad šifer.${untestedNote}`,
+    };
+  }
+
+  if (untested.length === CIPHER_PROBES.length) {
+    // Žádnou sondu se nepodařilo provést — nevíme nic.
+    return {
+      ok: null,
+      accepted,
+      untested,
+      findings,
+      rationale:
+        'Žádnou ze slabých sad se nepodařilo nabídnout, takže o jejich ' +
+        'přijímání serverem nelze říct nic.',
+    };
+  }
+
+  return {
+    ok: untested.length === 0 ? true : null,
+    accepted,
+    untested,
+    findings,
+    rationale:
+      untested.length === 0
+        ? 'Server odmítl všechny zkoušené slabé sady šifer. Zkoušel se ' +
+          'uzavřený seznam, takže z toho neplyne, že přijímá jen ty nejlepší.'
+        : `Zkoušené sady server odmítl.${untestedNote}`,
+  };
+}
+
+/**
+ * Ověřil se řetěz certifikátů proti důvěryhodným kořenům?
+ *
+ * Data jsou k dispozici odjakživa — spojení se navazuje s
+ * `rejectUnauthorized: false`, aby vadný certifikát byl NÁLEZ a ne důvod
+ * skončit. Dosud se ale jen ukládala a nikdo je neposuzoval.
+ */
+export function classifyChain(inspection = {}) {
+  if (!inspection.reachable) {
+    return {
+      ok: null,
+      rationale: 'Ke serveru se nepodařilo připojit, řetěz důvěry proto nebyl ověřen.',
+    };
+  }
+
+  if (inspection.authorized === true) {
+    return {
+      ok: true,
+      rationale:
+        'Řetěz certifikátů se ověřil proti kořenům vestavěným v Node.js. ' +
+        'Ty se neshodují s úložištěm operačního systému ani prohlížeče, ' +
+        'takže z toho neplyne, že certifikát uzná každý klient.',
+    };
+  }
+
+  return {
+    ok: false,
+    rationale:
+      `Řetěz certifikátů se nepodařilo ověřit: ${
+        inspection.authorizationError || 'bez bližšího údaje'
+      }. Prohlížeč takové spojení označí za nedůvěryhodné.`,
+  };
+}
+
+/**
+ * Přikládá server OCSP odpověď (stapling)?
+ *
+ * POZOROVÁNÍ, ne kontrola. Stapling žádný předpis nevyžaduje — je to
+ * zrychlení a ochrana soukromí (klient se nemusí ptát vydavatele, a tím
+ * mu prozrazovat, které weby navštěvuje). Jeho absence není vada.
+ */
+export function classifyOcsp(inspection = {}) {
+  if (!inspection.reachable || inspection.ocspStapled === null) {
+    return { ok: null, rationale: 'Přiložení OCSP odpovědi se nepodařilo ověřit.' };
+  }
+  if (inspection.ocspStapled === true) {
+    return {
+      ok: true,
+      rationale:
+        'Server přikládá OCSP odpověď. Klient se nemusí ptát vydavatele ' +
+        'certifikátu, což zrychluje spojení a nezveřejňuje, které weby ' +
+        'navštěvuje.',
+    };
+  }
+  return {
+    ok: false,
+    rationale:
+      'Server OCSP odpověď nepřikládá. Není to porušení předpisu — jde ' +
+      'o doporučené zpevnění, ne o povinnost.',
+  };
+}
 
 /** Přijímá server zastaralé verze protokolu? */
 export function classifyProtocols(protocols = {}) {
@@ -543,12 +754,25 @@ export function summarizeTls(inspection, now = new Date()) {
   const protocols = classifyProtocols(inspection.protocols);
   const certificate = classifyCertificate(inspection.certificate, now);
   const pqc = classifyPqc(inspection.pqc);
+  const ciphers = classifyCiphers(inspection.ciphers);
+  const chain = classifyChain(inspection);
+  const ocsp = classifyOcsp(inspection);
 
   const issues = [...protocols.issues, ...certificate.issues];
   const notes = [...(protocols.notes || []), ...(certificate.notes || [])];
-  if (!inspection.authorized && inspection.authorizationError) {
-    issues.push(`Certifikát neprošel ověřením: ${inspection.authorizationError}`);
+
+  // Slabé sady jsou nález, netestované jen poznámka.
+  for (const f of ciphers.findings) issues.push(f.message);
+  if (ciphers.untested.length) notes.push(ciphers.rationale);
+
+  if (chain.ok === false) {
+    issues.push(chain.rationale);
+  } else if (chain.ok === null) {
+    notes.push(chain.rationale);
   }
+
+  // Stapling do nálezů NEPATŘÍ — žádný předpis ho nevyžaduje.
+  notes.push(ocsp.rationale);
 
   // Tři stavy, ne dva:
   //   false = něco je prokazatelně špatně
@@ -557,9 +781,20 @@ export function summarizeTls(inspection, now = new Date()) {
   // PQC do verdiktu nevstupuje — chybějící post-kvantová výměna klíčů je
   // dnes doporučení, ne závada.
   let ok;
-  if (issues.length > 0 || protocols.ok === false || certificate.ok === false) {
+  if (
+    issues.length > 0
+    || protocols.ok === false
+    || certificate.ok === false
+    || ciphers.ok === false
+    || chain.ok === false
+  ) {
     ok = false;
-  } else if (protocols.ok === null || certificate.ok === null) {
+  } else if (
+    protocols.ok === null
+    || certificate.ok === null
+    || ciphers.ok === null
+    || chain.ok === null
+  ) {
     ok = null;
   } else {
     ok = true;
@@ -581,5 +816,5 @@ export function summarizeTls(inspection, now = new Date()) {
     rating = 'TLS konfigurace bez nálezu. Post-kvantovou výměnu klíčů se nepodařilo ověřit.';
   }
 
-  return { ok, protocols, certificate, pqc, issues, notes, rating };
+  return { ok, protocols, certificate, pqc, ciphers, chain, ocsp, issues, notes, rating };
 }

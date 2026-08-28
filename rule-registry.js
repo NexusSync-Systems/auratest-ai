@@ -39,11 +39,73 @@ const RULE_LIST = [
   // ── NIS2: bezpečnostní hlavičky ────────────────────────────────────────
   {
     id: 'nis2.headers.hsts',
-    version: 1,
-    title: 'Hlavička Strict-Transport-Security',
-    method: 'Čte se hlavička odpovědi finální URL po přesměrováních.',
+    version: 2,
+    title: 'Strict-Transport-Security — obsah hlavičky',
+    method:
+      'Hlavička odpovědi finální URL se rozebere na direktivy. Posuzuje se ' +
+      'délka `max-age` (doporučený rok, symbolická hodnota pod jedním dnem, ' +
+      'nula jako vypnutí), přítomnost `includeSubDomains` a `preload`. ' +
+      'Hlavička bez platného `max-age` se hlásí jako závažná vada — ' +
+      'prohlížeče ji podle RFC 6797 zahazují celou.',
     limits:
-      'Přítomnost hlavičky neříká nic o délce max-age ani o zahrnutí subdomén.',
+      'Posuzuje se text hlavičky, ne to, jestli si ji prohlížeč skutečně ' +
+      'zapamatoval. Na nešifrovaném spojení se hlavička neposuzuje vůbec — ' +
+      'tam ji prohlížeč ignoruje, takže její absence není volba ' +
+      'provozovatele. Chybějící `includeSubDomains` verdikt neshazuje: ' +
+      'u webu bez subdomén nic neřeší a zapnout to bez rozmyslu může ' +
+      'subdomény odříznout. Zařazení do seznamu hstspreload.org se neověřuje.',
+    changelog: {
+      2:
+        'Verze 1 posuzovala jen přítomnost hlavičky. `max-age=1` tak dostalo ' +
+        'stejný verdikt jako roční platnost s preloadem, přestože chrání ' +
+        'jednu sekundu.',
+    },
+  },
+  {
+    id: 'tls.ciphers.weak',
+    version: 1,
+    title: 'Přijímání slabých sad šifer',
+    method:
+      'Každá skupina se zkouší SAMOSTATNÝM spojením, ve kterém klient ' +
+      'nabídne jen ji. Projde-li handshake, server ji prokazatelně přijímá. ' +
+      'Zkouší se: sady bez dopředné utajenosti (výměna klíče přes RSA), ' +
+      'sady s SHA-1 a sady s 3DES. Vše po TLS 1.2, protože u TLS 1.3 je ' +
+      'sada pevná a volbou klienta se neřídí.',
+    limits:
+      'Seznam zkoušených skupin je UZAVŘENÝ. Odmítnutí všech tří neznamená, ' +
+      'že server přijímá jen doporučené sady — znamená, že tyhle tři ne. ' +
+      'Skupinu, kterou náš klient nedokáže nabídnout (novější OpenSSL slabé ' +
+      'sady odmítá i na straně klienta), report označí jako netestovanou, ' +
+      'nikoli jako odmítnutou.',
+  },
+  {
+    id: 'tls.certificate.chain',
+    version: 1,
+    title: 'Ověření řetězu certifikátů',
+    method:
+      'Spojení se navazuje bez odmítání vadného certifikátu, aby vada byla ' +
+      'zjištěním a ne důvodem sken ukončit. Výsledek ověření řetězu se čte ' +
+      'z navázaného spojení.',
+    limits:
+      'Ověřuje se proti kořenům vestavěným v Node.js. Ty se neshodují ' +
+      's úložištěm operačního systému ani prohlížeče, takže úspěch ' +
+      'neznamená, že certifikát uzná každý klient — a neúspěch může ' +
+      'u vnitrofiremní certifikační autority znamenat jen to, že její kořen ' +
+      'v našem seznamu není. Odvolání certifikátu (CRL/OCSP) se neověřuje.',
+  },
+  {
+    id: 'tls.ocsp.stapling',
+    version: 1,
+    title: 'Přikládání OCSP odpovědi (stapling)',
+    method:
+      'Při navazování spojení se o OCSP odpověď požádá. Přijde-li, server ji ' +
+      'přikládá.',
+    limits:
+      'POZOROVÁNÍ, ne kontrola. Stapling žádný předpis nevyžaduje — je to ' +
+      'zrychlení a ochrana soukromí uživatele, který se pak nemusí ptát ' +
+      'vydavatele certifikátu a prozrazovat mu, které weby navštěvuje. ' +
+      'Jeho absence proto není vada a do verdiktu se nepočítá. Platnost ' +
+      'ani podpis přiložené odpovědi se neověřuje.',
   },
   {
     id: 'nis2.headers.csp',

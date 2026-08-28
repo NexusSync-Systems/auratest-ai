@@ -125,7 +125,12 @@ describe('čtení verdiktů z výsledků skenerů', () => {
     // proběhlo, a NIS2 sken nemohl NIKDY vyjít bez nálezu.
     const v = verdictsForAudit('analyze-nis2', {
       nis2: { isCompliant: true, scope: 's' },
-      tls: { pqc: { supported: false, rationale: 'Nenabízí.' } },
+      tls: {
+        pqc: { supported: false, rationale: 'Nenabízí.' },
+        ciphers: { ok: true, rationale: 'Slabé sady odmítnuty.' },
+        chain: { ok: true, rationale: 'Řetěz ověřen.' },
+        ocsp: { ok: false, rationale: 'Nepřikládá.' },
+      },
     });
     const pqc = v.find((x) => x.key === 'tls.pqc');
     expect(pqc.ok).toBe(false);
@@ -208,5 +213,54 @@ describe('čtení verdiktů z výsledků skenerů', () => {
     const v = verdictsForAudit('analyze-accessibility', { violations: [], incomplete: [] });
     expect(v[0].rationale.length).toBeGreaterThan(30);
     expect(v[0].rationale).toMatch(/není důkazem přístupnosti/);
+  });
+});
+
+
+describe('TLS do hloubky (S1)', () => {
+  const nis2 = (tls) => verdictsForAudit('analyze-nis2', { nis2: { isCompliant: true, scope: 's' }, tls });
+
+  test('slabé sady šifer shodí verdikt', () => {
+    const v = nis2({
+      ciphers: { ok: false, rationale: 'Přijímá 3DES.' },
+      chain: { ok: true, rationale: 'x' },
+      ocsp: { ok: true, rationale: 'x' },
+      pqc: { supported: true, rationale: 'x' },
+    });
+    expect(v.find((x) => x.key === 'tls.ciphers').ok).toBe(false);
+    expect(overallVerdict(v)).toBe(false);
+  });
+
+  test('neověřený řetěz důvěry shodí verdikt', () => {
+    const v = nis2({
+      ciphers: { ok: true, rationale: 'x' },
+      chain: { ok: false, rationale: 'Self signed.' },
+      ocsp: { ok: true, rationale: 'x' },
+      pqc: { supported: true, rationale: 'x' },
+    });
+    expect(overallVerdict(v)).toBe(false);
+  });
+
+  test('chybějící OCSP stapling verdikt NEshodí', () => {
+    // Stapling žádný předpis nevyžaduje — je to zpevnění, ne povinnost.
+    const v = nis2({
+      ciphers: { ok: true, rationale: 'x' },
+      chain: { ok: true, rationale: 'x' },
+      ocsp: { ok: false, rationale: 'Nepřikládá.' },
+      pqc: { supported: true, rationale: 'x' },
+    });
+    expect(v.find((x) => x.key === 'tls.ocsp').advisory).toBe(true);
+    expect(overallVerdict(v)).toBe(true);
+  });
+
+  test('netestované sady drží verdikt na neprůkazném', () => {
+    // Sady, které náš klient neumí nabídnout, nesmí projít jako odmítnuté.
+    const v = nis2({
+      ciphers: { ok: null, rationale: 'Nešlo nabídnout.' },
+      chain: { ok: true, rationale: 'x' },
+      ocsp: { ok: true, rationale: 'x' },
+      pqc: { supported: true, rationale: 'x' },
+    });
+    expect(overallVerdict(v)).toBeNull();
   });
 });

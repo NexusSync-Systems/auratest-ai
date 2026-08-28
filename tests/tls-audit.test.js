@@ -10,6 +10,9 @@ import {
   classifyProtocols,
   classifyCertificate,
   classifyPqc,
+  classifyCiphers,
+  classifyChain,
+  classifyOcsp,
   summarizeTls,
   probeLegacyVersion,
   inspectTls,
@@ -210,6 +213,10 @@ describe('summarizeTls', () => {
     },
     protocols: { 'TLSv1': false, 'TLSv1.1': false, 'TLSv1.2': true, 'TLSv1.3': true },
     pqc: { group: PQC_GROUP, supported: false },
+    // Bez těchhle sond by verdikt zůstal neprůkazný — a to je správně:
+    // sken, u kterého část kontrol neproběhla, nesmí vyjít jako v pořádku.
+    ciphers: { noForwardSecrecy: false, sha1Mac: false, tripleDes: false },
+    ocspStapled: true,
   };
   const now = new Date('2026-08-20T00:00:00Z');
 
@@ -259,7 +266,7 @@ describe('summarizeTls', () => {
       ...reachable, authorized: false, authorizationError: 'SELF_SIGNED_CERT_IN_CHAIN',
     }, now);
     expect(r.ok).toBe(false);
-    expect(r.issues.some((i) => /neprošel ověřením/.test(i))).toBe(true);
+    expect(r.issues.some((i) => /nepodařilo ověřit/.test(i))).toBe(true);
   });
 });
 
@@ -407,5 +414,71 @@ describe('inspectTls proti skutečnému serveru', () => {
 describe('Rozsah sondy', () => {
   it('testuje všechny čtyři verze protokolu', () => {
     expect(PROTOCOL_VERSIONS).toEqual(['TLSv1', 'TLSv1.1', 'TLSv1.2', 'TLSv1.3']);
+  });
+});
+
+describe('sady šifer (S1)', () => {
+  test('všechny slabé skupiny odmítnuty → bez nálezu', () => {
+    const r = classifyCiphers({ noForwardSecrecy: false, sha1Mac: false, tripleDes: false });
+    expect(r.ok).toBe(true);
+    expect(r.findings).toHaveLength(0);
+    // Seznam je uzavřený a report to musí říct.
+    expect(r.rationale).toMatch(/uzavřený seznam|neplyne, že přijímá jen ty nejlepší/);
+  });
+
+  test('přijatá slabá sada je nález s vysvětlením proč', () => {
+    const r = classifyCiphers({ noForwardSecrecy: true, sha1Mac: false, tripleDes: false });
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].severity).toBe('high');
+    expect(r.findings[0].message).toMatch(/dříve odposlechnutý provoz/);
+  });
+
+  test('netestovaná skupina není odmítnutá skupina', () => {
+    // Novější OpenSSL slabé sady odmítá i na straně klienta. Vydávat
+    // neschopnost klienta za odmítnutí serverem by znamenalo tvrdit
+    // výsledek testu, který neproběhl.
+    const r = classifyCiphers({ noForwardSecrecy: false, sha1Mac: false, tripleDes: null });
+    expect(r.ok).toBeNull();
+    expect(r.untested).toHaveLength(1);
+    expect(r.rationale).toMatch(/Netestováno/);
+  });
+
+  test('žádná sonda neproběhla → neprůkazné', () => {
+    expect(classifyCiphers({}).ok).toBeNull();
+  });
+});
+
+describe('řetěz důvěry a OCSP (S1)', () => {
+  test('ověřený řetěz přiznává, proti čemu se ověřoval', () => {
+    const r = classifyChain({ reachable: true, authorized: true });
+    expect(r.ok).toBe(true);
+    // Kořeny Node ≠ kořeny prohlížeče. Bez téhle výhrady by report tvrdil
+    // víc, než změřil.
+    expect(r.rationale).toMatch(/neshodují s úložištěm/);
+  });
+
+  test('neověřený řetěz nese důvod', () => {
+    const r = classifyChain({
+      reachable: true,
+      authorized: false,
+      authorizationError: 'self signed certificate',
+    });
+    expect(r.ok).toBe(false);
+    expect(r.rationale).toMatch(/self signed/);
+  });
+
+  test('nedostupný server → neprůkazné, ne nález', () => {
+    expect(classifyChain({ reachable: false }).ok).toBeNull();
+  });
+
+  test('chybějící stapling se označuje jako doporučení, ne vada', () => {
+    const r = classifyOcsp({ reachable: true, ocspStapled: false });
+    expect(r.ok).toBe(false);
+    expect(r.rationale).toMatch(/[Nn]ení to porušení předpisu/);
+  });
+
+  test('neověřený stapling je neprůkazný', () => {
+    expect(classifyOcsp({ reachable: true, ocspStapled: null }).ok).toBeNull();
+    expect(classifyOcsp({ reachable: false }).ok).toBeNull();
   });
 });

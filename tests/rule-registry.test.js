@@ -37,7 +37,9 @@ describe('registr pravidel', () => {
     // na konkrétní číslo je záměr: zvýšení verze má být vědomé rozhodnutí,
     // ne vedlejší efekt úpravy textu.
     expect(ruleRef('nis2.headers.csp')).toBe('nis2.headers.csp.v3');
-    expect(ruleRef('nis2.headers.hsts')).toBe('nis2.headers.hsts.v1');
+    // HSTS je na v2 od chvíle, kdy se posuzuje obsah hlavičky, ne jen
+    // její přítomnost.
+    expect(ruleRef('nis2.headers.hsts')).toBe('nis2.headers.hsts.v2');
   });
 
   test('pravidlo s vyšší verzí vysvětluje, co se změnilo', () => {
