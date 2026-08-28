@@ -48,7 +48,7 @@
     "adapter:gemma:install": "ollama pull gemma2:2b && npm run adapter:gemma:create"
   },
   "dependencies": {
-    "@axe-core/playwright": "^4.12.1",
+    "@axe-core/playwright": "^4.13.0",
     "cors": "^2.8.5",
     "diff": "^5.2.0",
     "dotenv": "^16.4.5",
