@@ -67,6 +67,16 @@ COPY --from=builder /app/*.js ./
 # z živých bundlů.
 COPY --from=builder /app/scripts/*.mjs ./scripts/
 
+# Verzi Node si tenhle image nediktuje sám — přebírá ji z base image
+# Playwrightu (`ARG NODE_VERSION=24`). Při povýšení Playwrightu se tedy může
+# tiše změnit i verze OpenSSL, na které stojí TLS sondy: slabé sady šifer
+# z novějších buildů mizí a hybridní post-kvantová skupina ve starších
+# neexistuje.
+#
+# Bez téhle kontroly by se to projevilo až tím, že by skeny u zákazníků
+# začaly vracet „neprůkazné" bez zjevné příčiny. Radši ať spadne build.
+RUN node scripts/check-runtime.mjs
+
 # Adresáře pro artefakty musí patřit neprivilegovanému uživateli.
 RUN mkdir -p screenshots videos generated-scripts ledger \
     && chown -R pwuser:pwuser /app

@@ -7,6 +7,9 @@
   "bin": {
     "auraguard": "./bin/auraguard-cli.js"
   },
+  "engines": {
+    "node": ">=22.15.0"
+  },
   "scripts": {
     "start": "node server.js",
     "dev:server": "node --watch server.js",
@@ -18,6 +21,7 @@
     "setup": "npm run install:all && npx playwright install",
     "dev": "npx concurrently \"npm run dev:server\" \"npm run frontend:dev\"",
     "test": "jest",
+    "check:runtime": "node scripts/check-runtime.mjs",
     "test:e2e": "playwright test",
     "test:smoke": "node scripts/smoke-test.mjs",
     "eval:llm": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --run-model --strict",

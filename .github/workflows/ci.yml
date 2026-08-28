@@ -1,12 +1,41 @@
 name: CI
 
+# Dřív bylo `on: push:` bez omezení. V repozitáři jsou desítky větví po
+# automatických výkonnostních pokusech a každý push do kterékoli z nich
+# spustil celou sadu jobů. Ve firemním privátním repozitáři se to platí
+# a nikdo ty běhy nečetl.
+#
+# `pull_request` zůstává, protože bez něj by se změny z forků netestovaly.
+# Omezení `push` na master zároveň ruší dvojí běh u pull requestů z větví
+# ve stejném repozitáři.
 on:
   push:
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Rychle po sobě jdoucí pushe: starší běh nemá cenu dokončovat, výsledek
+# stejně nikdo neuvidí. U master se ale ruší nic — tam chceme mít výsledek
+# ke každému commitu, protože podle něj se nasazuje.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  # Verze, na které běží produkce.
+  #
+  # Produkční image `mcr.microsoft.com/playwright:v1.60.0-jammy` má
+  # `ARG NODE_VERSION=24`, takže server běží na Node 24. CI dřív používalo
+  # Node 20 — a to není kosmetický rozdíl: TLS sondy závisí na verzi
+  # OpenSSL, se kterou je Node sestavený, a na Node 20 je to 3.0, kde
+  # hybridní post-kvantová skupina neexistuje vůbec.
+  #
+  # CI tedy dřív reportovalo zeleně sadu, ve které část měřicího kódu
+  # nemohla proběhnout tak jako v produkci.
+  NODE_VERSION: '24'
 
 jobs:
   lint:
@@ -20,7 +49,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
@@ -32,9 +61,17 @@ jobs:
         run: npx eslint .
 
   tests:
-    name: Testy
+    name: Testy (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 24 = produkce, 22 = stroje vývojářů. Matice tu není z opatrnosti,
+        # ale proto, že chování měřicího kódu se mezi buildy OpenSSL liší.
+        # Rozdíl mezi verzemi je pro tenhle projekt měřitelný jev, ne detail
+        # prostředí, takže se musí testovat na obou.
+        node: ['22', '24']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,11 +79,17 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      # Vypíše, co OpenSSL na runneru skutečně umí. Bez toho se nedá z
+      # zeleného běhu poznat, jestli sondy na sady šifer vůbec proběhly,
+      # nebo jen tiše vrátily „neprůkazné".
+      - name: Ověřit běhové prostředí
+        run: node scripts/check-runtime.mjs
 
       # Dřív CI pouštělo jen 2 ze 7 souborů s poznámkou "aby CI zůstalo
       # zelené". Sada je zelená celá, takže není důvod nic vynechávat.
@@ -64,7 +107,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
@@ -88,11 +131,25 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
+          # Bez `cache-dependency-path` se klíč cache počítá jen z kořenového
+          # lockfilu, takže změna závislostí frontendu cache neinvalidovala.
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
 
+      # Dřív `npm run install:all`, což je `npm install` — ten lockfile
+      # ignoruje a doinstaluje novější verze, které nikdo neschválil.
+      # Build v CI tak mohl projít nebo spadnout podle toho, co zrovna
+      # vyšlo na npm, bez jediného commitu u nás. `npm ci` instaluje přesně
+      # to, co je v lockfilu, a když lockfile nesedí s package.json, skončí
+      # chybou místo aby si to potichu spravil.
       - name: Install dependencies
-        run: npm run install:all
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
 
       # Vitest + Testing Library. Chytá i regrese přístupnosti — nástroj
       # audituje WCAG u cizích webů, takže by je měl dodržovat i sám.
