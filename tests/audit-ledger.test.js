@@ -10,6 +10,7 @@ import {
   recordsForSession,
   headHash,
   auditResultOf,
+  acquireLock,
   GENESIS_HASH,
 } from '../audit-ledger.js';
 
@@ -293,5 +294,48 @@ describe('auditResultOf — předpis otisku je zapsaný, ne odvozený', () => {
     const r = auditResultOf({ status: 'failed', runErrors: ['timeout'], bugs: [] });
     expect(r.runErrors).toEqual(['timeout']);
     expect(r.bugs).toEqual([]);
+  });
+});
+
+describe('zámek nad řetězem (regrese kontrolní vlny)', () => {
+  const lockPath = (f) => `${f}.lock`;
+
+  test('release nesmaže cizí zámek', () => {
+    // Po krádeži zámku by první proces smazal ten, který mezitím vytvořil
+    // druhý — a do řetězu by pak psali oba najednou.
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lock-')), 'audit.jsonl');
+    const release = acquireLock(file);
+    fs.writeFileSync(lockPath(file), '999999:cizi-token');
+    release();
+    expect(fs.existsSync(lockPath(file))).toBe(true);
+    fs.unlinkSync(lockPath(file));
+  });
+
+  test('zámek živého procesu se nekrade ani po uplynutí čekání', () => {
+    // Práh stáří byl dřív totožný s dobou čekání, takže zápis do velkého
+    // řetězu ho běžně přesáhl a druhý zapisovatel prvnímu zámek sebral.
+    // Oba pak zapsali stejný prevHash a verifyChain to ohlásila jako
+    // manipulaci — falešné obvinění z mechanismu, který ji má dokazovat.
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lock-')), 'audit.jsonl');
+    const release = acquireLock(file);
+    // Zámek tváříme jako hodinu starý, ale drží ho TENHLE (živý) proces.
+    const hodinaZpet = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(lockPath(file), hodinaZpet, hodinaZpet);
+
+    expect(() => acquireLock(file, 50)).toThrow(/nepodařilo se získat zámek/);
+    release();
+  });
+
+  test('osiřelý zámek po mrtvém procesu se uvolní', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lock-')), 'audit.jsonl');
+    // PID, který jistě neběží.
+    fs.writeFileSync(lockPath(file), '999999:mrtvy');
+    const hodinaZpet = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(lockPath(file), hodinaZpet, hodinaZpet);
+
+    const release = acquireLock(file, 1000);
+    expect(fs.existsSync(lockPath(file))).toBe(true);
+    release();
+    expect(fs.existsSync(lockPath(file))).toBe(false);
   });
 });

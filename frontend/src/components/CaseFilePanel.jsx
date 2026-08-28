@@ -226,7 +226,9 @@ export default function CaseFilePanel({ getToken }) {
             {chain.anchor && (
               <p
                 className={
-                  chain.anchor.state === 'broken' || chain.anchor.state === 'empty'
+                  chain.anchor.state === 'broken' ||
+                  chain.anchor.state === 'empty' ||
+                  chain.anchor.state === 'internal-only'
                     ? 'case-file-error'
                     : chain.anchor.state === 'anchored'
                       ? 'case-file-ok'
@@ -240,7 +242,9 @@ export default function CaseFilePanel({ getToken }) {
                     ? 'Pozor: dříve ukotvený otisk se v řetězu nenachází.'
                     : chain.anchor.state === 'empty'
                       ? 'Kotva vznikla nad prázdným záznamem — nekryje žádný běh.'
-                      : 'Otisk zatím nebyl ukotven mimo tenhle systém.'}
+                      : chain.anchor.state === 'internal-only'
+                        ? 'Kotva existuje, ale neopustila tenhle systém.'
+                        : 'Otisk zatím nebyl ukotven mimo tenhle systém.'}
               </p>
             )}
 

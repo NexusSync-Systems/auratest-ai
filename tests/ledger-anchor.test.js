@@ -8,6 +8,7 @@ import {
   verifyAnchors,
   anchorSummary,
   anchorMessage,
+  recordAnchorDelivery,
 } from '../ledger-anchor.js';
 
 /**
@@ -32,7 +33,23 @@ beforeEach(() => {
 const zapis = (n) =>
   appendRecord({ sessionId: `s${n}`, target: `https://x${n}.cz`, result: { n } }, ledger);
 
-const kotva = (note) => createAnchor({ ledgerFile: ledger, anchorFile: anchors, note });
+/**
+ * Kotva s potvrzeným odesláním.
+ *
+ * Bez potvrzení má stav `internal-only`: kopie neopustila systém, takže ji
+ * ovládá tentýž zapisovatel jako záznam sám. Většina testů zkoumá ověření
+ * proti řetězu, ne doručení, proto ho tahle pomůcka rovnou vyplní.
+ */
+const kotva = (note) =>
+  createAnchor({
+    ledgerFile: ledger,
+    anchorFile: anchors,
+    note,
+    delivered: { channel: 'test', ok: true, at: new Date().toISOString(), by: 'operator' },
+  });
+
+/** Kotva, která systém neopustila. */
+const kotvaBezOdeslani = () => createAnchor({ ledgerFile: ledger, anchorFile: anchors });
 // Plná kontrola řetězu je součástí posouzení: nad porušeným řetězem
 // kotva nedokládá nic.
 const stav = () =>
@@ -289,5 +306,61 @@ describe('obejití kotvy (regrese kontrolní vlny)', () => {
     expect(s.state).toBe('anchored');
     expect(s.rationale).not.toMatch(/\d+ záznam/);
     expect(JSON.stringify(s)).not.toMatch(/"recordCount"/);
+  });
+});
+
+describe('kotva, která systém neopustila (regrese)', () => {
+  test('bez potvrzeného odeslání se nehlásí jako doklad', () => {
+    // Celý mechanismus stojí na tom, že kopie otisku je MIMO dosah toho,
+    // kdo smí zapisovat do řetězu. Dokud se výsledek odeslání
+    // nezaznamenával, hlásil nástroj „ukotveno" i u kotvy ležící vedle
+    // záznamu — tedy u dvou souborů pod jednou rukou.
+    zapis(1);
+    kotvaBezOdeslani();
+    const s = stav();
+    expect(s.state).toBe('internal-only');
+    expect(s.rationale).toMatch(/neopustila tenhle systém/);
+  });
+
+  test('potvrzené odeslání kotvu povýší', () => {
+    zapis(1);
+    const { anchor } = kotvaBezOdeslani();
+    expect(stav().state).toBe('internal-only');
+
+    recordAnchorDelivery(
+      anchor.anchoredAt,
+      { channel: 'e-mail', ok: true, at: new Date().toISOString(), by: 'operator' },
+      anchors
+    );
+    expect(stav().state).toBe('anchored');
+  });
+
+  test('neúspěšné odeslání se nepočítá za doručení', () => {
+    zapis(1);
+    const { anchor } = kotvaBezOdeslani();
+    recordAnchorDelivery(
+      anchor.anchoredAt,
+      { channel: '#slack', ok: false, at: new Date().toISOString(), by: 'slack' },
+      anchors
+    );
+    expect(stav().state).toBe('internal-only');
+  });
+
+  test('kotva se zapíše pod zámkem a v jednom průchodu', () => {
+    // Dřív se soubor četl dvakrát — pro počet a pro otisk. Když mezi tím
+    // doběhl zápis, vznikla kotva s počtem N a otiskem záznamu N+1;
+    // po zpřísnění ověření by hlásila falešné porušení.
+    zapis(1);
+    zapis(2);
+    const { anchor } = kotva();
+    expect(anchor.recordCount).toBe(2);
+    expect(anchor.headHash).toBe(readLedger(ledger)[1].hash);
+    expect(fs.existsSync(`${ledger}.lock`)).toBe(false);
+  });
+
+  test('nedopsaný konec řetězu kotvu nezaloží', () => {
+    zapis(1);
+    fs.appendFileSync(ledger, '{"schema":1,"nedopsan');
+    expect(() => kotva()).toThrow(/nečitelný/);
   });
 });

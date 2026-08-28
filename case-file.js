@@ -727,7 +727,8 @@ ${
     }<br><span class="dim">Kontrola jen nad vašimi záznamy by odstranění položky odhalit nedokázala — mezi nimi leží záznamy jiných uživatelů, takže navazování otisků z ní ověřit nejde.</span></td></tr>
     <tr><th>Ukotvení</th><td class="${
       caseFile.ledger.anchor?.state === 'broken' ||
-      caseFile.ledger.anchor?.state === 'empty'
+      caseFile.ledger.anchor?.state === 'empty' ||
+      caseFile.ledger.anchor?.state === 'internal-only'
         ? 'warn'
         : ''
     }">${
@@ -737,7 +738,9 @@ ${
           ? 'POZOR — dříve ukotvený otisk se v řetězu nenachází.'
           : caseFile.ledger.anchor?.state === 'empty'
             ? 'Ukotveno nad prázdným záznamem — nekryje žádný běh.'
-            : 'Neukotveno.'
+            : caseFile.ledger.anchor?.state === 'internal-only'
+              ? 'Ukotveno, ale kopie neopustila tenhle systém.'
+              : 'Neukotveno.'
     }<br><span class="dim">${escapeHtml(caseFile.ledger.anchor?.rationale || '')}</span></td></tr>
     <tr><th>Položek v tomto spisu</th><td>${caseFile.ledger.recordsTotal}</td></tr>
     <tr><th>Otisk hlavy</th><td class="mono">${escapeHtml(caseFile.ledger.headHash)}</td></tr>

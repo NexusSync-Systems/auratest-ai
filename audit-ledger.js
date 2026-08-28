@@ -31,7 +31,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { PROJECT_ROOT, ensureDir } from './paths.js';
 import { rulesetInfo } from './rule-registry.js';
 
@@ -298,39 +298,96 @@ export function appendRecord(entry, file = LEDGER_FILE) {
 }
 
 /** Jednoduchý zámek přes výhradní vytvoření souboru. */
-function acquireLock(file, timeoutMs = 5000) {
+/**
+ * Jak dlouho se čeká na uvolnění zámku, než zápis vzdáme.
+ *
+ * Oddělené od prahu stáří schválně. Dokud to byla jedna hodnota, platilo:
+ * „zámek starší než doba, kterou jsem ochoten čekat, je mrtvý" — jenže
+ * zápis do velkého řetězu tu dobu běžně přesáhne a druhý zapisovatel
+ * prvnímu zámek sebral. Oba pak zapsali stejný `prevHash` a `verifyChain`
+ * to ohlásila jako manipulaci. Falešné obvinění z mechanismu, který má
+ * manipulaci dokazovat.
+ */
+const LOCK_WAIT_MS = 10_000;
+
+/**
+ * Po jaké době se zámek považuje za osiřelý.
+ *
+ * Musí být výrazně delší než nejdelší rozumný zápis. Odemyká se navíc jen
+ * tehdy, když držitel prokazatelně neběží — samotné stáří nestačí.
+ */
+const LOCK_STALE_MS = 60_000;
+
+/** Běží proces s tímhle PID? */
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    // Signál 0 nic nepošle, jen ověří existenci a práva.
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM = proces existuje, jen k němu nemáme práva.
+    return err.code === 'EPERM';
+  }
+}
+
+/**
+ * Zámek nad souborem řetězu.
+ *
+ * Do zámku se zapisuje PID a jednorázový token. Token slouží k tomu, aby
+ * `release()` nesmazal cizí zámek: kdyby nám ho někdo mezitím sebral,
+ * odemkli bychom po sobě jeho zápis.
+ */
+export function acquireLock(file, waitMs = LOCK_WAIT_MS) {
   const lockPath = `${file}.lock`;
+  const token = `${process.pid}:${randomUUID()}`;
   const start = Date.now();
+
   for (;;) {
     try {
       const fd = fs.openSync(lockPath, 'wx');
-      fs.writeSync(fd, String(process.pid));
+      fs.writeSync(fd, token);
       fs.closeSync(fd);
+
       return () => {
+        // Odemyká jen vlastní zámek. Bez téhle kontroly by po krádeži
+        // zámku první proces smazal ten, který mezitím vytvořil druhý —
+        // a do řetězu by pak psali oba najednou.
         try {
-          fs.unlinkSync(lockPath);
+          if (fs.readFileSync(lockPath, 'utf8') === token) fs.unlinkSync(lockPath);
         } catch {
           /* zámek už zmizel — nic k úklidu */
         }
       };
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
+
       // Osiřelý zámek po pádu procesu nesmí zablokovat zápis navždy.
+      // Odemyká se jen tehdy, když je starý A ZÁROVEŇ jeho držitel neběží.
       try {
-        const age = Date.now() - fs.statSync(lockPath).mtimeMs;
-        if (age > timeoutMs) {
-          fs.unlinkSync(lockPath);
-          continue;
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+          const držitel = Number.parseInt(fs.readFileSync(lockPath, 'utf8').split(':')[0], 10);
+          if (!processAlive(držitel)) {
+            console.warn(`[ledger] Odstraňuji osiřelý zámek po PID ${držitel}.`);
+            fs.unlinkSync(lockPath);
+            continue;
+          }
         }
       } catch {
         continue; // zámek mezitím zmizel
       }
-      if (Date.now() - start > timeoutMs) {
-        throw new Error('Zápis do záznamu auditů: nepodařilo se získat zámek.');
+
+      if (Date.now() - start > waitMs) {
+        throw new Error(
+          'Zápis do záznamu auditů: nepodařilo se získat zámek. ' +
+            'Jiný zápis stále běží — zkuste to znovu.'
+        );
       }
-      // Krátké aktivní čekání. Zápis trvá jednotky milisekund, takže se sem
-      // v praxi skoro nedostaneme; async varianta by si vyžádala async API
-      // v celém volajícím řetězci.
+
+      // Krátké aktivní čekání. `Atomics.wait` blokuje celou smyčku událostí,
+      // takže se drží na jednotkách milisekund; async varianta by si
+      // vyžádala async API v celém volajícím řetězci.
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
     }
   }
@@ -477,6 +534,24 @@ function verifyFull(records) {
   });
 
   return { ok: problems.length === 0, count: records.length, problems, scope: 'full' };
+}
+
+/**
+ * Zapíše řádek a počká, až ho převezme disk.
+ *
+ * `appendFileSync` vrátí řízení, jakmile data převezme systém. Po pádu
+ * stroje mohou zmizet, přestože jsme volajícímu potvrdili uložení — a
+ * u důkazního materiálu se to potvrzení musí opírat o disk.
+ */
+export function appendLineSynced(file, line) {
+  ensureDir(path.dirname(file));
+  const fd = fs.openSync(file, 'a');
+  try {
+    fs.writeSync(fd, line, null, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /** Záznamy k jedné session — typicky pro doložení jednoho auditu. */

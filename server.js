@@ -31,6 +31,7 @@ import {
   createAnchor,
   readAnchors,
   anchorSummary,
+  recordAnchorDelivery,
   DEFAULT_ANCHOR_INTERVAL_MS,
 } from './ledger-anchor.js';
 import {
@@ -1158,6 +1159,8 @@ let anchorTimer = null;
 
 async function anchorTick() {
   try {
+    // Kotva se ZAPÍŠE, pak teprve odesílá. Obráceně by se při pádu mezi
+    // odesláním a zápisem ztratila lokální kopie, proti které se porovnává.
     const { anchor, message } = createAnchor({ note: 'automatické ukotvení' });
 
     // Do logu vždy. I když odeslání selže, zůstane otisk aspoň v logu
@@ -1165,26 +1168,39 @@ async function anchorTick() {
     console.log(`[AuraGuard] Ukotvení otisku: ${anchor.headHash} (${anchor.anchoredAt})`);
 
     const channel = process.env.ANCHOR_SLACK_CHANNEL || process.env.SLACK_CHANNEL;
-    if (channel) {
-      const sent = await sendSlackNotification(
-        channel,
-        'Ukotvení otisku záznamu auditů',
-        message,
-        false,
-        [],
-        'compliance'
-      );
-      if (!sent) {
-        console.warn(
-          '[AuraGuard] Kotvu se nepodařilo odeslat. Kopie uvnitř systému ' +
-            'sama o sobě nic nedokazuje — zkontrolujte nastavení Slacku.'
-        );
-      }
-    } else {
+    if (!channel) {
       console.warn(
         '[AuraGuard] Kotva nikam neodešla (ANCHOR_SLACK_CHANNEL ani ' +
-          'SLACK_CHANNEL nejsou nastavené). Uchovejte otisk z logu ručně, ' +
-          'jinak ukotvení nemá důkazní hodnotu.'
+          'SLACK_CHANNEL nejsou nastavené). Uchovejte otisk z logu ručně ' +
+          'a potvrďte to skriptem anchor-ledger.mjs --saved, jinak ukotvení ' +
+          'nemá důkazní hodnotu.'
+      );
+      return;
+    }
+
+    const sent = await sendSlackNotification(
+      channel,
+      'Ukotvení otisku záznamu auditů',
+      message,
+      false,
+      [],
+      'compliance'
+    );
+
+    // Výsledek odeslání se ZAPISUJE. Bez toho hlásil spis „ukotveno"
+    // i u kotvy, která systém nikdy neopustila — tedy u dvou souborů,
+    // které ovládá tentýž zapisovatel.
+    recordAnchorDelivery(anchor.anchoredAt, {
+      channel,
+      ok: sent === true,
+      at: new Date().toISOString(),
+      by: 'slack',
+    });
+
+    if (!sent) {
+      console.warn(
+        '[AuraGuard] Kotvu se nepodařilo odeslat. Kopie uvnitř systému ' +
+          'sama o sobě nic nedokazuje — zkontrolujte nastavení Slacku.'
       );
     }
   } catch (err) {
@@ -1192,11 +1208,39 @@ async function anchorTick() {
   }
 }
 
+/**
+ * Naplánuje další ukotvení podle STÁŘÍ poslední kotvy.
+ *
+ * Dřív se jen nastavil timeout na celý interval. Nasazení, které se
+ * restartuje častěji než jednou za den — deploy, `up --build`, restart po
+ * OOM — tak neukotvilo NIKDY a stav zůstal trvale „neukotveno". Časovač
+ * začínal pokaždé znovu a nikdo se neptal, kdy naposledy kotva vznikla.
+ */
 function scheduleNextAnchor() {
+  let delay = ANCHOR_INTERVAL_MS;
+  try {
+    const posledni = readAnchors()
+      .filter((a) => !a.__malformed)
+      .pop();
+    if (posledni) {
+      const uplynulo = Date.now() - Date.parse(posledni.anchoredAt);
+      // Zbytek intervalu; když už uplynul, ukotvit brzy (ne hned, ať se
+      // start aplikace nezdrží zápisem).
+      delay = Number.isNaN(uplynulo)
+        ? ANCHOR_INTERVAL_MS
+        : Math.max(30_000, ANCHOR_INTERVAL_MS - uplynulo);
+    } else {
+      // Ještě nikdy se neukotvovalo — udělat to krátce po startu.
+      delay = 30_000;
+    }
+  } catch (err) {
+    console.warn('Nepodařilo se přečíst kotvy, plánuji celý interval:', err.message);
+  }
+
   anchorTimer = setTimeout(async () => {
     await anchorTick();
     scheduleNextAnchor();
-  }, ANCHOR_INTERVAL_MS);
+  }, delay);
   if (typeof anchorTimer.unref === 'function') anchorTimer.unref();
 }
 

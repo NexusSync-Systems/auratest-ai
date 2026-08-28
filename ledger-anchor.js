@@ -34,8 +34,14 @@
 
 import fs from 'fs';
 import path from 'path';
-import { LEDGER_DIR, LEDGER_FILE, readLedger, headHash, GENESIS_HASH } from './audit-ledger.js';
-import { ensureDir } from './paths.js';
+import {
+  LEDGER_DIR,
+  LEDGER_FILE,
+  readLedger,
+  GENESIS_HASH,
+  acquireLock,
+  appendLineSynced,
+} from './audit-ledger.js';
 
 export const ANCHOR_FILE = path.join(LEDGER_DIR, 'anchors.jsonl');
 
@@ -53,23 +59,73 @@ export const DEFAULT_ANCHOR_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * @param {string} [options.anchorFile]
  * @param {string} [options.note] poznámka provozovatele
  */
-export function createAnchor({ ledgerFile = LEDGER_FILE, anchorFile = ANCHOR_FILE, note } = {}) {
-  const records = readLedger(ledgerFile);
-  const head = headHash(ledgerFile);
+export function createAnchor({
+  ledgerFile = LEDGER_FILE,
+  anchorFile = ANCHOR_FILE,
+  note,
+  delivered = null,
+} = {}) {
+  // Čtení řetězu POD ZÁMKEM a jedním průchodem.
+  //
+  // Dřív se soubor četl dvakrát — `readLedger` pro počet a `headHash` pro
+  // otisk. Když mezi tím doběhl zápis, vznikla kotva s počtem N a otiskem
+  // záznamu N+1. Po zpřísnění ověření (otisk musí sedět na pozici
+  // `recordCount - 1`) by taková kotva hlásila falešné porušení.
+  const release = acquireLock(ledgerFile);
+  let anchor;
+  try {
+    const records = readLedger(ledgerFile);
+    const last = records[records.length - 1];
 
-  const anchor = {
-    anchoredAt: new Date().toISOString(),
-    headHash: head,
-    // Počet položek v okamžiku ukotvení. Slouží provozovateli ke kontrole;
-    // uživateli se nezobrazuje, protože je to údaj o všech nájemcích.
-    recordCount: records.length,
-    note: note || null,
-  };
+    if (last?.__malformed) {
+      throw new Error(
+        `Poslední řádek řetězu je nečitelný (řádek ${last.line}) — kotva by ` +
+          'ukotvila neúplný stav.'
+      );
+    }
 
-  ensureDir(path.dirname(anchorFile));
-  fs.appendFileSync(anchorFile, `${JSON.stringify(anchor)}\n`, 'utf8');
+    anchor = {
+      anchoredAt: new Date().toISOString(),
+      // Hlava se odvozuje z už načtených dat, ne dalším průchodem souborem.
+      headHash: records.length === 0 ? GENESIS_HASH : last.hash,
+      // Počet položek v okamžiku ukotvení. Slouží provozovateli ke kontrole;
+      // uživateli se nezobrazuje, protože je to údaj o všech nájemcích.
+      recordCount: records.length,
+      note: note || null,
+      // Kam a jestli kotva odešla. Bez toho hlásil nástroj „ukotveno"
+      // i tehdy, když kopie systém nikdy neopustila — a taková kotva
+      // důkazní hodnotu nemá, protože ji ovládá tentýž zapisovatel.
+      delivered: delivered || null,
+    };
+
+    appendLineSynced(anchorFile, `${JSON.stringify(anchor)}\n`);
+  } finally {
+    release();
+  }
 
   return { anchor, message: anchorMessage(anchor) };
+}
+
+/**
+ * Doplní k poslední kotvě výsledek odeslání.
+ *
+ * Odesílá se až po zápisu — kdyby se zapisovalo až po odeslání, ztratila
+ * by se kotva při pádu mezi tím. Zápis výsledku je proto samostatný krok.
+ */
+export function recordAnchorDelivery(anchoredAt, delivered, file = ANCHOR_FILE) {
+  const list = readAnchors(file);
+  const updated = list.map((a) =>
+    !a.__malformed && a.anchoredAt === anchoredAt ? { ...a, delivered } : a
+  );
+  if (updated.length === 0) return false;
+  // Přepis celého souboru: kotev jsou desítky, ne miliony, a částečná
+  // aktualizace řádku v JSONL je zbytečně křehká.
+  const text = updated
+    .filter((a) => !a.__malformed)
+    .map((a) => JSON.stringify(a))
+    .join('\n');
+  fs.writeFileSync(file, text ? `${text}\n` : '', 'utf8');
+  return true;
 }
 
 /**
@@ -220,6 +276,7 @@ export function verifyAnchors(records, anchors) {
           anchoredAt: a.anchoredAt,
           headHash: a.headHash,
           note: a.note ?? null,
+          delivered: a.delivered ?? null,
           present: genesisOk,
           coversUpToIndex: genesisOk ? -1 : null,
           problem: genesisOk ? null : 'Kotva tvrdí prázdný řetěz, ale nenese výchozí otisk.',
@@ -231,6 +288,7 @@ export function verifyAnchors(records, anchors) {
         anchoredAt: a.anchoredAt,
         headHash: a.headHash,
         note: a.note ?? null,
+        delivered: a.delivered ?? null,
         present,
         coversUpToIndex: present ? expectedIndex : null,
         problem: present
@@ -377,6 +435,30 @@ export function anchorSummary(records, anchors, chainOk = null) {
         'záznam auditů prázdný — kotva proto nekryje žádný běh. Dokud se ' +
         'neukotví znovu poté, co v záznamu nějaké běhy budou, nelze odstranění ' +
         'nejnovějších položek vyloučit.',
+    };
+  }
+
+  // Kotva, která systém nikdy neopustila, dokládá málo.
+  //
+  // Celý mechanismus stojí na tom, že kopie otisku je MIMO dosah toho, kdo
+  // smí zapisovat do řetězu. Dokud se výsledek odeslání nezaznamenával,
+  // hlásil nástroj „ukotveno" i u kotvy, která zůstala vedle záznamu —
+  // tedy u dvou souborů, které ovládá tentýž zapisovatel.
+  if (status.latest.delivered?.ok !== true) {
+    return {
+      state: 'internal-only',
+      anchoredAt: status.latest.anchoredAt,
+      headHash: status.latest.headHash,
+      coveredUpToIndex: status.coveredUpToIndex,
+      coversRecords,
+      rationale:
+        `Otisk byl ukotven ${status.latest.anchoredAt} a v řetězu se stále ` +
+        'nachází na své pozici. Kopie kotvy ale neopustila tenhle systém ' +
+        '(automatické odeslání není nastavené nebo se nezdařilo), takže ji ' +
+        'ovládá tentýž zapisovatel jako záznam sám. Doložit odstranění ' +
+        'nejnovějších položek jde teprve tehdy, když otisk porovnáte ' +
+        's kopií uchovanou jinde — tu z výstupu skriptu nebo z logu ' +
+        'uschovejte ručně.',
     };
   }
 
