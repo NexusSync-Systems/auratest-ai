@@ -97,12 +97,28 @@ describe('stavy ukotvení', () => {
     expect(stav().state).toBe('anchored');
   });
 
-  test('kotva nad prázdným řetězem je platná, jen nic nekryje', () => {
-    // Zapsat kotvu dřív, než vznikne první audit, není chyba.
-    kotva();
-    expect(stav().state).toBe('anchored');
+  test('kotva nad prázdným řetězem se netváří jako doklad', () => {
+    // Formálně je pravda, že „žádný dřívější záznam nebyl změněn" — žádný
+    // totiž neexistuje. Jenže přesně tak vypadá tvrzení slibující víc, než
+    // čím je podložené: příjemce si zprávu uschová v domnění, že něco
+    // dokládá. Vlastní stav to říká rovnou.
+    const { message } = kotva();
+    expect(stav().state).toBe('empty');
+    expect(stav().coversRecords).toBe(0);
+    expect(message).toMatch(/nekryje/);
+
+    // Ani po přibytí běhu se zpětně nestane krycí — kotva je starší.
     zapis(1);
-    expect(stav().state).toBe('anchored');
+    expect(stav().state).toBe('empty');
+  });
+
+  test('ukotvení po prvním běhu už kryje', () => {
+    kotva();
+    zapis(1);
+    kotva();
+    const s = stav();
+    expect(s.state).toBe('anchored');
+    expect(s.coversRecords).toBe(1);
   });
 
   test('novější kotva rozšíří krytí', () => {

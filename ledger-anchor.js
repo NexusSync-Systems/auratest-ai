@@ -79,15 +79,35 @@ export function createAnchor({ ledgerFile = LEDGER_FILE, anchorFile = ANCHOR_FIL
  * zahodí jako nesrozumitelný šum, nic neukotví.
  */
 export function anchorMessage(anchor) {
-  return [
+  const head = [
     'AuraGuard — ukotvení otisku záznamu auditů',
     `Čas: ${anchor.anchoredAt}`,
     `Otisk hlavy: ${anchor.headHash}`,
     `Položek v záznamu: ${anchor.recordCount}`,
     '',
+  ];
+
+  // Kotva nad prázdným záznamem nekryje NIC.
+  //
+  // Formálně je pravda, že „žádný dřívější záznam nebyl změněn" — žádný
+  // totiž neexistuje. Jenže přesně takhle vypadá tvrzení, které slibuje víc,
+  // než čím je podložené: příjemce si zprávu uschová v domnění, že něco
+  // dokládá. Musí se to říct rovnou.
+  if (anchor.recordCount === 0) {
+    return [
+      ...head,
+      'POZOR: záznam auditů je zatím prázdný, takže tahle kotva nekryje',
+      'žádný běh. Uschovat ji můžete, ale důkazní hodnotu získá až tehdy,',
+      'když ukotvíte znovu poté, co v záznamu nějaké běhy budou.',
+    ].join('\n');
+  }
+
+  return [
+    ...head,
     'Tuhle zprávu uschovejte. Dokud se stejný otisk nachází v řetězu,',
-    'je prokázané, že žádný dřívější záznam nebyl změněn ani odstraněn —',
-    'a to včetně odstranění z konce, které samotné řetězení neodhalí.',
+    `je prokázané, že žádný z ${anchor.recordCount} dřívějších záznamů nebyl`,
+    'změněn ani odstraněn — a to včetně odstranění z konce, které samotné',
+    'řetězení neodhalí.',
   ].join('\n');
 }
 
@@ -189,6 +209,7 @@ export function anchorSummary(records, anchors) {
       anchoredAt: null,
       headHash: null,
       coveredUpToIndex: null,
+      coversRecords: 0,
       rationale:
         'Otisk řetězu nebyl dosud ukotven mimo tento systém. Řetězení proto ' +
         'dokládá jen to, že nikdo nezasáhl doprostřed historie; odstranění ' +
@@ -203,10 +224,30 @@ export function anchorSummary(records, anchors) {
       anchoredAt: chybi[chybi.length - 1].anchoredAt,
       headHash: chybi[chybi.length - 1].headHash,
       coveredUpToIndex: status.coveredUpToIndex,
+      coversRecords: status.coveredUpToIndex === null ? 0 : status.coveredUpToIndex + 1,
       rationale:
         `${chybi.length} dříve ukotvený otisk se v řetězu nenachází. ` +
         'Buď byla historie přepsána, nebo záznam pochází z jiného řetězu. ' +
         'Tenhle spis proto nelze považovat za doklad o neporušenosti.',
+    };
+  }
+
+  // Kolik běhů kotva skutečně kryje. Nula znamená, že se ukotvoval prázdný
+  // řetěz — kotva je platná, ale nedokládá nic.
+  const coversRecords = status.coveredUpToIndex === null ? 0 : status.coveredUpToIndex + 1;
+
+  if (coversRecords === 0) {
+    return {
+      state: 'empty',
+      anchoredAt: status.latest.anchoredAt,
+      headHash: status.latest.headHash,
+      coveredUpToIndex: null,
+      coversRecords: 0,
+      rationale:
+        `Otisk byl ukotven ${status.latest.anchoredAt}, ale v tu chvíli byl ` +
+        'záznam auditů prázdný — kotva proto nekryje žádný běh. Dokud se ' +
+        'neukotví znovu poté, co v záznamu nějaké běhy budou, nelze odstranění ' +
+        'nejnovějších položek vyloučit.',
     };
   }
 
@@ -215,12 +256,13 @@ export function anchorSummary(records, anchors) {
     anchoredAt: status.latest.anchoredAt,
     headHash: status.latest.headHash,
     coveredUpToIndex: status.coveredUpToIndex,
+    coversRecords,
     rationale:
       `Otisk řetězu byl naposledy ukotven ${status.latest.anchoredAt} a v řetězu ` +
-      'se stále nachází. Žádný záznam pořízený před tímto okamžikem tedy nebyl ' +
-      'změněn ani odstraněn — a to včetně odstranění z konce, které samotné ' +
-      'řetězení neodhalí. Záznamy pořízené po tomto okamžiku kryté nejsou. ' +
-      'Důkazní hodnotu má kopie kotvy uchovaná MIMO tento systém; kopie ' +
-      'uložená vedle záznamu slouží jen k porovnání.',
+      `se stále nachází. Žádný z ${coversRecords} záznamů pořízených před tímto ` +
+      'okamžikem tedy nebyl změněn ani odstraněn — a to včetně odstranění ' +
+      'z konce, které samotné řetězení neodhalí. Záznamy pořízené po tomto ' +
+      'okamžiku kryté nejsou. Důkazní hodnotu má kopie kotvy uchovaná MIMO ' +
+      'tento systém; kopie uložená vedle záznamu slouží jen k porovnání.',
   };
 }

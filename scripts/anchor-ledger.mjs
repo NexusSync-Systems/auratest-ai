@@ -54,6 +54,13 @@ if (stav.state === 'broken') {
   process.exit(1);
 }
 
+// Kotva nad prázdným záznamem není chyba, ale ani úspěch — a hlavně nemá
+// smysl ji uchovávat v domnění, že něco dokládá.
+if (stav.state === 'empty') {
+  console.log('');
+  console.log('Spusťte nejdřív nějaký audit a ukotvěte znovu.');
+}
+
 // Kotva, kterou nikdo neověřil proti odeslané kopii, je jen zápis v souboru.
 if (stav.state === 'anchored') {
   console.log('');

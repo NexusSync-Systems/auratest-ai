@@ -659,13 +659,21 @@ export function renderCaseFileHtml(caseFile) {
         : `<span class="warn">PORUŠENÝ — ${caseFile.ledger.problems.length} nálezů.</span>`
     }</td></tr>
     <tr><th>Ukotvení</th><td class="${
-      caseFile.ledger.anchor?.state === 'broken' ? 'warn' : ''
+      caseFile.ledger.anchor?.state === 'broken' ||
+      caseFile.ledger.anchor?.state === 'empty'
+        ? 'warn'
+        : ''
     }">${
       caseFile.ledger.anchor?.state === 'anchored'
-        ? `Ukotveno ${czDate(caseFile.ledger.anchor.anchoredAt)}.`
+        ? `Ukotveno ${czDate(caseFile.ledger.anchor.anchoredAt)}` +
+          (caseFile.ledger.anchor.coversRecords
+            ? ` — kryje ${caseFile.ledger.anchor.coversRecords} záznamů.`
+            : '.')
         : caseFile.ledger.anchor?.state === 'broken'
           ? 'POZOR — dříve ukotvený otisk se v řetězu nenachází.'
-          : 'Neukotveno.'
+          : caseFile.ledger.anchor?.state === 'empty'
+            ? 'Ukotveno nad prázdným záznamem — nekryje žádný běh.'
+            : 'Neukotveno.'
     }<br><span class="dim">${escapeHtml(caseFile.ledger.anchor?.rationale || '')}</span></td></tr>
     <tr><th>Položek v tomto spisu</th><td>${caseFile.ledger.recordsTotal}</td></tr>
     <tr><th>Otisk hlavy</th><td class="mono">${escapeHtml(caseFile.ledger.headHash)}</td></tr>
