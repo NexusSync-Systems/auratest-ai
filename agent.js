@@ -10,6 +10,10 @@ import { inspectTls, summarizeTls, PQC_GROUP } from './tls-audit.js';
 import { createSeededRandom, generateRunSeed } from './seeded-random.js';
 import { collectBundleEvidence, mergeFindings } from './sbom-fingerprint.js';
 import { normalizeSemver } from './semver.js';
+// Čtení hlaviček je ve vlastním modulu, aby šlo testovat bez prohlížeče.
+// Dokud to byly regulární výrazy uvnitř `analyzeNis2`, nešlo je otestovat
+// samostatně — a tak se netestovaly vůbec.
+import { hasNosniff, framingProtected, referrerProtected } from './header-values.js';
 import { classifyActionFailure } from './action-failure.js';
 import { auditCsp } from './csp-audit.js';
 import { assessDisclosurePlacement } from './disclosure-placement.js';
@@ -2099,7 +2103,10 @@ export async function auditNIS2AndPQC(url) {
     });
 
     const headerChecks = {
-      hsts: hstsDetail.ok === true,
+      // Trojstav se PROPISUJE, nezplošťuje. `null` znamená, že se hlavička
+      // posoudit nedala — na http:// ji prohlížeč ignoruje, takže její
+      // absence není volba provozovatele a nálezem být nemůže.
+      hsts: hstsDetail.ok,
       // Jediný posuzovatel CSP.
       //
       // Dřív tu byla vlastní funkce `hasMeaningfulCsp`, která neznala nonce
@@ -2107,17 +2114,28 @@ export async function auditNIS2AndPQC(url) {
       // věci: podrobný rozbor ji uznal, souhrn hlaviček ji označil za
       // nedostatečnou.
       csp: cspDetail.ok,
-      xContentTypeOptions: (headers['x-content-type-options'] || '').toLowerCase() === 'nosniff',
+      // Hlavička nastavená dvakrát dorazí sloučená čárkou (`nosniff,
+      // nosniff`). Fetch Standard („determine nosniff") ji rozdělí podle
+      // čárky a posuzuje první hodnotu, takže ochrana funguje. Porovnání
+      // celého řetězce z toho dělalo nález na webu, který je v pořádku.
+      xContentTypeOptions: hasNosniff(headers['x-content-type-options']),
       // Moderní ekvivalent X-Frame-Options je CSP frame-ancestors.
       // Hodnota musí něco zakazovat — `ALLOWALL` ochranu neposkytuje.
+      //
+      // U `frame-ancestors` se dřív hledala jen přítomnost názvu direktivy,
+      // takže `frame-ancestors *` — což nezakazuje nic — procházelo jako
+      // ochrana. Hvězdička se proto vylučuje výslovně.
       xFrameOptions: /^\s*(deny|sameorigin)\s*$/i.test(headers['x-frame-options'] || '')
-        || /frame-ancestors/i.test(headers['content-security-policy'] || ''),
-      // `unsafe-url` a `no-referrer-when-downgrade` posílají referrer i na
-      // cizí weby — hlavička existuje, ale nechrání. Dřív se počítala
-      // pouhá přítomnost řetězce, takže „splněno" znamenalo jen „něco tam je".
-      referrerPolicy: /(no-referrer|same-origin|strict-origin|origin-when-cross-origin)/i
-        .test(headers['referrer-policy'] || '')
-        && !/unsafe-url/i.test(headers['referrer-policy'] || ''),
+        || framingProtected(headers['content-security-policy']),
+      // Posuzuje se HODNOTA, kterou prohlížeč skutečně použije.
+      //
+      // Dřív se hledal podřetězec, což selhávalo v obou směrech:
+      // `no-referrer-when-downgrade` prošlo (obsahuje „no-referrer"),
+      // ačkoli komentář sám tvrdil, že je nedostatečné, a naopak
+      // `unsafe-url, strict-origin-when-cross-origin` dostalo nález,
+      // přestože prohlížeč z takového seznamu vezme poslední hodnotu,
+      // které rozumí — tedy tu bezpečnou.
+      referrerPolicy: referrerProtected(headers['referrer-policy']),
       // Prázdná `Permissions-Policy:` nic neomezuje.
       permissionsPolicy: (headers['permissions-policy'] || '').trim().length > 0,
     };
@@ -2149,9 +2167,25 @@ export async function auditNIS2AndPQC(url) {
 
     const missingHeaders = [];
     const weakHeaders = [];
+    // Hlavičky, o kterých sken nemá co říct. Nesmí splynout s chybějícími.
+    const inconclusiveHeaders = [];
 
     for (const [key, ok] of Object.entries(headerChecks)) {
-      if (ok) continue;
+      if (ok === true) continue;
+
+      // Neprůkazné se nesmí vydávat za chybějící.
+      //
+      // `auditHsts` na nešifrovaném spojení vrací `null` a výslovně říká,
+      // že absence hlavičky tam není volba provozovatele — prohlížeč ji na
+      // http:// ignoruje. Porovnání `=== true` z toho dělalo `false` a
+      // report i CLI hlásily „Chybí hlavička: Strict-Transport-Security".
+      // Spis přitom u téhož běhu tiskl znění pravidla, které tvrdí opak,
+      // takže si doklad protiřečil sám se sebou na jedné straně.
+      if (ok === null) {
+        inconclusiveHeaders.push(HEADER_LABELS[key]);
+        continue;
+      }
+
       const raw = headers[HEADER_SOURCES[key]];
       const present = typeof raw === 'string' && raw.trim().length > 0;
 
@@ -2174,8 +2208,18 @@ export async function auditNIS2AndPQC(url) {
       // Hlavičky, které existují, ale neposkytují ochranu (např.
       // `Referrer-Policy: unsafe-url` nebo CSP s `unsafe-inline`).
       weakHeaders,
+      // Hlavičky, které se posoudit nedaly. Prázdné pole u drtivé většiny
+      // běhů; naplní se hlavně u webů běžících po http://.
+      inconclusiveHeaders,
       headersComplete: missingHeaders.length === 0 && weakHeaders.length === 0,
-      isCompliant: missingHeaders.length === 0 && weakHeaders.length === 0,
+      // Neprůkazné brání tvrdit splnění, ale není to porušení.
+      //
+      // `false` znamená prokázané porušení a takové tvrzení nesmí vzniknout
+      // z toho, že se něco nepodařilo posoudit. Zároveň se z neprůkazného
+      // nesmí stát „splněno" — proto `null`.
+      isCompliant: (missingHeaders.length > 0 || weakHeaders.length > 0)
+        ? false
+        : (inconclusiveHeaders.length > 0 ? null : true),
 
       // Rozbor politiky pod VLASTNÍM klíčem, ze dvou důvodů.
       //

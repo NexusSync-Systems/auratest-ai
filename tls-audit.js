@@ -746,7 +746,25 @@ export function classifyProtocols(protocols = {}) {
     issues.push(`Server stále přijímá ${deprecated.join(' a ')} — zastaralé a v EU normách nepřijatelné.`);
   }
   if (protocols['TLSv1.3'] === false) {
-    issues.push('Server nepodporuje TLS 1.3.');
+    // POZOROVÁNÍ, ne nález.
+    //
+    // Nepodporovat TLS 1.3 žádný evropský předpis nezakazuje — NIS2 ani
+    // navazující metodiky (BSI TR-02102-2, ANSSI) požadují nejméně TLS 1.2.
+    // Dokud to stálo v `issues`, dostal server s bezvadnou konfigurací
+    // TLS 1.2 nález a `nis2.isCompliant` spadlo na `false`.
+    //
+    // Ve spisu to bylo obzvlášť špatně: pod „Znění použitých pravidel" se
+    // tiskne `tls.protocols.deprecated`, které mluví o TLS 1.0 a 1.1 a o
+    // verzi 1.3 neříká nic. Kontrolor tedy viděl prokázané porušení, ke
+    // kterému ve spisu žádné pravidlo nebylo.
+    //
+    // Vedlejší důsledek: `classifyProtocols` u téhož stavu vracelo
+    // `ok: true`, zatímco `summarizeTls` z týchž dat `ok: false`. Dva
+    // soudci jedné věci, a ten přísnější neměl oporu.
+    notes.push(
+      'Server nepodporuje TLS 1.3. Není to porušení — předpisy požadují ' +
+        'nejméně TLS 1.2 — ale novější verze je rychlejší a odolnější.'
+    );
   }
   if (!hasModern && protocols['TLSv1.2'] === false && protocols['TLSv1.3'] === false) {
     issues.push('Server nepřijímá TLS 1.2 ani 1.3.');

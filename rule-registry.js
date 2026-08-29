@@ -39,31 +39,50 @@ const RULE_LIST = [
   // ── NIS2: bezpečnostní hlavičky ────────────────────────────────────────
   {
     id: 'nis2.headers.hsts',
-    version: 2,
+    version: 3,
     title: 'Strict-Transport-Security — obsah hlavičky',
     method:
-      'Hlavička odpovědi finální URL se rozebere na direktivy. Posuzuje se ' +
-      'délka `max-age` (doporučený rok, symbolická hodnota pod jedním dnem, ' +
-      'nula jako vypnutí), přítomnost `includeSubDomains` a `preload`. ' +
-      'Hlavička bez platného `max-age` se hlásí jako závažná vada — ' +
-      'prohlížeče ji podle RFC 6797 zahazují celou.',
+      'Hlavička odpovědi finální URL se rozebere podle ABNF z RFC 6797. ' +
+      'Je-li hlaviček víc, prohlížeč použije první z nich (§ 8.1) a stejně ' +
+      'tak sonda. `max-age` musí být tvořena pouze číslicemi a smí být ' +
+      'uvedena jen jednou; hodnota jako `31536000s`, chybějící středník ' +
+      'mezi direktivami nebo opakovaná direktiva činí celou hlavičku ' +
+      'neplatnou (§ 6.1) a hlásí se jako závažná vada — prohlížeč takovou ' +
+      'hlavičku zahodí, takže web na tom je stejně, jako by ji neposílal. ' +
+      'Dál se posuzuje `max-age=0` jako vypnutí ochrany a uvádí se ' +
+      'přítomnost `includeSubDomains` a `preload`.',
     limits:
       'Posuzuje se text hlavičky, ne to, jestli si ji prohlížeč skutečně ' +
       'zapamatoval. Na nešifrovaném spojení se hlavička neposuzuje vůbec — ' +
       'tam ji prohlížeč ignoruje, takže její absence není volba ' +
       'provozovatele. Chybějící `includeSubDomains` verdikt neshazuje: ' +
       'u webu bez subdomén nic neřeší a zapnout to bez rozmyslu může ' +
-      'subdomény odříznout. Zařazení do seznamu hstspreload.org se neověřuje.',
+      'subdomény odříznout. Verdikt neshazuje ani krátká platnost: délku ' +
+      '`max-age` nestanoví žádný předpis a postupné nasazování HSTS od ' +
+      'krátkých hodnot je doporučený postup. Uvádí se jako upozornění. ' +
+      'Zařazení do seznamu hstspreload.org se neověřuje.',
     changelog: {
       2:
         'Verze 1 posuzovala jen přítomnost hlavičky. `max-age=1` tak dostalo ' +
         'stejný verdikt jako roční platnost s preloadem, přestože chrání ' +
         'jednu sekundu.',
+      3:
+        'Verze 2 četla `max-age` tak, že mlčky utnula nečíselný zbytek. ' +
+        'Hlavička `max-age=31536000s` nebo hlavička bez středníku mezi ' +
+        'direktivami tak vyšla jako roční ochrana, přestože ji prohlížeč ' +
+        'zahodí celou — web dostal doklad o ochraně, kterou neměl. Zároveň ' +
+        'krátká platnost přestala být nálezem: žádný předpis délku ' +
+        'nestanoví a postupné nasazování od krátkých hodnot je doporučený ' +
+        'postup, takže web uprostřed něj dostával doklad o porušení.',
     },
   },
   {
     id: 'tls.ciphers.weak',
-    version: 1,
+    // v2: nezměřitelné sondy se z verdiktu VYŘAZUJÍ, místo aby ho srážely
+    // na neprůkazný. Mění to, kdy kontrola vychází jako splněná, takže se
+    // musí zvýšit verze — jinak by dva audity s opačným výsledkem odkazovaly
+    // na totéž znění a spis by tvrdil, že se pravidla nezměnila.
+    version: 2,
     title: 'Přijímání slabých sad šifer',
     method:
       'Každá skupina se zkouší SAMOSTATNÝM spojením, ve kterém klient ' +
@@ -74,9 +93,25 @@ const RULE_LIST = [
     limits:
       'Seznam zkoušených skupin je UZAVŘENÝ. Odmítnutí všech tří neznamená, ' +
       'že server přijímá jen doporučené sady — znamená, že tyhle tři ne. ' +
-      'Skupinu, kterou náš klient nedokáže nabídnout (novější OpenSSL slabé ' +
-      'sady odmítá i na straně klienta), report označí jako netestovanou, ' +
-      'nikoli jako odmítnutou.',
+      'Skupiny se rozlišují dvojím způsobem. Sadu, kterou náš build OpenSSL ' +
+      'vůbec neobsahuje (z novějších buildů zmizely sady s 3DES), klient ' +
+      'nemůže nabídnout nikdy; report ji uvede jako NEZMĚŘITELNOU a do ' +
+      'verdiktu se nepočítá — jinak by kladný výsledek nemohl vzniknout ' +
+      'vůbec. Sadu, u které se nepodařilo dobrat odpovědi, uvede jako ' +
+      'NEPRŮKAZNOU a ta verdikt kladně vyjít nenechá. Kladný verdikt tedy ' +
+      'může stát na části zkoušených skupin; kolik jich bylo, report uvádí. ' +
+      'Za odmítnutou se skupina považuje jen po TLS alertu od serveru — ' +
+      'síťová chyba ani odpověď, která není TLS, odmítnutím není.',
+    changelog: {
+      2:
+        'Verze 1 nerozlišovala sadu, kterou náš build OpenSSL vůbec neumí ' +
+        'nabídnout, od sady, u které se nepodařilo dobrat odpovědi. Sady ' +
+        's 3DES z novějších buildů zmizely, takže kladný verdikt nemohl ' +
+        'vzniknout nikdy a bezvadný server dostával trvale neprůkazné. ' +
+        'Verze 1 také považovala za odmítnutí jakoukoli chybu spojení, ' +
+        'takže appliance odpovídající místo TLS prostým HTTP vyrobila ' +
+        'doklad o odmítnutí, ke kterému se sonda nikdy nedostala.',
+    },
   },
   {
     id: 'tls.certificate.chain',
@@ -144,24 +179,56 @@ const RULE_LIST = [
   },
   {
     id: 'nis2.headers.frame-options',
-    version: 1,
+    // v2: dřív stačil výskyt názvu direktivy, takže `frame-ancestors *` —
+    // které nezakazuje nikoho — procházelo jako ochrana.
+    version: 2,
     title: 'Ochrana proti vkládání do rámu',
-    method: 'X-Frame-Options nebo frame-ancestors v CSP.',
+    method:
+      'X-Frame-Options s hodnotou DENY nebo SAMEORIGIN, anebo direktiva ' +
+      'frame-ancestors v CSP, která alespoň někoho zakazuje. Hodnoty ' +
+      '`*`, `http:` a `https:` se za ochranu nepovažují — povolují kohokoli.',
     limits: 'Neposuzuje se, zda je nastavení pro danou aplikaci vhodné.',
+    changelog: {
+      2:
+        'Verze 1 hledala v politice jen výskyt názvu direktivy, takže ' +
+        '`frame-ancestors *` — které nezakazuje nikomu vložit stránku do ' +
+        'rámu — procházelo jako splněná ochrana proti clickjackingu.',
+    },
   },
   {
     id: 'nis2.headers.content-type-options',
     version: 1,
     title: 'X-Content-Type-Options: nosniff',
-    method: 'Přítomnost hlavičky v odpovědi.',
+    method:
+      'Hodnota hlavičky musí být nosniff. U hlavičky nastavené víckrát ' +
+      '(prohlížeč ji dostane sloučenou čárkou) se posuzuje první hodnota, ' +
+      'stejně jako podle Fetch Standard.',
     limits: 'Nic neříká o správnosti Content-Type u jednotlivých zdrojů.',
   },
   {
     id: 'nis2.headers.referrer-policy',
-    version: 1,
+    // v2: dosavadní znění tvrdilo, že se posuzuje jen přítomnost hlavičky.
+    // Kód přitom hodnotu posuzoval — nepravdivá metoda ve spisu je vada
+    // důkazu, ne překlep.
+    version: 2,
     title: 'Referrer-Policy',
-    method: 'Přítomnost hlavičky v odpovědi.',
-    limits: 'Neposuzuje se přísnost zvolené hodnoty.',
+    method:
+      'Posuzuje se HODNOTA, kterou by použil prohlížeč: z čárkou odděleného ' +
+      'seznamu poslední hodnota, které rozumí. Za chránící se považují ' +
+      'no-referrer, same-origin, strict-origin, origin-when-cross-origin a ' +
+      'strict-origin-when-cross-origin.',
+    limits:
+      'Nezkoumá se, jestli je zvolená hodnota pro danou aplikaci vhodná. ' +
+      'Hodnota no-referrer-when-downgrade se za ochranu nepovažuje, protože ' +
+      'posílá celou adresu včetně cesty na cizí weby přes HTTPS.',
+    changelog: {
+      2:
+        'Verze 1 tvrdila, že se posuzuje jen přítomnost hlavičky, zatímco ' +
+        'kód hodnotu posuzoval — a to podřetězcem, takže selhával v obou ' +
+        'směrech: no-referrer-when-downgrade prošlo, protože obsahuje ' +
+        '„no-referrer", a naopak fallback seznam zakončený bezpečnou ' +
+        'hodnotou dostal nález. Nepravdivé znění metody je vada důkazu.',
+    },
   },
   {
     id: 'nis2.headers.permissions-policy',
@@ -200,12 +267,27 @@ const RULE_LIST = [
   },
   {
     id: 'tls.certificate.validity',
-    version: 1,
+    // v2: blížící se konec platnosti přestal být nálezem. Mění to výsledek
+    // kontroly u webů s krátkodobými certifikáty, takže se zvyšuje verze.
+    version: 2,
     title: 'Platnost a síla certifikátu',
-    method: 'Čte se z navázaného spojení: platnost, typ klíče, délka, vydavatel.',
+    method:
+      'Čte se z navázaného spojení: platnost, typ klíče, délka, vydavatel. ' +
+      'Nálezem je certifikát PROŠLÝ nebo dosud neplatný, RSA klíč kratší ' +
+      'než 2048 bitů a certifikát podepsaný sám sebou.',
     limits:
       'Neověřuje se řetěz důvěry proti konkrétnímu úložišti kořenů ani ' +
-      'odvolání certifikátu (CRL/OCSP).',
+      'odvolání certifikátu (CRL/OCSP). Blížící se konec platnosti se uvádí ' +
+      'jako upozornění, NE jako nález: krátká zbývající platnost je u ' +
+      'certifikátů obnovovaných automaticky běžný stav a žádný předpis ' +
+      'minimální délku nestanoví.',
+    changelog: {
+      2:
+        'Verze 1 hlásila jako nález i certifikát, kterému zbývá méně než ' +
+        '14 dnů platnosti. U webů s krátkodobými certifikáty z ACME tím ' +
+        'vycházel trvale nevyhovující právě ten provozovatel, který je ' +
+        'obnovuje často a správně.',
+    },
   },
 
   // ── AI Act, čl. 50 ─────────────────────────────────────────────────────

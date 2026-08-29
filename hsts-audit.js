@@ -37,36 +37,71 @@ export const WEAK_MAX_AGE = 86400; // 1 den
  */
 export function parseHsts(header) {
   if (!header || typeof header !== 'string') {
-    return { present: false, maxAge: null, includeSubDomains: false, preload: false };
+    return { present: false, maxAge: null, includeSubDomains: false, preload: false, valid: false };
   }
 
-  // Direktivy odděluje středník, velikost písmen nerozhoduje (RFC 6797).
-  const parts = header
-    .split(';')
-    .map((p) => p.trim())
-    .filter(Boolean);
+  // Víc hlaviček téhož jména Node slučuje čárkou. RFC 6797 § 8.1 říká, že
+  // prohlížeč zpracuje POUZE PRVNÍ z nich a ostatní ignoruje.
+  //
+  // Dřív se to neřešilo vůbec a `parseInt` to zamaskoval: u
+  // `max-age=31536000, max-age=1` utnul zbytek a náhodou vyšlo správně.
+  // Jakmile ale za čárkou stálo něco jiného, rozešlo se to s prohlížečem —
+  // `max-age=31536000; includeSubDomains, max-age=1` dalo
+  // `includeSubDomains: false` a nález na webu, který subdomény kryje.
+  const prvni = header.split(',')[0];
+
+  // Direktivy odděluje středník, velikost písmen nerozhoduje.
+  const parts = prvni.split(';').map((p) => p.trim());
 
   let maxAge = null;
+  let maxAgeSeen = false;
   let includeSubDomains = false;
   let preload = false;
+  let valid = true;
 
   for (const part of parts) {
-    const lower = part.toLowerCase();
-    if (lower.startsWith('max-age')) {
+    if (part === '') continue;
+    const eq = part.indexOf('=');
+    const name = (eq === -1 ? part : part.slice(0, eq)).trim().toLowerCase();
+    const rawValue = eq === -1 ? null : part.slice(eq + 1).trim();
+
+    if (name === 'max-age') {
+      // Duplicitní direktiva je podle § 6.1 vadná hlavička, ne pozvánka
+      // hádat, kterou autor myslel. Dřív „vyhrával první platný výskyt",
+      // takže `max-age2=1; max-age=31536000` vzalo jedničku a hlásilo
+      // krátkou platnost na webu s ročním nastavením.
+      if (maxAgeSeen) { valid = false; continue; }
+      maxAgeSeen = true;
+
       // Hodnota smí být v uvozovkách: max-age="31536000".
-      const value = part.slice(part.indexOf('=') + 1).trim().replace(/^"|"$/g, '');
+      const value = rawValue === null ? '' : rawValue.replace(/^"(.*)"$/, '$1');
+
+      // ABNF § 6.1.1: max-age-value = delta-seconds = 1*DIGIT.
+      //
+      // Tady byl `parseInt`, který zbytek mlčky utne — `max-age=31536000s`
+      // z něj vyleze jako rok. Prohlížeč takovou hlavičku podle § 6.1
+      // ZAHODÍ CELOU, takže web ve skutečnosti HSTS nemá. Nástroj u něj
+      // hlásil „bez nálezu", tedy doklad o ochraně, která neexistuje —
+      // a to u běžného konfiguračního překlepu.
+      if (!/^\d+$/.test(value)) { valid = false; continue; }
+
       const parsed = Number.parseInt(value, 10);
-      // První výskyt vyhrává — stejně jako u CSP. Duplicitní direktiva je
-      // vada hlavičky, ne důvod hádat, kterou myslel autor.
-      if (maxAge === null && Number.isFinite(parsed) && parsed >= 0) maxAge = parsed;
-    } else if (lower === 'includesubdomains') {
+      // Hodnota nad rámec bezpečného rozsahu čísel: prohlížeč ji taky
+      // nepřijme a my bychom počítali s číslem, které v hlavičce nestojí.
+      if (!Number.isSafeInteger(parsed)) { valid = false; continue; }
+      maxAge = parsed;
+    } else if (name === 'includesubdomains') {
       includeSubDomains = true;
-    } else if (lower === 'preload') {
+    } else if (name === 'preload') {
       preload = true;
     }
+    // Neznámé direktivy prohlížeč ignoruje (§ 6.1), takže my taky.
   }
 
-  return { present: true, maxAge, includeSubDomains, preload };
+  // Bez `max-age` hlavička neplatí — direktiva je povinná.
+  if (!maxAgeSeen) valid = false;
+
+  return { present: true, maxAge, includeSubDomains, preload, valid };
 }
 
 /**
@@ -112,15 +147,20 @@ export function auditHsts(header, { https = true } = {}) {
 
   const findings = [];
 
-  if (parsed.maxAge === null) {
-    // Hlavička bez `max-age` je podle RFC 6797 neplatná a prohlížeče ji
-    // zahazují celou. Je to horší než krátká platnost.
+  if (!parsed.valid) {
+    // Hlavička, kterou prohlížeč zahodí, chrání stejně jako žádná.
+    //
+    // Nález se schválně jmenuje jinak než „chybí": provozovatel ji nastavil
+    // a v odpovědi ji vidí, takže by u hlášení „chybí hlavička" hledal
+    // marně. Vada je v jejím obsahu.
     findings.push({
       severity: 'high',
-      key: 'hsts.no-max-age',
+      key: 'hsts.invalid',
       message:
-        'Hlavička neobsahuje platnou direktivu max-age. Prohlížeče takovou ' +
-        'hlavičku zahazují celou, takže nechrání vůbec.',
+        'Hlavička neobsahuje platnou direktivu max-age podle RFC 6797 ' +
+        '(povolené jsou jen číslice, direktivy odděluje středník a max-age ' +
+        'smí být uvedena jen jednou). Prohlížeče takovou hlavičku zahazují ' +
+        'celou, takže web je na tom stejně, jako by ji vůbec neposílal.',
     });
   } else if (parsed.maxAge === 0) {
     // max-age=0 je platný způsob, jak HSTS ZRUŠIT.
@@ -132,12 +172,25 @@ export function auditHsts(header, { https = true } = {}) {
         'zapomněl. Ochrana je tím vypnutá.',
     });
   } else if (parsed.maxAge < WEAK_MAX_AGE) {
+    // Upozornění, ne nález.
+    //
+    // Bývalo to `medium`, což shazovalo verdikt na „prokazatelně
+    // nesplněno". Jenže délku `max-age` nestanoví žádný předpis a
+    // doporučený postup nasazení HSTS je náběh od krátkých hodnot
+    // (300 → 86400 → rok). Web uprostřed správně prováděného náběhu tak
+    // dostával doklad o porušení.
+    //
+    // Navíc to byl útes o jedné vteřině: 86399 s bylo porušení, 86400 s
+    // v pořádku. Rozdíl v měřené skutečnosti nulový, rozdíl v tvrzení
+    // maximální. Odstupňování „pod rok = low" zůstává, protože nesráží
+    // verdikt a jen upozorňuje.
     findings.push({
-      severity: 'medium',
+      severity: 'low',
       key: 'hsts.max-age-short',
       message:
         `max-age je ${parsed.maxAge} s (necelý den). Ochrana vyprší dřív, ` +
-        'než se uživatel vrátí, takže je spíš symbolická.',
+        'než se uživatel vrátí, takže je spíš symbolická. Není to porušení ' +
+        'předpisu — krátká hodnota je běžná při postupném nasazování HSTS.',
     });
   } else if (parsed.maxAge < RECOMMENDED_MAX_AGE) {
     findings.push({

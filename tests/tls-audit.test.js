@@ -64,11 +64,19 @@ describe('classifyProtocols — tři stavy, ne dva', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('chybějící TLS 1.3 je nález jen když bylo prokazatelně odmítnuto', () => {
-    expect(classifyProtocols({ 'TLSv1.2': true, 'TLSv1.3': false }).issues)
-      .toContain('Server nepodporuje TLS 1.3.');
-    expect(classifyProtocols({ 'TLSv1.2': true, 'TLSv1.3': null }).issues)
-      .not.toContain('Server nepodporuje TLS 1.3.');
+  it('chybějící TLS 1.3 je pozorování, ne nález', () => {
+    // Předpisy (NIS2, BSI TR-02102-2, ANSSI) požadují nejméně TLS 1.2.
+    // Dokud to stálo mezi nálezy, dostal server s bezvadnou konfigurací
+    // TLS 1.2 porušení, ke kterému ve spisu neexistovalo žádné pravidlo —
+    // tiskne se tam `tls.protocols.deprecated`, které mluví o 1.0 a 1.1.
+    const r = classifyProtocols({ 'TLSv1.2': true, 'TLSv1.3': false });
+    expect(r.issues).toEqual([]);
+    expect(r.notes.join(' ')).toMatch(/nepodporuje TLS 1\.3/);
+    expect(r.notes.join(' ')).toMatch(/Není to porušení/);
+
+    // Neprůkazný výsledek se nesmí zmínit ani jako pozorování.
+    expect(classifyProtocols({ 'TLSv1.2': true, 'TLSv1.3': null }).notes.join(' '))
+      .not.toMatch(/nepodporuje TLS 1\.3/);
   });
 });
 

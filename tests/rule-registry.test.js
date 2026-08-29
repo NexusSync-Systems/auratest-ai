@@ -37,9 +37,9 @@ describe('registr pravidel', () => {
     // na konkrétní číslo je záměr: zvýšení verze má být vědomé rozhodnutí,
     // ne vedlejší efekt úpravy textu.
     expect(ruleRef('nis2.headers.csp')).toBe('nis2.headers.csp.v3');
-    // HSTS je na v2 od chvíle, kdy se posuzuje obsah hlavičky, ne jen
-    // její přítomnost.
-    expect(ruleRef('nis2.headers.hsts')).toBe('nis2.headers.hsts.v2');
+    // HSTS je na v3: v2 začala posuzovat obsah hlavičky místo pouhé
+    // přítomnosti, v3 opravila rozbor podle ABNF z RFC 6797.
+    expect(ruleRef('nis2.headers.hsts')).toBe('nis2.headers.hsts.v3');
   });
 
   test('pravidlo s vyšší verzí vysvětluje, co se změnilo', () => {
