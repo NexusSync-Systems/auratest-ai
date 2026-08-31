@@ -125,3 +125,54 @@ describe('SampleReport', () => {
     expect(await screen.findByText(/nebyla vygenerována/)).toBeInTheDocument();
   });
 });
+
+/**
+ * Trojstav hlaviček ve veřejné ukázce.
+ *
+ * Ukázka dlouho zobrazovala jen chybějící hlavičky. Sken přitom rozlišuje
+ * i hlavičku, která je přítomná ale nechrání, a takovou, kterou nešlo
+ * posoudit — a právě to rozlišení je jádro produktu. Návštěvník, který se
+ * nepřihlásí, vidí jen tuhle stránku.
+ */
+describe('SampleReport — hlavičky ve třech stavech', () => {
+  const render3 = async (nis2Over) => {
+    const payload = structuredClone(sampleReport);
+    Object.assign(payload.sections.nis2.data.nis2, nis2Over);
+    mockFetchOk(payload);
+    render(<SampleReport onBack={() => {}} />);
+    await screen.findByText(payload.target);
+    return payload;
+  };
+
+  test('slabá hlavička se neschová mezi chybějící', async () => {
+    await render3({
+      missingHeaders: [],
+      weakHeaders: ['Referrer-Policy'],
+      inconclusiveHeaders: [],
+    });
+    expect(await screen.findByText(/nechrání/i)).toBeInTheDocument();
+    expect(screen.getByText('Referrer-Policy')).toBeInTheDocument();
+    expect(screen.queryByText('Chybějící hlavičky')).not.toBeInTheDocument();
+  });
+
+  test('neprůkazná hlavička se hlásí jako neposouzená, ne jako nález', async () => {
+    // Na http:// vrací modul HSTS `null` a výslovně říká, že absence není
+    // volba provozovatele. Vydávat to za chybějící hlavičku by znamenalo
+    // hlásit nález na základě něčeho, co se nezměřilo.
+    await render3({
+      missingHeaders: [],
+      weakHeaders: [],
+      inconclusiveHeaders: ['Strict-Transport-Security'],
+    });
+    expect(await screen.findByText('Nepodařilo se posoudit')).toBeInTheDocument();
+    expect(screen.queryByText('Chybějící hlavičky')).not.toBeInTheDocument();
+  });
+
+  test('bez nálezů se nezobrazí žádný ze seznamů', async () => {
+    await render3({ missingHeaders: [], weakHeaders: [], inconclusiveHeaders: [] });
+    await waitFor(() => {
+      expect(screen.queryByText('Chybějící hlavičky')).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText('Nepodařilo se posoudit')).not.toBeInTheDocument();
+  });
+});

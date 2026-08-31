@@ -77,6 +77,11 @@ function Nis2({ data }) {
         </dd>
       </dl>
 
+      {/* Tři seznamy, ne jeden.
+          Sken rozlišuje hlavičku chybějící, přítomnou ale nechránící, a
+          takovou, kterou nešlo posoudit. Ukázka dlouho zobrazovala jen
+          první z nich, takže návštěvníkovi zamlčela právě to, čím se
+          nástroj liší — že přizná, co nezměřil. */}
       {nis2.missingHeaders?.length > 0 && (
         <>
           <p className="sample-label">Chybějící hlavičky</p>
@@ -85,6 +90,33 @@ function Nis2({ data }) {
               <li key={h}>{h}</li>
             ))}
           </ul>
+        </>
+      )}
+
+      {nis2.weakHeaders?.length > 0 && (
+        <>
+          <p className="sample-label">Hlavičky, které jsou, ale nechrání</p>
+          <ul className="sample-list">
+            {nis2.weakHeaders.map((h) => (
+              <li key={h}>{h}</li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {nis2.inconclusiveHeaders?.length > 0 && (
+        <>
+          <p className="sample-label">Nepodařilo se posoudit</p>
+          <ul className="sample-list">
+            {nis2.inconclusiveHeaders.map((h) => (
+              <li key={h}>{h}</li>
+            ))}
+          </ul>
+          <Note>
+            Tyhle hlavičky nejsou nálezem ani splněním. Typicky jde o web
+            běžící po nešifrovaném spojení, kde prohlížeč hlavičku ignoruje,
+            takže její absence není volba provozovatele.
+          </Note>
         </>
       )}
 
