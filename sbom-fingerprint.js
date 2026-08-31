@@ -269,10 +269,70 @@ export function packagesFromSourceMap(sourceMap) {
  * @param {string} content  Zdrojový kód (klidně minifikovaný).
  * @returns {Array<{ name, npm, type, version, confidence, evidence }>}
  */
+/**
+ * Identifikuje si nalezený text knihovnu SÁM?
+ *
+ * Posuzuje se to, co se shodlo, ne kterým vzorem. Vzor se dá kdykoli
+ * přidat nebo upravit a seznam „silných vzorů" by se s ním rozešel;
+ * shodnutý text je naopak vždycky ten skutečný důkaz.
+ *
+ * Dvě podoby obstojí i vedle soupisu závislostí:
+ *   • banner `/*! jQuery v3.7.1 …` — knihovna se v něm jmenuje sama
+ *   • přiřazení do běhové vlastnosti (`jQuery.fn.jquery = "…"`,
+ *     `ng-version="…"`) — číslo je součástí kódu, ne výčtu verzí
+ */
+function selfIdentifyingMatch(matched) {
+  const t = String(matched || '');
+  if (/^\/\*!/.test(t)) return true;
+  return /\.fn\.jquery|ng-version|__VUE__|reactVersion/i.test(t);
+}
+
+/**
+ * Vypadá obsah jako soupis závislostí?
+ *
+ * Dva nezávislé signály. Klíč `dependencies` a spol. je přímý; víc dvojic
+ * `"jméno":"x.y.z"` pohromadě je nepřímý, protože tak vypadá i mapa
+ * externals nebo vlastní blok s výpisem verzí, kde slovo `dependencies`
+ * nemusí padnout.
+ */
+export function looksLikeDependencyManifest(text) {
+  if (typeof text !== 'string') return false;
+  // Minifikátor uvozovky kolem klíčů odstraňuje, takže se nesmí vyžadovat.
+  // Bez toho unikaly právě ty tvary, které tuhle opravu vyvolaly:
+  // `{deps:{jquery:"1.12.4"}}` a `module.exports={jquery:"1.7.2"}`.
+  if (/["']?(?:deps|(?:dev|peer|optional)?[Dd]ependencies)["']?\s*:\s*\{/.test(text)) return true;
+  // Délka názvu je OMEZENÁ SCHVÁLNĚ.
+  //
+  // S neomezeným `+` se výraz na dlouhém souvislém úseku písmen chová
+  // kvadraticky: pro každou pozici pohltí zbytek řetězce a pak se vrací.
+  // Naměřeno 1,6 s na 50 kB a přes 25 s na 200 kB — na tříMB bundlu, což
+  // je běžná velikost, by sken uvázl. Strop to srovnává na lineární
+  // (0,5 s na 3 MB) a název balíčku delší než 60 znaků stejně neexistuje.
+  const dvojice = text.match(/["']?[@\w./-]{1,60}["']?\s*:\s*["'][~^>=< ]*\d+\.\d+\.\d+/g);
+  // Tři a víc dvojic pohromadě je výčet verzí, ne náhoda. Jedna nebo dvě
+  // můžou být běžný kód, takže se na ně nesahá.
+  return (dvojice?.length ?? 0) >= 3;
+}
+
 export function fingerprintScript(content) {
   if (typeof content !== 'string' || content.length === 0) return [];
   // U mnohamegabajtových bundlů by regexy běžely zbytečně dlouho.
   const text = content.length > MAX_SCAN_BYTES ? content.slice(0, MAX_SCAN_BYTES) : content;
+
+  // Obsahuje skript soupis závislostí?
+  //
+  // Většina verzních vzorů pracuje s BLÍZKOSTÍ: hledá číslo v okolí názvu
+  // knihovny. V běžném bundlu to funguje, protože takové číslo tam bývá
+  // právě jedno. Jakmile ale bundle nese manifest — `{"dependencies":{…}}`
+  // z package.json, mapu webpack externals, blok `__BUILD__` s výpisem
+  // závislostí — leží u názvu číslo, které s nasazenou verzí nesouvisí.
+  //
+  // Ověřený případ: `{deps:{jquery:"1.12.4"}}` vedle skutečné jQuery 3.7.1.
+  // Otisk vrátil 1.12.4, OSV k té verzi vrátilo pět CVE a do neměnného
+  // záznamu se zapsalo „prokázané porušení" u webu, který je v pořádku.
+  // Komentáře u jednotlivých vzorů tuhle past popisují, ale řešily ji vždy
+  // jen pro jeden konkrétní tvar, který někdo zrovna viděl.
+  const manifest = looksLikeDependencyManifest(text);
 
   const results = [];
   for (const signature of LIBRARY_SIGNATURES) {
@@ -281,11 +341,14 @@ export function fingerprintScript(content) {
 
     for (const pattern of signature.version || []) {
       const match = pattern.exec(text);
-      if (match?.[1]) {
-        version = match[1];
-        evidence = match[0].slice(0, 120);
-        break;
-      }
+      if (!match?.[1]) continue;
+      // Vedle soupisu závislostí obstojí jen nález, který si knihovnu
+      // identifikuje sám. Blízkost tam nedokládá nic — číslo u názvu je
+      // deklarovaná závislost, ne nasazená verze.
+      if (manifest && !selfIdentifyingMatch(match[0])) continue;
+      version = match[1];
+      evidence = match[0].slice(0, 120);
+      break;
     }
 
     if (!version) {

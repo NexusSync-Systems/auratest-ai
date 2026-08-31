@@ -10,6 +10,14 @@ import { inspectTls, summarizeTls, PQC_GROUP } from './tls-audit.js';
 import { createSeededRandom, generateRunSeed } from './seeded-random.js';
 import { collectBundleEvidence, mergeFindings } from './sbom-fingerprint.js';
 import { normalizeSemver } from './semver.js';
+// Poznávání CDN je ve vlastním modulu, protože se dělá z hlaviček odpovědi
+// a musí jít otestovat bez prohlížeče. Dokud se hledalo jen v hostname,
+// proxovaný origin (Cloudflare bez změny jména) se nepoznal vůbec.
+import { detectCdn } from './cdn-detect.js';
+// Porovnávání názvů trackerů je ve vlastním modulu ze stejného důvodu:
+// podřetězcové hledání nad krátkými jehlami vyrábělo nálezy na klíčích
+// jako `userSegment` nebo `image_gallery` a nikdo to netestoval.
+import { isTrackerStorageKey, isTrackerCookieName } from './tracker-match.js';
 // Čtení hlaviček je ve vlastním modulu, aby šlo testovat bez prohlížeče.
 // Dokud to byly regulární výrazy uvnitř `analyzeNis2`, nešlo je otestovat
 // samostatně — a tak se netestovaly vůbec.
@@ -2362,48 +2370,56 @@ export async function auditNIS2AndPQC(url) {
   }
 }
 
-// Anycast CDN a globální hostingy: geolokace jejich IP ukazuje na nejbližší
-// PoP, ne na místo, kde jsou data uložená. Vyvozovat z toho porušení GDPR
-// je metodicky nesprávné.
-const ANYCAST_CDN_PATTERNS = [
-  'cloudflare', 'cdn.cloudflare', 'fastly', 'akamai', 'akamaized', 'edgekey',
-  'edgesuite', 'cloudfront', 'azureedge', 'azurefd', 'stackpathdns',
-  'web.app', 'firebaseapp.com', 'firebasestorage', 'googleusercontent',
-  'gstatic.com', 'googleapis.com', 'ggpht.com', 'jsdelivr', 'unpkg',
-  'bunnycdn', 'b-cdn.net', 'vercel.app', 'netlify.app', 'pages.dev',
-];
-
-function isAnycastCdnHost(hostname) {
-  const host = String(hostname).toLowerCase();
-  return ANYCAST_CDN_PATTERNS.some((needle) => host.includes(needle));
-}
-
 /**
- * true = vše v EHP, false = prokazatelně mimo, null = neprůkazné.
- * Neprůkazné je poctivější než FAIL: geolokace CDN nevypovídá o rezidenci dat.
+ * true = změřené servery jsou v EHP, false = prokazatelně mimo, null = neprůkazné.
+ *
+ * POSUZUJÍ SE JEN MĚŘITELNÉ DOMÉNY
+ * Doména za anycast CDN a doména, jejíž adresu geolokační databáze nezná,
+ * se z verdiktu VYŘAZUJÍ. U první z nich ukazuje geolokace na nejbližší
+ * PoP, ne na místo uložení dat; u druhé nemáme čím měřit. Počítat je jako
+ * neúspěch by znamenalo, že verdikt nemůže vyjít kladně skoro nikdy —
+ * běžný web načítá písma nebo skripty z nějaké CDN vždycky.
+ *
+ * Vyřazení není zamlčení: report obě skupiny vypisuje i s počty a
+ * `residencyWarning` říká, kolik domén se posoudit dalo.
+ *
+ * Dřív se domény bez záznamu v databázi zahazovaly úplně — nedostaly se
+ * ani do `locations`. Verdikt pak vyšel „splněno" i tehdy, když se
+ * z osmi domén posoudila jedna, a nikde to nebylo vidět.
  */
-function residencyVerdict(locations, nonEULocations, cdnDomains) {
-  if (locations.length === 0) return null;
+function residencyVerdict(measured, nonEULocations) {
+  if (measured.length === 0) return null;
   if (nonEULocations.length > 0) return false;
-  // Zbyly jen CDN domény — o skutečné rezidenci nic nevíme.
-  if (cdnDomains.length > 0 && locations.length === cdnDomains.length) return null;
   return true;
 }
 
-function residencyWarning(locations, nonEULocations, cdnDomains) {
-  if (locations.length === 0) return 'Nepodařilo se zjistit umístění serverů.';
-
-  const cdnNote = cdnDomains.length > 0
-    ? ` ${cdnDomains.length} z ${locations.length} domén běží na anycast CDN, kde geolokace ukazuje na PoP, ne na místo uložení dat — rezidenci u nich ověřte ve smlouvě s poskytovatelem.`
+function residencyWarning(totalDomains, measured, nonEULocations, cdnDomains, unlocatedDomains) {
+  const vyrazeno = [];
+  if (cdnDomains.length > 0) {
+    vyrazeno.push(
+      `${cdnDomains.length} běží za CDN, kde geolokace ukazuje na nejbližší PoP, `
+      + 'ne na místo uložení dat — rezidenci u nich doloží smlouva s poskytovatelem, '
+      + 'ne tohle měření'
+    );
+  }
+  if (unlocatedDomains.length > 0) {
+    vyrazeno.push(
+      `u ${unlocatedDomains.length} nenašla geolokační databáze záznam k adrese`
+    );
+  }
+  const poznamka = vyrazeno.length
+    ? ` Z verdiktu vyřazeno: ${vyrazeno.join('; ')}.`
     : '';
 
+  if (measured.length === 0) {
+    return 'Umístění serverů se nepodařilo posoudit u žádné domény.' + poznamka;
+  }
   if (nonEULocations.length > 0) {
-    return `${nonEULocations.length} z ${locations.length} serverů je mimo EU/EHP.${cdnNote}`;
+    return `${nonEULocations.length} z ${measured.length} posouzených serverů je mimo EU/EHP `
+      + `(celkem domén: ${totalDomains}).${poznamka}`;
   }
-  if (cdnDomains.length === locations.length) {
-    return `Všechny zjištěné domény běží na anycast CDN, takže rezidenci dat z IP určit nelze.${cdnNote}`;
-  }
-  return `Zjištěné servery mimo CDN jsou v EU/EHP.${cdnNote}`;
+  return `Všech ${measured.length} posouzených serverů je v EU/EHP `
+    + `(celkem domén: ${totalDomains}).${poznamka}`;
 }
 
 export async function auditGreenAndResidency(url) {
@@ -2417,6 +2433,7 @@ export async function auditGreenAndResidency(url) {
     let totalBytes = 0;
     const ipAddresses = new Set();
     const domainToIp = new Map();
+    const domainToCdn = new Map();
 
     page.on('response', async (response) => {
       try {
@@ -2435,6 +2452,13 @@ export async function auditGreenAndResidency(url) {
           }
         }
         totalBytes += size;
+
+        // CDN se poznává z hlaviček TÉHLE odpovědi. Podle jména to nešlo:
+        // proxovaná doména si svoje jméno nechává, takže se nepoznala.
+        const cdn = detectCdn(urlObj.hostname, headers);
+        if (cdn && !domainToCdn.has(urlObj.hostname)) {
+          domainToCdn.set(urlObj.hostname, cdn);
+        }
 
         const serverAddr = await response.serverAddr();
         if (serverAddr && serverAddr.ipAddress) {
@@ -2463,23 +2487,37 @@ export async function auditGreenAndResidency(url) {
     ];
 
     const cdnDomains = [];
+    // Domény, ke kterým geolokační databáze nezná adresu. Dřív se tiše
+    // zahazovaly, takže z osmi domén mohla být posouzená jedna a verdikt
+    // přesto vyšel „splněno".
+    const unlocatedDomains = [];
+    // Domény, ze kterých se verdikt skutečně skládá.
+    const measured = [];
 
     for (const [domain, ip] of domainToIp.entries()) {
+      const cdn = domainToCdn.get(domain) || null;
       const geo = geoip.lookup(ip);
-      if (!geo) continue;
 
-      const isEU = eeaCountries.includes(geo.country);
-      const onCdn = isAnycastCdnHost(domain);
-      const locInfo = { domain, ip, country: geo.country, isEU, onCdn };
-      locations.push(locInfo);
-
-      if (onCdn) {
-        // U anycast CDN ukazuje geolokace na nejbližší PoP, ne na místo
-        // uložení dat. Označit to za porušení GDPR je falešný poplach —
-        // živý test na Firebase Hostingu hlásil "3 ze 3 serverů mimo EU".
-        cdnDomains.push(locInfo);
+      if (cdn) {
+        // Za CDN se rezidence z IP určit nedá — ani kladně, ani záporně.
+        // Zapisuje se i tak, aby bylo v reportu vidět, čeho se to týká.
+        const info = { domain, ip, country: geo?.country ?? null, onCdn: true,
+          cdnProvider: cdn.provider, cdnEvidence: cdn.evidence };
+        cdnDomains.push(info);
+        locations.push({ ...info, isEU: null });
         continue;
       }
+
+      if (!geo) {
+        unlocatedDomains.push({ domain, ip });
+        locations.push({ domain, ip, country: null, isEU: null, onCdn: false });
+        continue;
+      }
+
+      const isEU = eeaCountries.includes(geo.country);
+      const locInfo = { domain, ip, country: geo.country, isEU, onCdn: false };
+      locations.push(locInfo);
+      measured.push(locInfo);
 
       if (!isEU) {
         nonEULocations.push(locInfo);
@@ -2510,9 +2548,17 @@ export async function auditGreenAndResidency(url) {
         // null = neprůkazné: geolokace podle IP je u anycast CDN
         // (Cloudflare, Fastly, Akamai) nespolehlivá, protože ukazuje na
         // PoP, ne na místo uložení dat.
+        //
+        // `cdnDomains` a `unlocatedDomains` říkají, co se z verdiktu
+        // vyřadilo a proč. Bez nich by čtenář viděl jen výsledek a neměl
+        // jak poznat, z kolika domén vznikl.
         cdnDomains,
-        isEUCompliant: residencyVerdict(locations, nonEULocations, cdnDomains),
-        warning: residencyWarning(locations, nonEULocations, cdnDomains)
+        unlocatedDomains,
+        measuredDomains: measured.length,
+        isEUCompliant: residencyVerdict(measured, nonEULocations),
+        warning: residencyWarning(
+          domainToIp.size, measured, nonEULocations, cdnDomains, unlocatedDomains
+        )
       }
     };
   } catch (err) {
@@ -3272,27 +3318,6 @@ async function inspectImagesForC2pa(page, imageUrls) {
 }
 
 // Prefixy názvů trackovacích cookies. Dřív byly jen tři (_ga, _fbp, _hj).
-const TRACKER_COOKIE_NAMES = [
-  '_ga', '_gid', '_gcl_au', '_gac_',        // Google Analytics / Ads
-  '_fbp', '_fbc',                            // Meta Pixel
-  '_hj',                                     // Hotjar
-  '_uetsid', '_uetvid',                      // Microsoft/Bing UET
-  '_clck', '_clsk',                          // Microsoft Clarity
-  'IDE', 'test_cookie', 'DSID',              // DoubleClick
-  'li_sugr', 'bcookie', 'lidc',              // LinkedIn
-  '_pin_unauth', '_pinterest_',              // Pinterest
-  '_ttp', 'ttclid',                          // TikTok
-  '_scid', '_schn',                          // Snapchat
-  'mp_', 'amplitude_', 'ajs_',               // Mixpanel / Amplitude / Segment
-  '__hstc', '__hssrc', 'hubspotutk',         // HubSpot
-  'intercom-',                               // Intercom
-];
-
-const TRACKER_STORAGE_KEYS = [
-  'amplitude', 'mixpanel', 'ga:', '_ga', 'segment', 'ajs_', 'hotjar',
-  'clarity', 'fullstory', 'heap', 'posthog', 'intercom', 'hubspot',
-];
-
 const TRACKER_HOSTS = [
   'google-analytics.com', 'googletagmanager.com', 'doubleclick.net',
   'facebook.net', 'facebook.com/tr', 'hotjar.com', 'clarity.ms',
@@ -3354,27 +3379,38 @@ export async function auditStrictCookies(url) {
     // server-side tracking. context.cookies() je vidí.
     const cookies = await context.cookies();
 
-    const suspiciousFound = [];
+    // Nálezy se drží ODDĚLENĚ podle toho, co je doložilo.
+    //
+    // Uložená cookie nebo položka ve storage dokládá, že se něco uložilo.
+    // Odchozí požadavek dokládá jen to, že se něco stáhlo — u webu se
+    // správně nastaveným Consent Mode se kontejner načte, ale identifikátor
+    // neodejde a nic se neuloží. Slévat obojí do jedné věty „aplikace
+    // ukládá trackery" znamená tvrdit víc, než měření dokládá, a trestat
+    // právě ty provozovatele, kteří souhlas řeší pečlivě.
+    const storedItems = [];
+    const requestItems = [];
 
     for (const cookie of cookies) {
       // Dřív se testovalo `c.includes('_ga')` na celém řetězci "název=hodnota",
       // takže se matchovala i hodnota cookie → falešná pozitiva.
-      if (TRACKER_COOKIE_NAMES.some((prefix) => cookie.name.startsWith(prefix))) {
-        suspiciousFound.push(`Cookie: ${cookie.name} (${cookie.domain})`);
+      if (isTrackerCookieName(cookie.name)) {
+        storedItems.push(`Cookie: ${cookie.name} (${cookie.domain})`);
       }
     }
 
     for (const [store, entries] of [['LS', storageData.localStorage], ['SS', storageData.sessionStorage]]) {
       for (const key of Object.keys(entries)) {
-        if (TRACKER_STORAGE_KEYS.some((needle) => key.toLowerCase().includes(needle))) {
-          suspiciousFound.push(`${store}: ${key}`);
+        if (isTrackerStorageKey(key)) {
+          storedItems.push(`${store}: ${key}`);
         }
       }
     }
 
     for (const host of trackerRequestHosts) {
-      suspiciousFound.push(`Požadavek na tracking doménu: ${host}`);
+      requestItems.push(`Požadavek na tracking doménu: ${host}`);
     }
+
+    const suspiciousFound = [...storedItems, ...requestItems];
 
     // `null` = neprůkazné. Nenačtená stránka neznamená, že trackery nejsou;
     // znamená, že jsme se na ně nedokázali podívat.
@@ -3408,6 +3444,9 @@ export async function auditStrictCookies(url) {
       })(),
       gdpr: {
         suspiciousItems: suspiciousFound,
+        // Oddělené seznamy, aby report i spis ukázaly, čím je co doložené.
+        storedItems,
+        requestItems,
         isCompliant,
         // Seznam trackerů je nutně neúplný, takže "nic nenalezeno" neznamená
         // prokazatelný soulad — formulace to musí odrážet.
@@ -3415,7 +3454,20 @@ export async function auditStrictCookies(url) {
           ? `NEPRŮKAZNÉ: Stránku se nepodařilo načíst (${navigationError}), takže nebylo co posoudit. Z toho neplyne, že trackery nejsou.`
           : isCompliant
             ? 'BEZ NÁLEZU: Před udělením souhlasu nebyly nalezeny trackery ze sledovaného seznamu. Nejde o důkaz plného souladu — seznam není vyčerpávající.'
-            : 'FAIL: ePrivacy Violation. Aplikace ukládá analytické/marketingové trackery před udělením souhlasu.'
+            : storedItems.length > 0
+              // Uložení je doložené: cookie nebo položka ve storage tam je.
+              ? `NÁLEZ: Před udělením souhlasu jsou uložené trackery (${storedItems.length}).`
+                + (requestItems.length > 0
+                  ? ` Kromě toho odešly požadavky na ${requestItems.length} sledovaných domén.`
+                  : '')
+              // Doložený je jen odchozí požadavek. To NENÍ totéž co uložení:
+              // web s Consent Mode kontejner načte, ale nic neuloží. Verdikt
+              // proto zní jinak a mluví o tom, co se skutečně změřilo.
+              : `NÁLEZ: Před udělením souhlasu odešly požadavky na ${requestItems.length} `
+                + 'sledovaných domén. Neuložila se přitom žádná cookie ani položka '
+                + 'do úložiště prohlížeče — samotné načtení skriptu porušením být '
+                + 'nemusí, pokud nedošlo k předání identifikátoru. Posuďte, co ty '
+                + 'požadavky nesly.'
       }
     };
   } catch (err) {

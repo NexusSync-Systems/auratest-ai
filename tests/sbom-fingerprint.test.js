@@ -7,6 +7,7 @@ import {
   MAX_SCAN_BYTES,
   MAX_SOURCE_MAP_BYTES,
   MAX_SOURCE_MAP_PACKAGES,
+  looksLikeDependencyManifest,
 } from '../sbom-fingerprint.js';
 
 /**
@@ -452,5 +453,70 @@ describe('Realistický bundle', () => {
 
     expect(jq.version).toBe('3.5.1');
     expect(react.version).toBeNull();
+  });
+});
+
+/**
+ * Falešné shody verzí (kontrolní vlna).
+ *
+ * Verzní vzory pracují s BLÍZKOSTÍ — hledají číslo v okolí názvu knihovny.
+ * V bundlu, který nese soupis závislostí, leží u názvu číslo, které
+ * s nasazenou verzí nesouvisí. Ověřený případ: `{deps:{jquery:"1.12.4"}}`
+ * vedle skutečné jQuery 3.7.1. Otisk vrátil 1.12.4, OSV k té verzi vrátilo
+ * pět CVE a do neměnného záznamu se zapsalo prokázané porušení u webu,
+ * který je v pořádku.
+ */
+describe('soupis závislostí v bundlu nesmí vyrobit verzi', () => {
+  const jq = (src) => fingerprintScript(src).find((x) => x.npm === 'jquery');
+
+  const manifesty = [
+    ['blok __BUILD__', 'window.__BUILD__={deps:{jquery:"1.12.4",react:"18.2.0",axios:"0.21.1"}};jQuery.fn.init=function(){};'],
+    ['webpack externals', 'module.exports={jquery:"1.7.2",lodash:"3.0.0",vue:"2.0.0"};jQuery.fn.init=function(){};'],
+    ['package.json v bundlu', '{"dependencies":{"react":"18.2.0","jquery":"1.12.4"}}jQuery.fn.init=1;'],
+  ];
+
+  for (const [popis, src] of manifesty) {
+    it(`${popis}: knihovna se uvede bez verze`, () => {
+      const r = jq(src);
+      expect(r).toBeDefined();
+      // Přítomnost doložená je, verze ne — a bez verze se OSV neptáme,
+      // takže nemůže vzniknout tvrzení o CVE.
+      expect(r.version).toBeNull();
+      expect(r.confidence).toBe('presence-only');
+    });
+  }
+
+  it('banner si knihovnu identifikuje sám, takže projde i vedle manifestu', () => {
+    const r = jq('{"dependencies":{"a":"1.0.0","b":"2.0.0","c":"3.0.0"}} /*! jQuery v3.7.1 */ jQuery.fn.init=1;');
+    expect(r.version).toBe('3.7.1');
+  });
+
+  it('přiřazení do běhové vlastnosti projde taky', () => {
+    const r = jq('var x={a:"1.0.0",b:"2.0.0",c:"3.0.0"};jQuery.fn.jquery="3.7.1";jQuery.fn.init=1;');
+    expect(r.version).toBe('3.7.1');
+  });
+
+  it('běžný bundle bez soupisu závislostí se nemění', () => {
+    // Oprava nesmí zúžit detekci tam, kde fungovala.
+    expect(jq('jquery:"3.7.1";jQuery.fn.init=function(){};').version).toBe('3.7.1');
+  });
+});
+
+describe('looksLikeDependencyManifest', () => {
+  it('pozná klíč dependencies i bez uvozovek', () => {
+    expect(looksLikeDependencyManifest('{"dependencies":{"a":"1.0.0"}}')).toBe(true);
+    expect(looksLikeDependencyManifest('{deps:{a:"1.0.0"}}')).toBe(true);
+    expect(looksLikeDependencyManifest('{devDependencies:{a:"1.0.0"}}')).toBe(true);
+  });
+
+  it('pozná výčet verzí i bez klíče', () => {
+    expect(looksLikeDependencyManifest('{a:"1.0.0",b:"2.0.0",c:"3.0.0"}')).toBe(true);
+  });
+
+  it('jedna nebo dvě dvojice manifest nedělají', () => {
+    // Jinak by se detekce spouštěla na běžném kódu a zbytečně by přišla
+    // o verze, které jsou určené správně.
+    expect(looksLikeDependencyManifest('var version="1.2.3";')).toBe(false);
+    expect(looksLikeDependencyManifest('{a:"1.0.0",b:"2.0.0"}')).toBe(false);
   });
 });
