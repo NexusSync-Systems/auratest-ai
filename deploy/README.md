@@ -1,5 +1,36 @@
 # Nasazení — kontrolní seznam
 
+> ## Současná produkce: Nexus
+>
+> Zbytek tohohle dokumentu popisuje zakládání instalace na Oracle Cloud.
+> **Běžící produkce ale stojí jinde** — na Azure, a tenhle rozpor stál
+> jednou hodinu hledání, protože skripty v `deploy/` mluví o účtu `ubuntu`
+> a klíči `~/.ssh/auraguard`, které na Nexu neplatí.
+>
+> | | |
+> |---|---|
+> | Poskytovatel | Azure, předplatné NexusStack Production |
+> | Skupina prostředků | `rg-signing`, oblast Sweden Central |
+> | Veřejná IP | `4.223.166.194` |
+> | Účet | `nexus` |
+> | Systém | Ubuntu 24.04 |
+> | Adresa | https://auraguard.nexusstack.eu |
+>
+> ```
+> ssh -i ~/.ssh/nexus_hub_ed25519 nexus@4.223.166.194
+> cd ~/auratest-ai && git pull && bash deploy/deploy.sh
+> ```
+>
+> **Když se nedostaneš dovnitř:** v portálu Azure je u VM
+> **Operations → Run command → RunShellScript**, což běží jako root i bez
+> SSH. Tudy jde přidat veřejný klíč do `/home/nexus/.ssh/authorized_keys`.
+> Tlačítko *Resetovat heslo nebo klíče* na téže VM selhává hláškou
+> „Failed to generate public key file", takže na něj nespoléhej.
+>
+> Původní klíč z založení VM se jmenuje `generated-by-azure`
+> (otisk `SHA256:jSD8D2v85Eik…`) a jeho soukromou půlku Azure ukázal jen
+> jednou.
+
 Krok za krokem od prázdného Oracle účtu k běžící instalaci. Odhad: jeden
 odpolední blok. Souvislosti a zdůvodnění jsou v `../PLAN-DEPLOY.md`, tohle je
 provozní postup.
