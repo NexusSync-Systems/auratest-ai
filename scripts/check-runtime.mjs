@@ -115,9 +115,15 @@ if (mrtve.length > 0) {
   console.log(`buildu nelze sestavit: ${mrtve.join(', ')}.`);
   console.log('');
   console.log('Sken je nenabídne, takže u nich nikdy nevznikne měření —');
-  console.log('ani kladné, ani záporné. Report to dnes hlásí jako neprůkazné,');
-  console.log('což je pravda o výsledku, ale zamlčuje příčinu: nezměřilo se to');
-  console.log('kvůli našemu prostředí, ne kvůli cizímu webu.');
+  console.log('ani kladné, ani záporné.');
+  console.log('');
+  console.log('Report je uvádí jako NEZMĚŘITELNÉ naším prostředím a do');
+  console.log('verdiktu je nepočítá, takže kladný výsledek může stát na');
+  console.log('zbývajících sondách. Kolik jich bylo, u výsledku uvádí.');
+  console.log('');
+  console.log('Není to tedy vada, jen omezení rozsahu měření. Kdyby přestala');
+  console.log('být dostupná i některá další sonda, stálo by za to zvážit');
+  console.log('build OpenSSL, který slabé sady ještě obsahuje.');
   console.log('─'.repeat(64));
 }
 
