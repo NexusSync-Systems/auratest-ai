@@ -213,13 +213,31 @@ export function verdictsForAudit(slug, result) {
           key: 'eaa.wcag21aa',
           label: 'Přístupnost podle WCAG 2.1 AA',
           // Prázdný seznam porušení u nenačtené stránky NENÍ splnění.
-          ok:
-            result.navigationError || !Array.isArray(result.violations)
-              ? null
-              : result.violations.length === 0,
+          //
+          // A stejně tak jím nejsou položky, které axe označí jako
+          // `incomplete` — to znamená „nutno posoudit ručně", tedy ani
+          // splněno, ani porušeno. Dokud se počítalo jen `violations`,
+          // dostal web s pětadvaceti takovými položkami do spisu
+          // „BEZ NÁLEZU" u kontroly nazvané Přístupnost podle WCAG 2.1 AA.
+          //
+          // Spis si tím protiřečil na dvou stránkách: registr u téhož
+          // pravidla tiskne větu, že tyhle položky nejsou splněné ani
+          // porušené. A nejsou to okrajové věci — na běžném webu jich
+          // axe vrací desítky (kontrast na obrázkovém pozadí, aria
+          // v shadow DOM, titulky u videa).
+          ok: (() => {
+            if (result.navigationError || !Array.isArray(result.violations)) return null;
+            if (result.violations.length > 0) return false;
+            const kRucnimu = Array.isArray(result.incomplete) ? result.incomplete.length : 0;
+            return kRucnimu > 0 ? null : true;
+          })(),
           rationale:
             `Automaticky zjištěno ${result.violations?.length ?? 0} porušení a ` +
             `${result.incomplete?.length ?? 0} položek k ručnímu posouzení. ` +
+            ((result.incomplete?.length ?? 0) > 0
+              ? 'Položky k ručnímu posouzení nejsou splněné ani porušené, takže ' +
+                'z tohohle měření nelze usoudit na soulad. '
+              : '') +
             'Automatický test pokrývá jen část kritérií WCAG — absence nálezu ' +
             'není důkazem přístupnosti.',
         },

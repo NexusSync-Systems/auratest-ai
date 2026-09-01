@@ -264,3 +264,43 @@ describe('TLS do hloubky (S1)', () => {
     expect(overallVerdict(v)).toBeNull();
   });
 });
+
+/**
+ * Přístupnost: `incomplete` znamená „nutno posoudit ručně".
+ *
+ * Dokud se počítala jen porušení, dostal web s desítkami takových položek
+ * do spisu „BEZ NÁLEZU" u kontroly nazvané Přístupnost podle WCAG 2.1 AA.
+ * Spis si tím protiřečil: registr u téhož pravidla tiskne větu, že tyhle
+ * položky nejsou splněné ani porušené.
+ */
+describe('verdikt přístupnosti — tři stavy', () => {
+  const a11y = (over) => verdictsForAudit('analyze-accessibility', {
+    violations: [], incomplete: [], navigationError: null, ...over,
+  })[0];
+
+  it('žádné porušení a žádná ruční položka = bez nálezu', () => {
+    expect(a11y({}).ok).toBe(true);
+  });
+
+  it('porušení = nález', () => {
+    expect(a11y({ violations: [{ id: 'color-contrast' }] }).ok).toBe(false);
+  });
+
+  it('položky k ručnímu posouzení brání tvrdit splnění', () => {
+    const v = a11y({ incomplete: [{ id: 'color-contrast' }, { id: 'video-caption' }] });
+    expect(v.ok).toBeNull();
+    expect(v.rationale).toMatch(/nejsou splněné ani porušené/);
+  });
+
+  it('nenačtená stránka je neprůkazná', () => {
+    expect(a11y({ navigationError: 'Server odpověděl 403.' }).ok).toBeNull();
+  });
+
+  it('porušení má přednost před ručními položkami', () => {
+    // Nález je nález; neprůkazné položky ho nezmírňují.
+    expect(a11y({
+      violations: [{ id: 'image-alt' }],
+      incomplete: [{ id: 'color-contrast' }],
+    }).ok).toBe(false);
+  });
+});

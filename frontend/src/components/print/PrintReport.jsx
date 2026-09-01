@@ -63,10 +63,33 @@ export default function PrintReport({
       {a11yResult && (
         <div className="print-section">
           <h3>Výsledky EAA (Přístupnost)</h3>
-          <div className={`print-badge ${a11yResult.violations.length === 0 ? 'success' : 'error'}`}>
-            Nalezeno porušení: {a11yResult.violations.length}
-          </div>
-          {a11yResult.violations.length > 0 && (
+          {/* Trojstav, ne zelená/červená.
+              Zbytek dokumentu tři stavy umí; tahle sekce jediná zůstala
+              binární — a zrovna tady `null` reálně vzniká. Web s desítkami
+              položek k ručnímu posouzení dostával do dokumentu pro úřad
+              zelený odznak „Nalezeno porušení: 0" a nic víc. */}
+          {(() => {
+            const porusení = a11yResult.violations?.length ?? 0;
+            const kRucnimu = a11yResult.incomplete?.length ?? 0;
+            const stav = a11yResult.navigationError
+              ? null
+              : (porusení > 0 ? false : (kRucnimu > 0 ? null : true));
+            return (
+              <div className={`print-badge ${complianceBadgeClass(stav)}`}>
+                {complianceLabel(stav)} — nalezeno porušení: {porusení}
+                {kRucnimu > 0 ? `, k ručnímu posouzení: ${kRucnimu}` : ''}
+              </div>
+            );
+          })()}
+
+          {a11yResult.navigationError && (
+            <p style={{ marginTop: '10px', fontSize: '14px', color: '#475569' }}>
+              Stránku se nepodařilo posoudit: {a11yResult.navigationError} Z toho
+              neplyne, že je bez závad.
+            </p>
+          )}
+
+          {a11yResult.violations?.length > 0 && (
             <ul style={{ marginTop: '15px', paddingLeft: '20px' }}>
               {a11yResult.violations.map(v => (
                 <li key={v.id} style={{ marginBottom: '10px' }}>
@@ -75,6 +98,29 @@ export default function PrintReport({
                 </li>
               ))}
             </ul>
+          )}
+
+          {/* Položky k ručnímu posouzení se dosud netiskly vůbec, přestože
+              registr u téhož pravidla uvádí, že nejsou splněné ani
+              porušené. Kontrolor tak neměl jak poznat, že je co dořešit. */}
+          {a11yResult.incomplete?.length > 0 && (
+            <>
+              <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                K ručnímu posouzení ({a11yResult.incomplete.length})
+              </p>
+              <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#475569' }}>
+                Automatický test tyhle položky rozhodnout neumí. Nejsou splněné
+                ani porušené — vyžadují posouzení člověkem.
+              </p>
+              <ul style={{ paddingLeft: '20px' }}>
+                {a11yResult.incomplete.map(v => (
+                  <li key={v.id} style={{ marginBottom: '6px' }}>
+                    <strong>{RULE_TRANSLATIONS[v.id] || v.id}</strong>
+                    <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#475569' }}>{v.description}</p>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </div>
       )}
@@ -263,7 +309,10 @@ export default function PrintReport({
       {cookieResult && (
         <div className="print-section">
           <h3>GDPR Cookie Auditor</h3>
-          <div className={`print-badge ${cookieResult.gdpr.isCompliant ? 'success' : 'error'}`}>
+          {/* Taky trojstav: `null` je falsy, takže neprůkazný výsledek
+              dostával červený odznak „nesplněno". Zbytek dokumentu
+              `complianceBadgeClass` používá — tady se na to zapomnělo. */}
+          <div className={`print-badge ${complianceBadgeClass(cookieResult.gdpr.isCompliant)}`}>
             {cookieResult.gdpr.rating}
           </div>
           {cookieResult.gdpr.suspiciousItems.length > 0 && (

@@ -2003,8 +2003,40 @@ export async function auditAccessibility(url) {
     const context = await browser.newContext();
     await guardNavigation(context);
     const page = await context.newPage();
-    
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+
+    // Selhání navigace ani chybová odpověď se NESMÍ spolknout.
+    //
+    // `page.goto` u 404, 403 nebo interstitialu bot ochrany nevyhazuje —
+    // navigace uspěje. axe pak prohlédne stránku „Access Denied", nenajde
+    // na ní žádné porušení a do neměnného záznamu se zapsalo
+    // „BEZ NÁLEZU" pro WCAG 2.1 AA o webu, který se vůbec nezobrazil.
+    //
+    // Konvence existovala už v `auditNIS2AndPQC`, jen se sem nepřevzala.
+    let navigationError = null;
+    const response = await page
+      .goto(url, { waitUntil: 'networkidle', timeout: 30000 })
+      .catch((err) => { navigationError = err.message; return null; });
+
+    if (!navigationError) {
+      if (!response) {
+        navigationError = 'Server neodpověděl.';
+      } else if (!response.ok()) {
+        navigationError = `Server odpověděl ${response.status()}.`;
+      }
+    }
+
+    if (navigationError) {
+      // Vrací se výsledek, ne výjimka: neprůkazné měření je legitimní
+      // zjištění a spis ho musí umět vykázat.
+      return {
+        success: true,
+        url,
+        navigationError,
+        violations: [],
+        incomplete: [],
+        passedCount: 0,
+      };
+    }
 
     // Bez .withTags() běžela i best-practice a experimentální pravidla, jejichž
     // porušení NENÍ porušením WCAG 2.1 AA / EN 301 549 — v compliance reportu
@@ -2028,7 +2060,10 @@ export async function auditAccessibility(url) {
 
     return {
       success: true,
-      url,
+      // Adresa PO přesměrováních. Dřív se vracela ta požadovaná, takže
+      // spis tvrdil, že se měřilo jinde, než se skutečně měřilo.
+      url: page.url() || url,
+      navigationError: null,
       violations: results.violations.map(mapNodes),
       // `incomplete` = položky, které axe neumí rozhodnout automaticky
       // (typicky kontrast na obrázkovém pozadí). Dřív se zahazovaly, což
@@ -2611,7 +2646,16 @@ export async function auditCRA_SBOM(url) {
       }
     });
 
-    await page.goto(url, { waitUntil: 'networkidle' });
+    // Stavový kód se posuzuje ze stejného důvodu jako u přístupnosti:
+    // SBOM chybové stránky není SBOM webu. Následek je tu mírnější —
+    // prázdný soupis dá neprůkazné — ale report by uváděl nepravdivý
+    // důvod („stránka nenačetla žádný externí skript") místo skutečného.
+    const navResponse = await page
+      .goto(url, { waitUntil: 'networkidle' })
+      .catch(() => null);
+    const httpError = !navResponse
+      ? 'Server neodpověděl.'
+      : (!navResponse.ok() ? `Server odpověděl ${navResponse.status()}.` : null);
 
     // ── Zdroj 1: obsah stažených skriptů ───────────────────────────────────
     //
@@ -2713,6 +2757,9 @@ export async function auditCRA_SBOM(url) {
         scriptsUnreadable: scriptErrors.length,
         sourceMapPackages: sourceMapPackages.length,
         truncated: scriptResponses.length >= MAX_SCRIPTS_SCANNED,
+        // Bez tohohle pole by prázdný soupis dostal jako důvod „stránka
+        // nenačetla žádný externí skript", i když stránka vrátila 403.
+        httpError,
       },
       conflicts,
       scope: 'SBOM sestavený zvenčí z běžících globálů, obsahu stažených skriptů a source map. Není to úplný kusovník podle nařízení (EU) 2024/2847 — ten sestavuje výrobce ze zdrojového kódu a musí obsahovat i závislosti, které se do prohlížeče nikdy nedostanou (backend, build nástroje, transitivní balíčky).',
@@ -3501,7 +3548,11 @@ export async function auditCRAVulnerabilities(url) {
     // Důvod prázdného SBOM se liší — a v reportu musí být ten skutečný,
     // ne obecná formulka.
     let reason;
-    if (!ev.scriptsCaptured) {
+    if (ev.httpError) {
+      // Nejsilnější důvod jde první. Bez něj by report u stránky, která
+      // vrátila 403, tvrdil, že web prostě nemá externí skripty.
+      reason = ev.httpError.replace(/\.$/, '').toLowerCase();
+    } else if (!ev.scriptsCaptured) {
       reason = 'stránka nenačetla žádný externí skript';
     } else if (ev.scriptsUnreadable >= ev.scriptsCaptured) {
       reason = `žádný z ${ev.scriptsScanned} skriptů se nepodařilo přečíst`;
