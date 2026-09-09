@@ -25,6 +25,10 @@ import { geoQuality, geoipDatabaseDate } from './geoip-quality.js';
 // Závažnost se dřív při absenci pole doplňovala konstantou 'HIGH' —
 // tedy údajem, který nikdo neměřil, vytištěným v dokumentu pro úřad.
 import { severityOf } from './osv-severity.js';
+// Rozsahy zveřejněné poskytovatelem cloudu. Silnější podklad než
+// geolokační databáze třetí strany: údaj pochází od toho, kdo o umístění
+// serveru rozhoduje.
+import { lookupCloudIp, rangesSnapshot } from './cloud-ranges.js';
 // Čtení hlaviček je ve vlastním modulu, aby šlo testovat bez prohlížeče.
 // Dokud to byly regulární výrazy uvnitř `analyzeNis2`, nešlo je otestovat
 // samostatně — a tak se netestovaly vůbec.
@@ -2488,11 +2492,16 @@ function residencyWarning(totalDomains, measured, nonEULocations, cdnDomains, un
 }
 
 /** Doplňková věta, když se nepodařilo umístit doménu auditovaného webu. */
-function originNote(originMeasured, originHost) {
-  if (originMeasured) return '';
+function originNote(originMeasured, originHost, snapshot) {
+  const chybiSnimek = !snapshot?.generatedAt
+    ? ' Snímek IP rozsahů poskytovatelů cloudu není k dispozici, takže se '
+      + 'vycházelo jen z geolokační databáze; ta u cloudových adres často '
+      + 'neurčí nic. Obnovit ho lze příkazem `npm run update:cloud-ranges`.'
+    : '';
+  if (originMeasured) return chybiSnimek;
   return ` Doménu auditovaného webu (${originHost || 'neznámá'}) se umístit `
     + 'nepodařilo, takže o rezidenci dat provozovatele tenhle sken neříká nic '
-    + '— posouzené domény patří jiným službám.';
+    + '— posouzené domény patří jiným službám.' + chybiSnimek;
 }
 
 export async function auditGreenAndResidency(url) {
@@ -2575,6 +2584,24 @@ export async function auditGreenAndResidency(url) {
     for (const [domain, ip] of domainToIp.entries()) {
       const cdn = domainToCdn.get(domain) || null;
       const geo = geoip.lookup(ip);
+      // Nejdřív rozsahy poskytovatele: říká je ten, kdo datové centrum
+      // provozuje, kdežto geolokační databáze jen odhaduje podle
+      // registrace adresního bloku — a u cloudových rozsahů se plete.
+      const cloud = lookupCloudIp(ip);
+
+      // Anycast poznaný z rozsahů se řeší stejně jako CDN z hlaviček:
+      // adresa odpovídá z nejbližšího uzlu, takže o umístění dat nic
+      // neříká. Bez tohohle by CloudFront vyšel jako server v regionu.
+      if (!cdn && cloud?.anycast) {
+        const info = {
+          domain, ip, country: null, onCdn: true,
+          cdnProvider: `${cloud.provider} ${cloud.service || 'anycast'}`,
+          cdnEvidence: `rozsah ${cloud.prefix} poskytovatele`,
+        };
+        cdnDomains.push(info);
+        locations.push({ ...info, isEU: null });
+        continue;
+      }
 
       if (cdn) {
         // Za CDN se rezidence z IP určit nedá — ani kladně, ani záporně.
@@ -2583,6 +2610,26 @@ export async function auditGreenAndResidency(url) {
           cdnProvider: cdn.provider, cdnEvidence: cdn.evidence };
         cdnDomains.push(info);
         locations.push({ ...info, isEU: null });
+        continue;
+      }
+
+      // Rozsah poskytovatele s určenou zemí přebíjí geolokaci.
+      if (cloud?.country) {
+        const isEU = eeaCountries.includes(cloud.country);
+        const jeOrigin = domain === originHost;
+        const locInfo = {
+          domain, ip, country: cloud.country, isEU, onCdn: false, isOrigin: jeOrigin,
+          source: 'rozsah poskytovatele',
+          cloudProvider: cloud.provider,
+          cloudRegion: cloud.region,
+        };
+        locations.push(locInfo);
+        measured.push(locInfo);
+        if (jeOrigin && isEU) originMeasured = true;
+        if (!isEU) {
+          nonEULocations.push(locInfo);
+          if (cloud.country === 'US') usesUSServers = true;
+        }
         continue;
       }
 
@@ -2602,7 +2649,10 @@ export async function auditGreenAndResidency(url) {
 
       const isEU = eeaCountries.includes(geo.country);
       const jeOrigin = domain === originHost;
-      const locInfo = { domain, ip, country: geo.country, isEU, onCdn: false, isOrigin: jeOrigin };
+      const locInfo = {
+        domain, ip, country: geo.country, isEU, onCdn: false, isOrigin: jeOrigin,
+        source: 'geolokační databáze',
+      };
       locations.push(locInfo);
       measured.push(locInfo);
       if (jeOrigin && isEU) originMeasured = true;
@@ -2647,12 +2697,15 @@ export async function auditGreenAndResidency(url) {
         // serveru nepřezkoumatelné: proti námitce „ten rozsah byl mezitím
         // přeregistrován" není čím argumentovat.
         geoipDatabaseDate: geoipDatabaseDate(),
+        // Datum snímku rozsahů. Stejný důvod jako u geolokační databáze:
+        // bez něj je tvrzení o umístění serveru nepřezkoumatelné.
+        cloudRangesSnapshot: rangesSnapshot(),
         originHost,
         originMeasured,
         isEUCompliant: residencyVerdict(measured, nonEULocations, originMeasured),
         warning: residencyWarning(
           domainToIp.size, measured, nonEULocations, cdnDomains, unlocatedDomains
-        ) + originNote(originMeasured, originHost)
+        ) + originNote(originMeasured, originHost, rangesSnapshot())
       }
     };
   } catch (err) {

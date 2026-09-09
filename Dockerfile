@@ -67,6 +67,15 @@ COPY --from=builder /app/*.js ./
 # z živých bundlů.
 COPY --from=builder /app/scripts/*.mjs ./scripts/
 
+# Snímek IP rozsahů poskytovatelů cloudu.
+#
+# Bez něj sken spadne zpět na geolokační databázi, která u cloudových
+# adres často neurčí nic — a rezidence u zákazníka na Azure nebo AWS
+# vyjde trvale neprůkazně. `COPY` se nesmí rozbít, když soubor chybí,
+# proto se kopíruje celý adresář; prázdný adresář je legitimní stav
+# čerstvě naklonovaného repozitáře.
+COPY --from=builder /app/data ./data
+
 # Verzi Node si tenhle image nediktuje sám — přebírá ji z base image
 # Playwrightu (`ARG NODE_VERSION=24`). Při povýšení Playwrightu se tedy může
 # tiše změnit i verze OpenSSL, na které stojí TLS sondy: slabé sady šifer

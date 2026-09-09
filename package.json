@@ -22,6 +22,7 @@
     "dev": "npx concurrently \"npm run dev:server\" \"npm run frontend:dev\"",
     "test": "jest",
     "check:runtime": "node scripts/check-runtime.mjs",
+    "update:cloud-ranges": "node scripts/update-cloud-ranges.mjs",
     "test:e2e": "playwright test",
     "test:smoke": "node scripts/smoke-test.mjs",
     "eval:llm": "node tools/llm-eval/run-eval.js --cases adapters/auauratesting-gemma/eval-cases.jsonl --system-file adapters/auauratesting-gemma/system-prompt.txt --run-model --strict",

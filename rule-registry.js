@@ -441,15 +441,18 @@ const RULE_LIST = [
   },
   {
     id: 'gdpr.residency.geoip',
-    // v2: přibylo rozpoznávání CDN z hlaviček odpovědi, vyřazení domén,
-    // které databáze neumí umístit, a podmínka, že kladný verdikt musí
-    // stát na doméně auditovaného webu. Mění to výsledek u velké části
-    // webů, takže se zvyšuje verze.
-    version: 2,
+    // v3: přednost dostaly rozsahy zveřejněné poskytovatelem cloudu.
+    // Mění to výsledek u každého webu hostovaného v cloudu, tedy u velké
+    // části trhu — dosud u nich vycházelo neprůkazné.
+    version: 3,
     title: 'Rezidence dat podle geolokace serverů',
     method:
-      'IP adresy dotčených domén se překládají přes vestavěnou databázi ' +
-      'geoip-lite. Z verdiktu se VYŘAZUJÍ dvě skupiny domén: ty za CDN ' +
+      'IP adresy dotčených domén se posuzují ve dvou krocích. Nejdřív se ' +
+      'hledají v rozsazích, které zveřejňuje sám poskytovatel cloudu (AWS, ' +
+      'Azure, Google Cloud) a u nichž uvádí region; region se převádí na ' +
+      'zemi podle jeho vlastní dokumentace. Teprve když adresa v žádném ' +
+      'takovém rozsahu není, sáhne se po vestavěné databázi geoip-lite. ' +
+      'Z verdiktu se VYŘAZUJÍ dvě skupiny domén: ty za CDN ' +
       '(poznané z hlaviček odpovědi jako cf-ray nebo x-amz-cf-id, případně ' +
       'z názvu) a ty, u kterých databáze přizná, že adresu neumístila. ' +
       'Kladný výsledek se vydá jen tehdy, když se podařilo umístit doménu ' +
@@ -464,8 +467,19 @@ const RULE_LIST = [
       'datum jejího snímku, protože adresní rozsahy se mezi zeměmi ' +
       'převádějí a starší snímek může být vedle. Odchytit jde jen nejistota, ' +
       'kterou databáze PŘIZNÁ (chybějící město, maximální poloměr, výplňová ' +
-      'souřadnice) — tichý omyl u záznamu, kterým si je jistá, ne.',
+      'souřadnice) — tichý omyl u záznamu, kterým si je jistá, ne. ' +
+      'Rozsahy poskytovatelů jsou také snímek s datem, které report uvádí; ' +
+      'region, který v převodní tabulce chybí, dává neprůkazné, ne odhad. ' +
+      'Rozsah říká, kde stojí SERVER — kam ten server data ukládá dál, ' +
+      'z toho neplyne nic. Zpracovávají se jen adresy IPv4.',
     changelog: {
+      3:
+        'Verze 2 uměla jen geolokační databázi, která u cloudových rozsahů '
+        + 'selhává — adresa serveru v Azure Sweden Central u ní vycházela '
+        + 'jako Spojené státy. Rezidenci proto nešlo potvrdit u žádného '
+        + 'zákazníka hostovaného v cloudu. Verze 3 čte rozsahy zveřejněné '
+        + 'poskytovatelem, což je zároveň silnější podklad: údaj pochází od '
+        + 'toho, kdo o umístění serveru rozhoduje.',
       2:
         'Verze 1 poznávala CDN jen podle názvu domény, takže proxovaný web ' +
         'se nepoznal a jeho anycast adresa vyšla jako „prokazatelně mimo ' +
