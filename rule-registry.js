@@ -435,13 +435,40 @@ const RULE_LIST = [
   },
   {
     id: 'gdpr.residency.geoip',
-    version: 1,
+    // v2: přibylo rozpoznávání CDN z hlaviček odpovědi, vyřazení domén,
+    // které databáze neumí umístit, a podmínka, že kladný verdikt musí
+    // stát na doméně auditovaného webu. Mění to výsledek u velké části
+    // webů, takže se zvyšuje verze.
+    version: 2,
     title: 'Rezidence dat podle geolokace serverů',
-    method: 'IP adresy dotčených domén se překládají přes geoip databázi.',
+    method:
+      'IP adresy dotčených domén se překládají přes vestavěnou databázi ' +
+      'geoip-lite. Z verdiktu se VYŘAZUJÍ dvě skupiny domén: ty za CDN ' +
+      '(poznané z hlaviček odpovědi jako cf-ray nebo x-amz-cf-id, případně ' +
+      'z názvu) a ty, u kterých databáze přizná, že adresu neumístila. ' +
+      'Kladný výsledek se vydá jen tehdy, když se podařilo umístit doménu ' +
+      'auditovaného webu — o rezidenci dat provozovatele nelze usuzovat ' +
+      'z cizích služeb. Report uvádí, kolik domén bylo posouzeno a kolik ' +
+      'vyřazeno.',
     limits:
       'Geolokace IP neurčuje, kde jsou data uložena. U anycast CDN ukazuje na ' +
       'nejbližší uzel, ne na místo zpracování — u těch domén je údaj ' +
-      'orientační a rezidenci lze doložit jen smlouvou s poskytovatelem.',
+      'orientační a rezidenci lze doložit jen smlouvou s poskytovatelem. ' +
+      'Databáze je přiložená k balíčku a neaktualizuje se; report uvádí ' +
+      'datum jejího snímku, protože adresní rozsahy se mezi zeměmi ' +
+      'převádějí a starší snímek může být vedle. Odchytit jde jen nejistota, ' +
+      'kterou databáze PŘIZNÁ (chybějící město, maximální poloměr, výplňová ' +
+      'souřadnice) — tichý omyl u záznamu, kterým si je jistá, ne.',
+    changelog: {
+      2:
+        'Verze 1 poznávala CDN jen podle názvu domény, takže proxovaný web ' +
+        'se nepoznal a jeho anycast adresa vyšla jako „prokazatelně mimo ' +
+        'EU/EHP". Zároveň četla výplňový záznam databáze jako zjištěnou ' +
+        'zemi: adresa serveru v Azure Sweden Central vracela country US se ' +
+        'souřadnicí středu Spojených států a poloměrem nejistoty 1000 km, ' +
+        'a z toho vzniklo doložené porušení. Týkalo by se každého ' +
+        'zákazníka na Azure.',
+    },
   },
 ];
 

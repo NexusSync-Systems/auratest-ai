@@ -18,6 +18,10 @@ import { detectCdn } from './cdn-detect.js';
 // podřetězcové hledání nad krátkými jehlami vyrábělo nálezy na klíčích
 // jako `userSegment` nebo `image_gallery` a nikdo to netestoval.
 import { isTrackerStorageKey, isTrackerCookieName } from './tracker-match.js';
+// Geolokační databáze u neznámé adresy vrací výplňový záznam, který
+// vypadá jako plnohodnotný výsledek. Bez tohohle rozlišení z něj vznikalo
+// „prokazatelně mimo EU/EHP".
+import { geoQuality, geoipDatabaseDate } from './geoip-quality.js';
 // Čtení hlaviček je ve vlastním modulu, aby šlo testovat bez prohlížeče.
 // Dokud to byly regulární výrazy uvnitř `analyzeNis2`, nešlo je otestovat
 // samostatně — a tak se netestovaly vůbec.
@@ -2422,9 +2426,17 @@ export async function auditNIS2AndPQC(url) {
  * ani do `locations`. Verdikt pak vyšel „splněno" i tehdy, když se
  * z osmi domén posoudila jedna, a nikde to nebylo vidět.
  */
-function residencyVerdict(measured, nonEULocations) {
-  if (measured.length === 0) return null;
+function residencyVerdict(measured, nonEULocations, originMeasured) {
   if (nonEULocations.length > 0) return false;
+  // Kladný verdikt smí stát JEN na doméně auditovaného webu.
+  //
+  // Bez téhle podmínky by stačilo, aby se nepodařilo umístit vlastní
+  // server a zároveň se povedlo umístit nějakou cizí evropskou doménu —
+  // třeba widget nebo písmo — a sken by prohlásil rezidenci za v pořádku.
+  // Tvrzení o umístění dat provozovatele opřené o cizí server je přesně
+  // ten druh závěru, který tenhle nástroj dělat nesmí.
+  if (!originMeasured) return null;
+  if (measured.length === 0) return null;
   return true;
 }
 
@@ -2455,6 +2467,14 @@ function residencyWarning(totalDomains, measured, nonEULocations, cdnDomains, un
   }
   return `Všech ${measured.length} posouzených serverů je v EU/EHP `
     + `(celkem domén: ${totalDomains}).${poznamka}`;
+}
+
+/** Doplňková věta, když se nepodařilo umístit doménu auditovaného webu. */
+function originNote(originMeasured, originHost) {
+  if (originMeasured) return '';
+  return ` Doménu auditovaného webu (${originHost || 'neznámá'}) se umístit `
+    + 'nepodařilo, takže o rezidenci dat provozovatele tenhle sken neříká nic '
+    + '— posouzené domény patří jiným službám.';
 }
 
 export async function auditGreenAndResidency(url) {
@@ -2521,6 +2541,11 @@ export async function auditGreenAndResidency(url) {
       'IS', 'LI', 'NO',
     ];
 
+    // Doména auditovaného webu — na ní verdikt stojí.
+    let originHost = null;
+    try { originHost = new URL(page.url() || url).hostname; } catch { originHost = null; }
+    let originMeasured = false;
+
     const cdnDomains = [];
     // Domény, ke kterým geolokační databáze nezná adresu. Dřív se tiše
     // zahazovaly, takže z osmi domén mohla být posouzená jedna a verdikt
@@ -2543,16 +2568,26 @@ export async function auditGreenAndResidency(url) {
         continue;
       }
 
-      if (!geo) {
-        unlocatedDomains.push({ domain, ip });
+      // Nejen „záznam chybí", ale i „záznam nic neurčuje".
+      //
+      // Ověřeno na vlastní infrastruktuře: 4.223.166.194 je server v Azure
+      // Sweden Central a databáze u něj vrací country US se souřadnicí
+      // 37.751/-97.822, což je geografický střed USA, a poloměrem nejistoty
+      // 1000 km. Sken z toho udělal doložené porušení GDPR u vlastního
+      // provozovatele — a totéž by potkalo každého zákazníka na Azure.
+      const kvalita = geoQuality(geo);
+      if (!kvalita.usable) {
+        unlocatedDomains.push({ domain, ip, reason: kvalita.reason });
         locations.push({ domain, ip, country: null, isEU: null, onCdn: false });
         continue;
       }
 
       const isEU = eeaCountries.includes(geo.country);
-      const locInfo = { domain, ip, country: geo.country, isEU, onCdn: false };
+      const jeOrigin = domain === originHost;
+      const locInfo = { domain, ip, country: geo.country, isEU, onCdn: false, isOrigin: jeOrigin };
       locations.push(locInfo);
       measured.push(locInfo);
+      if (jeOrigin && isEU) originMeasured = true;
 
       if (!isEU) {
         nonEULocations.push(locInfo);
@@ -2590,10 +2625,16 @@ export async function auditGreenAndResidency(url) {
         cdnDomains,
         unlocatedDomains,
         measuredDomains: measured.length,
-        isEUCompliant: residencyVerdict(measured, nonEULocations),
+        // Stáří databáze patří do reportu. Bez něj je tvrzení o umístění
+        // serveru nepřezkoumatelné: proti námitce „ten rozsah byl mezitím
+        // přeregistrován" není čím argumentovat.
+        geoipDatabaseDate: geoipDatabaseDate(),
+        originHost,
+        originMeasured,
+        isEUCompliant: residencyVerdict(measured, nonEULocations, originMeasured),
         warning: residencyWarning(
           domainToIp.size, measured, nonEULocations, cdnDomains, unlocatedDomains
-        )
+        ) + originNote(originMeasured, originHost)
       }
     };
   } catch (err) {
