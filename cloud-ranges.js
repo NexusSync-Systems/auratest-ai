@@ -54,6 +54,15 @@ export const ANYCAST_SERVICES = new Set([
   'Google Global',
 ]);
 
+/**
+ * Názvy regionů, které znamenají „globální", ne konkrétní místo.
+ *
+ * Bez nich by takový rozsah vyšel jako region, který jen neumíme převést
+ * na zemi. To je pravda o výsledku, ale ne o příčině: tady se nejedná
+ * o mezeru v naší tabulce, nýbrž o to, že místo neexistuje.
+ */
+const GLOBAL_REGIONS = new Set(['global', 'GLOBAL', '']);
+
 let cache = null;
 
 /** Převede IPv4 na číslo. Vrací `null` u čehokoli, co IPv4 není. */
@@ -148,7 +157,7 @@ export function lookupCloudIp(ip, file = RANGES_FILE) {
   }
   if (!best) return null;
 
-  const anycast = ANYCAST_SERVICES.has(best.svc) || !best.r;
+  const anycast = ANYCAST_SERVICES.has(best.svc) || GLOBAL_REGIONS.has(best.r);
   return {
     provider: best.p,
     region: best.r || null,

@@ -181,3 +181,31 @@ describe('mapa regionů', () => {
     expect(knownRegionCount()).toBeGreaterThan(100);
   });
 });
+
+describe('globální rozsahy a zkrácené názvy', () => {
+  it('region „GLOBAL" znamená anycast, ne neznámou zemi', () => {
+    // Rozdíl je v příčině: tady nejde o mezeru v naší tabulce, ale o to,
+    // že takový rozsah žádné konkrétní místo nemá.
+    expect(regionCountry('aws', 'GLOBAL')).toBeNull();
+    expect(regionCountry('gcp', 'global')).toBeNull();
+  });
+
+  it('zkrácené názvy Azure míří na tytéž země', () => {
+    // Azure uvádí regiony dvojím zápisem. Bez zkrácených tvarů by adresa
+    // v německém nebo norském datovém centru vyšla jako neprůkazná.
+    expect(regionCountry('azure', 'germanywc')).toBe(regionCountry('azure', 'germanywestcentral'));
+    expect(regionCountry('azure', 'norwaye')).toBe(regionCountry('azure', 'norwayeast'));
+    expect(regionCountry('azure', 'centralfrance')).toBe(regionCountry('azure', 'francecentral'));
+    expect(regionCountry('azure', 'switzerlandn')).toBe('CH');
+  });
+
+  it('regiony, které jistě neznáme, zůstávají neprůkazné', () => {
+    // Google je na své stránce s lokalitami neuvádí. Odhadovat u
+    // evropského regionu zemi by znamenalo tvrdit něco o EHP bez podkladu.
+    expect(regionCountry('gcp', 'europe-west15')).toBeNull();
+    expect(regionCountry('gcp', 'asia-southeast3')).toBeNull();
+    expect(regionCountry('aws', 'ap-southeast-6')).toBeNull();
+    expect(regionCountry('aws', 'sa-west-1')).toBeNull();
+    expect(regionCountry('azure', 'northeurope2')).toBeNull();
+  });
+});

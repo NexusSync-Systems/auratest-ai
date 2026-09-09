@@ -53,6 +53,9 @@ const AWS = {
   'il-central-1': 'IL',
   'af-south-1': 'ZA',
   'cn-north-1': 'CN', 'cn-northwest-1': 'CN',
+  // Evropský suverénní cloud. Kód regionu nese zemi přímo („de").
+  'eusc-de-east-1': 'DE',
+  'us-south-1': 'US',
 };
 
 /** Azure: název regionu (malými písmeny) → ISO kód země. */
@@ -96,6 +99,30 @@ const AZURE = {
   'qatarcentral': 'QA',
   'israelcentral': 'IL',
   'southafricanorth': 'ZA', 'southafricawest': 'ZA',
+
+  // ── Zkrácené názvy ────────────────────────────────────────────────────
+  //
+  // Azure uvádí tytéž regiony v datech o rozsazích i zkráceně. Nejde
+  // o jiná místa, jen o jiný zápis; bez nich by adresa v německém nebo
+  // norském regionu vyšla jako neprůkazná.
+  'germanyn': 'DE', 'germanywc': 'DE',
+  'centralfrance': 'FR', 'southfrance': 'FR',
+  'norwaye': 'NO', 'norwayw': 'NO',
+  'switzerlandn': 'CH', 'switzerlandw': 'CH',   // mimo EHP!
+  'brazilne': 'BR', 'brazilse': 'BR',
+  'chilec': 'CL',
+  'indiasouthcentral': 'IN', 'jioindiacentral': 'IN',
+  'malaysiasouth': 'MY',
+  'israelnorthwest': 'IL',
+  'taiwannorthwest': 'TW',
+  // Regiony ve Spojených státech. Azure je pojmenovává důsledně
+  // `<směr>us`, takže zemi nese samotný název.
+  'eastus3': 'US', 'northeastus5': 'US', 'southcentralus2': 'US',
+  'southeastus': 'US', 'southeastus3': 'US', 'southeastus5': 'US',
+  'southwestus': 'US',
+  // EUAP = program včasných aktualizací, běží v amerických regionech.
+  'centraluseuap': 'US', 'eastus2euap': 'US',
+  'usstagec': 'US', 'usstagee': 'US',
 };
 
 /** GCP: název regionu → ISO kód země. */
@@ -130,6 +157,9 @@ const GCP = {
   // Blízký východ a Afrika
   'me-west1': 'IL', 'me-central1': 'QA', 'me-central2': 'SA',
   'africa-south1': 'ZA',
+  // Regiony, které Google na stránce s lokalitami neuvádí, ale objevují
+  // se v rozsazích. Prefix `us-` u Googlu důsledně znamená Spojené státy.
+  'us-central2': 'US', 'us-east7': 'US', 'us-west8': 'US',
 };
 
 const MAPY = { aws: AWS, azure: AZURE, gcp: GCP };
