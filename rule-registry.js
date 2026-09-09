@@ -398,7 +398,13 @@ const RULE_LIST = [
     id: 'eaa.wcag21aa.axe',
     version: 1,
     title: 'WCAG 2.1 AA přes axe-core',
-    method: 'Automatická pravidla axe-core nad vykreslenou stránkou.',
+    method:
+      'Pravidla axe-core omezená na značky wcag2a, wcag2aa, wcag21a a '+
+      'wcag21aa, spuštěná nad vykreslenou stránkou. Pravidla kategorie '+
+      '„best practice" se záměrně nepouštějí — jejich porušení není '+
+      'porušením WCAG 2.1 AA ani EN 301 549. Konkrétní verze axe-core je '+
+      'zaznamenaná u výsledku, protože chování určuje ona, ne verze '+
+      'tohohle pravidla.',
     limits:
       'Automat pokrývá odhadem třetinu kritérií WCAG. Položky označené jako ' +
       '„k ručnímu posouzení" nejsou splněné ani porušené.',

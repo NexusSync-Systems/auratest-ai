@@ -191,6 +191,14 @@ export function verdictsForAudit(slug, result) {
             `Nalezeno ${found} komponent z ${ev.scriptsScanned ?? '?'} přečtených skriptů` +
             (ev.scriptsUnreadable ? ` (${ev.scriptsUnreadable} se přečíst nepodařilo)` : '') +
             (ev.truncated ? ', prohledávání bylo useknuto na horním limitu' : '') +
+            // Stropy uvnitř jednotlivých souborů se dřív nikde neobjevily,
+            // takže SBOM z částečně prohledaného bundlu vypadal jako úplný.
+            ((ev.truncatedScripts?.length ?? 0) > 0
+              ? `, ${ev.truncatedScripts.length} skriptů bylo prohledáno jen zčásti (přesáhly velikostní strop)`
+              : '') +
+            ((ev.droppedSourceMapPackages ?? 0) > 0
+              ? `, ${ev.droppedSourceMapPackages} balíčků ze source map se nevešlo do rozpočtu`
+              : '') +
             '. Soupis z prohlížeče vidí jen to, co stránka načte — serverové ' +
             'závislosti v něm nejsou, takže úplnost SBOM z toho neplyne.',
         },
@@ -239,7 +247,13 @@ export function verdictsForAudit(slug, result) {
                 'z tohohle měření nelze usoudit na soulad. '
               : '') +
             'Automatický test pokrývá jen část kritérií WCAG — absence nálezu ' +
-            'není důkazem přístupnosti.',
+            'není důkazem přístupnosti.' +
+            // Čím se měřilo, patří do záznamu. Chování určuje axe-core,
+            // ne verze našeho pravidla, takže bez tohohle údaje nejde
+            // starší záznam reprodukovat.
+            (result.engine?.version
+              ? ` Měřeno nástrojem ${result.engine.name} ${result.engine.version}.`
+              : ' Verzi měřicího nástroje se nepodařilo zjistit.'),
         },
       ];
 

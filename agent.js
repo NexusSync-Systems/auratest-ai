@@ -22,6 +22,9 @@ import { isTrackerStorageKey, isTrackerCookieName } from './tracker-match.js';
 // vypadá jako plnohodnotný výsledek. Bez tohohle rozlišení z něj vznikalo
 // „prokazatelně mimo EU/EHP".
 import { geoQuality, geoipDatabaseDate } from './geoip-quality.js';
+// Závažnost se dřív při absenci pole doplňovala konstantou 'HIGH' —
+// tedy údajem, který nikdo neměřil, vytištěným v dokumentu pro úřad.
+import { severityOf } from './osv-severity.js';
 // Čtení hlaviček je ve vlastním modulu, aby šlo testovat bez prohlížeče.
 // Dokud to byly regulární výrazy uvnitř `analyzeNis2`, nešlo je otestovat
 // samostatně — a tak se netestovaly vůbec.
@@ -2045,8 +2048,9 @@ export async function auditAccessibility(url) {
     // Bez .withTags() běžela i best-practice a experimentální pravidla, jejichž
     // porušení NENÍ porušením WCAG 2.1 AA / EN 301 549 — v compliance reportu
     // to dělalo falešné poplachy.
+    const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
     const results = await new AxeBuilder({ page })
-      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+      .withTags(AXE_TAGS)
       .analyze();
 
     const mapNodes = (v) => ({
@@ -2068,6 +2072,20 @@ export async function auditAccessibility(url) {
       // spis tvrdil, že se měřilo jinde, než se skutečně měřilo.
       url: page.url() || url,
       navigationError: null,
+      // Čím se měřilo.
+      //
+      // Registr slibuje, že stejné id a verze pravidla znamenají stejný
+      // způsob posouzení. U přístupnosti to ale neurčuje naše pravidlo,
+      // nýbrž axe-core, který se přes `^4.12.1` může posunout na libovolné
+      // 4.x, aniž by se verze pravidla zvedla. `results.testEngine` se
+      // přitom zahazoval, takže rok starý záznam ve spisu nešlo
+      // reprodukovat ani obhájit — a doložitelnost je to hlavní, čím se
+      // tenhle nástroj liší.
+      engine: {
+        name: results.testEngine?.name || 'axe-core',
+        version: results.testEngine?.version || null,
+        tags: AXE_TAGS,
+      },
       violations: results.violations.map(mapNodes),
       // `incomplete` = položky, které axe neumí rozhodnout automaticky
       // (typicky kontrast na obrázkovém pozadí). Dřív se zahazovaly, což
@@ -2706,6 +2724,7 @@ export async function auditCRA_SBOM(url) {
       findings: bundleFindings,
       sourceMapPackages,
       unreadable: scriptErrors,
+      limits: bundleLimits,
     } = await collectBundleEvidence(scriptResponses, {
       // `redirect: 'manual'` je bezpečnostní požadavek, ne detail.
       // S výchozím 'follow' by cizí server odpověděl na same-origin URL
@@ -2798,6 +2817,14 @@ export async function auditCRA_SBOM(url) {
         scriptsUnreadable: scriptErrors.length,
         sourceMapPackages: sourceMapPackages.length,
         truncated: scriptResponses.length >= MAX_SCRIPTS_SCANNED,
+        // Stropy, o kterých se dřív nikdo nedozvěděl.
+        //
+        // Skript nad 3 MB se prohledal jen zčásti a přesto se započítal
+        // jako prohledaný; balíčky nad rozpočet ze source map se zahodily
+        // beze stopy. Obojí posouvalo výsledek směrem k „bez nálezu",
+        // protože ztracené položky by jinak skončily mezi neověřenými.
+        truncatedScripts: bundleLimits?.truncatedScripts ?? [],
+        droppedSourceMapPackages: bundleLimits?.droppedPackages ?? 0,
         // Bez tohohle pole by prázdný soupis dostal jako důvod „stránka
         // nenačetla žádný externí skript", i když stránka vrátila 403.
         httpError,
@@ -3666,12 +3693,20 @@ export async function auditCRAVulnerabilities(url) {
 
       const data = await response.json();
       for (const v of data.vulns || []) {
+        // `withdrawn` = záznam byl stažen (duplicita, omyl). Hlásit ho
+        // jako platnou zranitelnost by byl nález bez podkladu.
+        if (v.withdrawn) continue;
+
+        const zavaznost = severityOf(v);
         vulnerabilities.push({
           library: lib.name,
           version: lib.version,
           cve: v.aliases?.find(a => a.startsWith('CVE-')) || v.id,
           details: v.details || v.summary || 'Bez popisu',
-          severity: v.database_specific?.severity || 'HIGH'
+          // `null` znamená, že záznam závažnost neuvádí. Report to napíše
+          // slovy; dřív se z toho stalo „HIGH".
+          severity: zavaznost.label,
+          severitySource: zavaznost.source,
         });
       }
     } catch (err) {

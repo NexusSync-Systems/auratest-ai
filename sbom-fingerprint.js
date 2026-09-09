@@ -317,7 +317,8 @@ export function looksLikeDependencyManifest(text) {
 export function fingerprintScript(content) {
   if (typeof content !== 'string' || content.length === 0) return [];
   // U mnohamegabajtových bundlů by regexy běžely zbytečně dlouho.
-  const text = content.length > MAX_SCAN_BYTES ? content.slice(0, MAX_SCAN_BYTES) : content;
+  const orezano = content.length > MAX_SCAN_BYTES;
+  const text = orezano ? content.slice(0, MAX_SCAN_BYTES) : content;
 
   // Obsahuje skript soupis závislostí?
   //
@@ -362,6 +363,10 @@ export function fingerprintScript(content) {
       npm: signature.npm,
       type: signature.type,
       version,
+      // Prohledala se jen část souboru? Knihovna za stropem se nenajde
+      // a bez tohohle příznaku o tom nikdo neví — skript se přitom
+      // započítá jako prohledaný.
+      truncatedScan: orezano,
       // Bez verze se nedá dotázat OSV — a nedá se ani tvrdit, že je knihovna
       // v pořádku. Proto se to rozlišuje.
       confidence: version ? 'version-detected' : 'presence-only',
@@ -390,6 +395,10 @@ export async function collectBundleEvidence(responses, deps = {}) {
   const findings = [];
   const sourceMapPackages = [];
   const unreadable = [];
+  // Co se nevešlo do stropů. Dřív se to zahazovalo beze stopy a výsledek
+  // se posouval směrem k PASS: ztracené položky by jinak skončily mezi
+  // neověřenými a srazily verdikt na neprůkazný.
+  const limits = { truncatedScripts: [], droppedPackages: 0 };
   // Strop na počet balíčků z map: nepřátelská mapa může mít milion položek
   // v poli `sources` a nafouknout odpověď na stovky MB.
   let packageBudget = MAX_SOURCE_MAP_PACKAGES;
@@ -406,6 +415,9 @@ export async function collectBundleEvidence(responses, deps = {}) {
       continue;
     }
 
+    if (body.length > MAX_SCAN_BYTES) {
+      limits.truncatedScripts.push({ url: response.url(), bytes: body.length });
+    }
     findings.push(...fingerprintScript(body));
 
     if (typeof fetchMap !== 'function' || packageBudget <= 0) continue;
@@ -430,15 +442,22 @@ export async function collectBundleEvidence(responses, deps = {}) {
         continue;
       }
       const packages = packagesFromSourceMap(await readCapped(mapResponse));
-      sourceMapPackages.push(...packages.slice(0, packageBudget));
-      packageBudget -= packages.length;
+      const vzato = packages.slice(0, packageBudget);
+      sourceMapPackages.push(...vzato);
+      if (packages.length > vzato.length) {
+        limits.droppedPackages += packages.length - vzato.length;
+      }
+      // Odečítá se SKUTEČNĚ vzatý počet, ne celková délka. Dřív se
+      // odečítala délka, takže po jedné velké mapě spadl rozpočet do
+      // záporu a všechny další mapy se přeskočily.
+      packageBudget -= vzato.length;
     } catch {
       // Chybějící, nedostupná nebo příliš velká mapa není chyba —
       // jen o zdroj důkazu míň.
     }
   }
 
-  return { findings, sourceMapPackages, unreadable };
+  return { findings, sourceMapPackages, unreadable, limits };
 }
 
 /**

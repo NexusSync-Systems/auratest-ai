@@ -1837,7 +1837,10 @@ export default function App() {
                          </div>
                          {craVulnResult.cra.vulnerabilities.map((v, i) => (
                            <div key={i} style={{ background: 'rgba(255,255,255,0.05)', padding: '16px', borderRadius: '8px', borderLeft: '4px solid #ef4444', marginBottom: '12px' }}>
-                             <strong style={{ color: '#ef4444' }}>{v.cve} ({v.severity})</strong>
+                             {/* Neznámá závažnost se pojmenuje, nedomýšlí. */}
+                             <strong style={{ color: v.severity ? '#ef4444' : 'var(--text-muted)' }}>
+                               {v.cve} ({v.severity || 'závažnost neuvedena'})
+                             </strong>
                              <div style={{ color: 'var(--text-main)', margin: '4px 0' }}>Knihovna: {v.library} {v.version}</div>
                              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{v.details}</div>
                            </div>

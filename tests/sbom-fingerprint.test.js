@@ -424,8 +424,14 @@ describe('collectBundleEvidence', () => {
   });
 
   it('bez skriptů vrátí prázdný, ale platný výsledek', async () => {
-    expect(await collectBundleEvidence([], {}))
-      .toEqual({ findings: [], sourceMapPackages: [], unreadable: [] });
+    expect(await collectBundleEvidence([], {})).toEqual({
+      findings: [],
+      sourceMapPackages: [],
+      unreadable: [],
+      // `limits` říká, co se do stropů nevešlo. Bez skriptů je prázdné,
+      // ale musí být přítomné — volající na něj spoléhá.
+      limits: { truncatedScripts: [], droppedPackages: 0 },
+    });
   });
 });
 
@@ -518,5 +524,84 @@ describe('looksLikeDependencyManifest', () => {
     // o verze, které jsou určené správně.
     expect(looksLikeDependencyManifest('var version="1.2.3";')).toBe(false);
     expect(looksLikeDependencyManifest('{a:"1.0.0",b:"2.0.0"}')).toBe(false);
+  });
+});
+
+/**
+ * Stropy se musí hlásit.
+ *
+ * Skript nad velikostním stropem se prohledal jen zčásti a přesto se
+ * započítal jako prohledaný; balíčky nad rozpočet ze source map se
+ * zahodily beze stopy. Obojí posouvalo výsledek směrem k „bez nálezu",
+ * protože ztracené položky by jinak skončily mezi neověřenými a srazily
+ * verdikt na neprůkazný.
+ */
+describe('oříznuté prohledávání se přizná', () => {
+  it('nález z oříznutého skriptu nese příznak', () => {
+    const velky = 'x'.repeat(MAX_SCAN_BYTES + 100) + '/*! jQuery v3.7.1 */';
+    // Banner je až za stropem, takže se nenajde vůbec — ale to, že se
+    // prohledávalo jen zčásti, musí být poznat u čehokoli, co se najde.
+    const maly = '/*! jQuery v3.7.1 */ jQuery.fn.init=1;' + 'x'.repeat(MAX_SCAN_BYTES);
+    const r = fingerprintScript(maly).find((x) => x.npm === 'jquery');
+    expect(r.truncatedScan).toBe(true);
+    expect(fingerprintScript(velky).length).toBe(0);
+  });
+
+  it('běžný skript příznak nemá', () => {
+    const r = fingerprintScript('/*! jQuery v3.7.1 */ jQuery.fn.init=1;')
+      .find((x) => x.npm === 'jquery');
+    expect(r.truncatedScan).toBe(false);
+  });
+});
+
+describe('rozpočet na balíčky ze source map', () => {
+  const odpoved = (url, text) => ({
+    url: () => url,
+    text: async () => text,
+  });
+
+  const mapaS = (pocet) => JSON.stringify({
+    sources: Array.from({ length: pocet }, (_, i) => `node_modules/balik${i}/index.js`),
+  });
+
+  it('zahozené balíčky se spočítají', async () => {
+    const r = await collectBundleEvidence(
+      [odpoved('https://e.cz/a.js', '//# sourceMappingURL=a.js.map')],
+      {
+        assertUrlAllowed: async () => {},
+        fetchMap: async () => ({ ok: true, text: async () => mapaS(MAX_SOURCE_MAP_PACKAGES + 42) }),
+      }
+    );
+    expect(r.sourceMapPackages.length).toBe(MAX_SOURCE_MAP_PACKAGES);
+    expect(r.limits.droppedPackages).toBe(42);
+  });
+
+  it('velká mapa neumlčí ty další', async () => {
+    // Rozpočet se dřív odečítal o CELKOVOU délku, ne o skutečně vzatý
+    // počet, takže po první velké mapě spadl do záporu a všechny další
+    // se přeskočily — beze stopy.
+    const r = await collectBundleEvidence(
+      [
+        odpoved('https://e.cz/a.js', '//# sourceMappingURL=a.js.map'),
+        odpoved('https://e.cz/b.js', '//# sourceMappingURL=b.js.map'),
+      ],
+      {
+        assertUrlAllowed: async () => {},
+        fetchMap: async (u) => ({
+          ok: true,
+          text: async () => (u.includes('a.js.map') ? mapaS(200) : mapaS(10)),
+        }),
+      }
+    );
+    expect(r.sourceMapPackages.length).toBe(210);
+  });
+
+  it('oříznutý skript se objeví v limits', async () => {
+    const r = await collectBundleEvidence(
+      [odpoved('https://e.cz/vendor.js', 'y'.repeat(MAX_SCAN_BYTES + 1))],
+      {}
+    );
+    expect(r.limits.truncatedScripts).toHaveLength(1);
+    expect(r.limits.truncatedScripts[0].url).toBe('https://e.cz/vendor.js');
   });
 });

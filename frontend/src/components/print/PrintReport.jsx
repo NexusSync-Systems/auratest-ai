@@ -143,10 +143,23 @@ export default function PrintReport({
             {`GDPR Rezidence [${complianceLabel(greenResult.residency.isEUCompliant)}]: `}
             {greenResult.residency.warning}
           </div>
+          {/* `isEU: null` znamená „nešlo posoudit", ne „mimo EU".
+              Ternární výraz z toho dělal tvrzení o přenosu do třetí země
+              u domény za CDN i u adresy, kterou databáze neumístila —
+              přesně to, co oprava rezidence odstranila o patro níž. */}
           <ul style={{ marginTop: '15px', paddingLeft: '20px' }}>
             {greenResult.residency.locations.map((loc, i) => (
               <li key={i} style={{ marginBottom: '4px' }}>
-                <strong>{loc.domain}</strong> ({loc.country}) - {loc.isEU ? 'EU/EEA' : 'Mimo EU'}
+                <strong>{loc.domain}</strong>
+                {loc.country ? ` (${loc.country})` : ''}
+                {' — '}
+                {loc.isEU === true
+                  ? 'EU/EHP'
+                  : loc.isEU === false
+                    ? 'mimo EU/EHP'
+                    : loc.onCdn
+                      ? `za CDN (${loc.cdnProvider || 'neurčeno'}), umístění dat z IP určit nelze`
+                      : 'umístění se nepodařilo určit'}
               </li>
             ))}
           </ul>
@@ -338,12 +351,40 @@ export default function PrintReport({
             <div style={{ marginTop: '15px' }}>
               {craVulnResult.cra.vulnerabilities.map((v, i) => (
                 <div key={i} style={{ padding: '15px', background: '#fff', border: '1px solid #e2e8f0', borderLeft: '4px solid #ef4444', marginBottom: '8px' }}>
-                  <div style={{ fontWeight: 'bold', color: '#ef4444' }}>{v.cve} ({v.severity})</div>
+                  {/* Neznámá závažnost se pojmenuje, nedomýšlí.
+                      Dřív se při chybějícím poli doplňovalo „HIGH", takže
+                      dokument pro úřad uváděl údaj, který nikdo neměřil. */}
+                  <div style={{ fontWeight: 'bold', color: v.severity ? '#ef4444' : '#94a3b8' }}>
+                    {v.cve} ({v.severity || 'závažnost neuvedena'})
+                  </div>
                   <div style={{ fontSize: '14px', color: '#475569' }}>Zasažená knihovna: {v.library} {v.version}</div>
                   <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>{v.details}</div>
                 </div>
               ))}
             </div>
+          )}
+
+          {/* Komponenty, které se ověřit nepodařilo.
+              Dosud se netiskly nikde — ani v PDF, ani na obrazovce —
+              takže z dokumentu nešlo poznat, že se část soupisu vůbec
+              neprověřila. Zůstal z toho jen počet ve větě verdiktu. */}
+          {craVulnResult.cra.skipped?.length > 0 && (
+            <>
+              <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                Neověřené komponenty ({craVulnResult.cra.skipped.length})
+              </p>
+              <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#475569' }}>
+                U těchto komponent se dotaz na známé zranitelnosti nepodařilo
+                provést. Neznamená to, že jsou v pořádku.
+              </p>
+              <ul style={{ paddingLeft: '20px' }}>
+                {craVulnResult.cra.skipped.map((s, i) => (
+                  <li key={i} style={{ marginBottom: '4px', fontSize: '14px' }}>
+                    <strong>{s.library}</strong> — {s.reason}
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </div>
       )}
