@@ -1478,6 +1478,40 @@ export default function App() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+            {/* Akce nad dokončeným během patří sem, ne dolů pod seznam
+                kroků. Předtím byly v hlavičce „Průběh testu" a v kartě
+                „Test dokončen" — obojí u delšího běhu odscrollované pryč,
+                takže uživatel export prostě nenašel. Horní lišta je
+                jediné místo, které je vidět vždycky. */}
+            {user && activeTab === 'agent' && activeSession && !isRunning && (
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => window.print()}
+                  style={{ backgroundColor: 'var(--accent)', color: 'white', padding: '6px 12px', fontSize: '0.85rem' }}
+                >
+                  <Printer size={16} style={{ marginRight: '6px' }} /> PDF
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={handleExportJson}
+                  style={{ padding: '6px 12px', fontSize: '0.85rem' }}
+                >
+                  JSON
+                </button>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={handleSendToSlack}
+                  style={{ backgroundColor: '#2eb67d', color: 'white', padding: '6px 12px', fontSize: '0.85rem' }}
+                >
+                  Slack
+                </button>
+              </div>
+            )}
+
             {/* Grid-Aware Status Widget */}
             {gridStatus && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '20px', background: gridStatus.status === 'LOW_CARBON' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)', border: `1px solid ${gridStatus.status === 'LOW_CARBON' ? '#10b981' : '#f59e0b'}` }} title={gridStatus.recommendation}>
@@ -1632,20 +1666,22 @@ export default function App() {
                           {liveProgress}
                         </span>
                       </div>
-                      
-                      {activeSession && !isRunning && (
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                          <button className="btn" type="button" onClick={() => window.print()} style={{ backgroundColor: 'var(--accent)', color: 'white', padding: '6px 12px', fontSize: '0.85rem' }}>
-                            <Printer size={16} style={{ marginRight: '6px' }} /> Generovat PDF
-                          </button>
-                          <button className="btn" type="button" onClick={handleSendToSlack} style={{ backgroundColor: '#2eb67d', color: 'white', padding: '6px 12px', fontSize: '0.85rem' }}>
-                            Odeslat na Slack
-                          </button>
-                        </div>
-                      )}
                     </div>
 
-                    <div className="logs-list">
+                    {/* Kroky se sbalí, jakmile běh skončí.
+                        Deset až padesát karet po sobě odsunulo výsledek —
+                        nálezy, závěr, vygenerovaný skript — mimo obrazovku.
+                        Uživatel dole viděl uříznutý text a export nenašel.
+                        Během běhu je seznam otevřený, protože tehdy JE tím
+                        obsahem; po dokončení je zajímavý výsledek. */}
+                    <details className="steps-details" open={isRunning}>
+                      <summary className="steps-summary">
+                        Kroky agenta ({liveLogs.length})
+                        <span className="steps-hint">
+                          {isRunning ? 'průběžně přibývají' : 'rozbalit'}
+                        </span>
+                      </summary>
+                      <div className="logs-list">
                       {liveLogs.map((step, index) => (
                         <button
                           type="button"
@@ -1669,8 +1705,9 @@ export default function App() {
                           )}
                         </button>
                       ))}
-                      <div ref={logsEndRef} />
-                    </div>
+                        <div ref={logsEndRef} />
+                      </div>
+                    </details>
 
                     {activeSession && activeSession.status === 'completed' && (
                       <div className="completion-summary-card">
@@ -1758,24 +1795,11 @@ export default function App() {
                             </div>
                           </div>
                         )}
-                        {/* Export patří tam, kde běh končí.
-                            „Generovat PDF" bylo jen v hlavičce „Průběh
-                            testu" — tedy nad seznamem kroků, který je
-                            u delšího běhu odscrollovaný pryč. Uživatel
-                            dočte kartu „Test dokončen" a export tam
-                            nenajde. */}
+                        {/* Export je v horní liště — tam je vidět vždycky.
+                            Zdvojovat ho i sem znamenalo dvě místa, která
+                            se musí držet v souladu, a ani jedno z nich
+                            nebylo vidět bez scrollování. */}
                         <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
-                          <button
-                            className="btn"
-                            type="button"
-                            style={{ flex: 1, backgroundColor: 'var(--accent)', color: 'white' }}
-                            onClick={() => window.print()}
-                          >
-                            <Printer size={16} style={{ marginRight: '6px' }} /> Generovat PDF
-                          </button>
-                          <button className="btn btn-secondary" style={{ flex: 1 }} onClick={handleExportJson}>
-                            💾 Export (JSON)
-                          </button>
                           <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => {
                              setActiveSession(null);
                              setSelectedStepIndex(null);

@@ -449,15 +449,69 @@ textarea {
   overflow: hidden;
 }
 
+/*
+ * Jeden scroll, ne dva do sebe zanořené.
+ *
+ * Dřív mělo `.logs-container` `overflow: hidden` a uvnitř `.logs-list`
+ * vlastní `overflow-y: auto`. Levý sloupec (`.runner-left`) přitom
+ * scrolluje taky. Karta „Test dokončen", vygenerovaný skript a seznam
+ * nálezů sedí POD seznamem kroků uvnitř téhož kontejneru — takže je
+ * `overflow: hidden` uřízl a nedalo se k nim doscrollovat vůbec.
+ *
+ * Vnitřní scroll je pryč. Kroky se místo něj sbalují (`.steps-details`),
+ * což řeší délku seznamu bez toho, aby si dva scrollovací kontejnery
+ * přebíraly kolečko myši.
+ */
 .logs-container {
-  flex-grow: 1;
   background-color: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 16px;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* `min-height: 0` musí zůstat, jinak flex položka odmítne zmenšit
+     obsah a přeteče rodiče i bez `overflow`. */
+  min-height: 0;
+}
+
+.steps-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-primary);
+  margin-bottom: 4px;
+}
+
+.steps-summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  /* Bez tohohle by se u <summary> nedalo nastavit `display: flex`
+     v Safari — pořád by kreslilo výchozí trojúhelníkovou položku. */
+  list-style-position: inside;
+}
+
+.steps-summary:hover {
+  color: var(--accent);
+}
+
+.steps-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.steps-hint {
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.steps-details[open] .steps-hint {
+  visibility: hidden;
 }
 
 .logs-header {
@@ -469,11 +523,15 @@ textarea {
 }
 
 .logs-list {
-  flex-grow: 1;
+  /* Strop na délku seznamu, ať sbalený i rozbalený stav zůstane
+     ovladatelný. Scrolluje TENHLE prvek, ne kontejner nad ním —
+     ten by uřízl obsah, který je pod ním. */
+  max-height: 45vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: 0 14px 14px;
 }
 
 .step-card {
