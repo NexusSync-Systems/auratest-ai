@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
   Play,
@@ -34,14 +34,19 @@ import LandingPage from './components/public/LandingPage.jsx';
 import { runWithConcurrency, fetchConcurrencyLimit } from './lib/run-queue.js';
 import { runStatus, runningSessions } from './lib/run-status.js';
 import { useArtifact } from './hooks/useArtifact.js';
+import { normalizeUrlInput } from './lib/normalize-url.js';
+import { lazyWithReload } from './lib/lazy-with-reload.js';
 import ScanRecord from './components/ScanRecord.jsx';
 import CaseFilePanel from './components/CaseFilePanel.jsx';
 import { authErrorMessage } from './lib/auth-errors.js';
 
 // Ukázkový report si tahá vlastní JSON a v běžném provozu ho nikdo neotevře —
 // do hlavního bundlu nepatří.
-const SampleReport = lazy(() => import('./components/public/SampleReport.jsx'));
-const PrintReport = lazy(() => import('./components/print/PrintReport.jsx'));
+// `lazyWithReload`, ne holé `lazy`: po nasazení nové verze zmizí ze serveru
+// části bundlu se starým otiskem a prohlížeč s otevřenou aplikací po nich
+// pořád sahá. Viz lib/lazy-with-reload.js.
+const SampleReport = lazyWithReload(() => import('./components/public/SampleReport.jsx'), 'sample-report');
+const PrintReport = lazyWithReload(() => import('./components/print/PrintReport.jsx'), 'print-report');
 import {
   TEST_TYPES, IMPACT_COLORS, IMPACT_TRANSLATIONS, RULE_TRANSLATIONS,
 } from './constants/testTypes.js';
@@ -926,7 +931,21 @@ export default function App() {
   const handleRunSelectedTest = async (e) => {
     e.preventDefault();
     if (isRunning) return;
-    
+
+    // Pojistka pro odeslání Enterem.
+    //
+    // Kliknutí na tlačítko pole nejdřív opustí, takže se schéma doplní samo.
+    // Enter v poli ale odešle formulář bez `blur`, a bez schématu adresu
+    // odmítne SSRF guard hláškou o povolených schématech — což uživatele,
+    // který žádné schéma nezadal, jen zmate.
+    const sSchematem = normalizeUrlInput(agentUrl);
+    if (sSchematem !== agentUrl) {
+      setAgentUrl(sSchematem);
+      // Stav se projeví až po překreslení, takže se test spustí v dalším
+      // kole. Uživatel mezitím v poli uvidí, co se doopravdy změří.
+      return;
+    }
+
     switch (selectedTestType) {
       case 'all_in_one': return handleRunAllTests();
       case 'agent': return handleRunTest(e);
@@ -1463,12 +1482,18 @@ export default function App() {
                     <div className="form-group-row">
                       <div className="form-group" style={{ flexGrow: 2 }}>
                         <label htmlFor="url">Cílová URL stránky</label>
+                        {/* Schéma se doplňuje až při opuštění pole, ne při
+                            psaní — průběžné doplňování by uživateli skákalo
+                            pod rukama. Zároveň je pak v poli VIDĚT, co se
+                            skutečně změří: sken nesmí měřit jinou adresu,
+                            než jakou má uživatel před sebou. */}
                         <input 
                           type="text" 
                           id="url"
                           value={agentUrl}
                           onChange={(e) => setAgentUrl(e.target.value)}
-                          placeholder="https://example.com"
+                          onBlur={(e) => setAgentUrl(normalizeUrlInput(e.target.value))}
+                          placeholder="example.com"
                           required
                         />
                       </div>
