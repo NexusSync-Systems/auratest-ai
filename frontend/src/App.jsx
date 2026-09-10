@@ -1265,6 +1265,15 @@ export default function App() {
 
   // Ukazatel v hlavičce se skládá z lokálního stavu i z běhů na serveru,
   // takže přežije obnovení stránky. Viz lib/run-status.js.
+  // Je v ruce něco, co má smysl tisknout? Kromě běhu agenta i samotné
+  // předpisové skeny — jejich shrnutí a sekce report umí a bez tohohle
+  // by u nich tlačítko PDF v hlavičce chybělo.
+  const maCoTisknout = Boolean(
+    a11yResult || nis2Result || greenResult || craResult || craVulnResult
+    || cookieResult || aiActResult || chaosResult || monitorPageResult
+    || monitorFormResult || securityAnalysisResult
+  );
+
   const runState = runStatus({
     localRunning: isRunning,
     auditsLoading: isAnyAuditLoading,
@@ -1483,12 +1492,28 @@ export default function App() {
                 „Test dokončen" — obojí u delšího běhu odscrollované pryč,
                 takže uživatel export prostě nenašel. Horní lišta je
                 jediné místo, které je vidět vždycky. */}
-            {user && activeTab === 'agent' && activeSession && !isRunning && (
+            {/* Akce nad během patří sem, ne dolů pod seznam kroků.
+                Předtím byly v hlavičce „Průběh testu" a v kartě „Test
+                dokončen" — obojí u delšího běhu odscrollované pryč.
+
+                A NEMIZÍ. Podmínka `activeSession && !isRunning` je
+                schovávala po celou dobu běhu (`handleRunTest` nuluje
+                `activeSession`), takže tlačítka během testu zmizela,
+                layout poskočil a nic neřeklo proč. Teď jsou vidět
+                pořád, jen se to, co zrovna nejde, vypne a řekne důvod.
+
+                PDF jde vytisknout i za běhu: dokument sám nahoře
+                uvádí „Běh nebyl dokončen" a že závěr z něj vyvozovat
+                nelze. JSON a Slack potřebují hotový objekt běhu. */}
+            {user && activeTab === 'agent' && (activeSession || isRunning || maCoTisknout) && (
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
                   className="btn"
                   type="button"
                   onClick={() => window.print()}
+                  title={isRunning
+                    ? 'Vytiskne stav v okamžiku tisku. Dokument to sám uvádí.'
+                    : 'Exportovat report do PDF'}
                   style={{ backgroundColor: 'var(--accent)', color: 'white', padding: '6px 12px', fontSize: '0.85rem' }}
                 >
                   <Printer size={16} style={{ marginRight: '6px' }} /> PDF
@@ -1497,7 +1522,11 @@ export default function App() {
                   className="btn btn-secondary"
                   type="button"
                   onClick={handleExportJson}
-                  style={{ padding: '6px 12px', fontSize: '0.85rem' }}
+                  disabled={!activeSession}
+                  title={activeSession
+                    ? 'Stáhnout záznam běhu jako JSON'
+                    : 'Zatím není co exportovat — běh ještě nemá uložený záznam.'}
+                  style={{ padding: '6px 12px', fontSize: '0.85rem', opacity: activeSession ? 1 : 0.45 }}
                 >
                   JSON
                 </button>
@@ -1505,7 +1534,11 @@ export default function App() {
                   className="btn"
                   type="button"
                   onClick={handleSendToSlack}
-                  style={{ backgroundColor: '#2eb67d', color: 'white', padding: '6px 12px', fontSize: '0.85rem' }}
+                  disabled={!activeSession}
+                  title={activeSession
+                    ? 'Odeslat shrnutí na Slack'
+                    : 'Zatím není co odeslat — běh ještě nemá výsledek.'}
+                  style={{ backgroundColor: '#2eb67d', color: 'white', padding: '6px 12px', fontSize: '0.85rem', opacity: activeSession ? 1 : 0.45 }}
                 >
                   Slack
                 </button>
