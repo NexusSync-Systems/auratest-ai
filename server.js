@@ -732,6 +732,13 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
     headless: process.env.NODE_ENV === 'production' ? true : headless !== false,
     maxSteps: Math.min(Math.max(parseInt(maxSteps) || 10, 1), MAX_AGENT_STEPS),
     mode: mode || 'ai',
+    // Odkliknutí cookie lišty se dá vypnout.
+    //
+    // Nástroj kliknutím na cizí stránce JEDNÁ, ne měří. Rozpoznání lišty
+    // je zpřísněné (překryv + text o cookies + jednoznačné znění
+    // tlačítka), ale úsudek je to pořád — a zákazník, který si testuje
+    // aplikaci se schvalovacími workflow, musí mít možnost říct ne.
+    dismissCookieBanner: req.body.dismissCookieBanner !== false,
     testLogin: testLogin || '',
     testPassword: testPassword || ''
   };
@@ -762,9 +769,14 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           // VŠECH stránek, tak skončil se `status: 'completed'` a
           // prázdným seznamem nálezů — tedy v neměnném záznamu i v PDF
           // jako „prozkoumáno, nic nenalezeno".
-          let anyMeasured = false;
+          let measuredCount = 0;
           const totalRunErrors = [];
           const totalWarnings = [];
+          // Cookie lišta se odklikává na KAŽDÉ stránce. Crawler to
+          // dosud neukládal vůbec, takže dokument o crawler běhu
+          // zamlčel, že nástroj na stránkách klikal na tlačítka —
+          // u agentního běhu je to přiznané, u crawleru nebylo.
+          const cookiePrubeh = [];
 
           for (const targetUrl of targetUrls) {
             broadcastToSession(sessionId, { type: 'progress', message: `🕷️ CRAWLER: Otevírám ${targetUrl}` });
@@ -780,9 +792,14 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
             totalBugs.push(...result.bugs);
             // Stačí jedna změřená stránka, aby běh nesl výsledek; chyby
             // měření se sbírají ze všech a do nálezů se nemíchají.
-            if (result.measured !== false) anyMeasured = true;
+            if (result.measured !== false) measuredCount++;
             totalRunErrors.push(...(result.runErrors || []));
             totalWarnings.push(...(result.warnings || []));
+            cookiePrubeh.push({
+              url: targetUrl,
+              preConsent: result.preConsent || null,
+              cookieBanner: result.cookieBanner || null,
+            });
             lastPerformance = result.performanceMetrics || lastPerformance;
             lastVideoUrl = result.videoUrl || lastVideoUrl;
             if (result.generatedScript) {
@@ -790,24 +807,35 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
             }
           }
 
-          sessionData.status = anyMeasured ? 'completed' : 'failed';
+          const vseZmereno = measuredCount === targetUrls.length;
+          sessionData.status = measuredCount > 0 ? 'completed' : 'failed';
           sessionData.bugs = [...new Set(totalBugs)];
           sessionData.runErrors = totalRunErrors;
           sessionData.warnings = totalWarnings;
-          sessionData.summary = anyMeasured
-            ? `Crawler prozkoumal ${targetUrls.length} stránek. Nalezeno ${sessionData.bugs.length} chyb.`
-            : `Crawler nezměřil ani jednu z ${targetUrls.length} stránek. Běh nemá výsledek.`;
+          sessionData.cookiePrubeh = cookiePrubeh;
+          // Souhrn musí uvádět, KOLIK stránek se opravdu změřilo.
+          // „Crawler prozkoumal 4 stránek. Nalezeno 0 chyb." u běhu, kde
+          // se tři ze čtyř nezměřily, je nepravdivé tvrzení — a jde do
+          // neměnného záznamu i do PDF.
+          sessionData.summary = measuredCount === 0
+            ? `Crawler nezměřil ani jednu z ${targetUrls.length} stránek. Běh nemá výsledek.`
+            : (vseZmereno
+              ? `Crawler prozkoumal ${targetUrls.length} stránek. Nalezeno ${sessionData.bugs.length} chyb.`
+              : `Crawler změřil ${measuredCount} z ${targetUrls.length} stránek. `
+                + `Nalezeno ${sessionData.bugs.length} chyb; zbytek se změřit nepodařilo, `
+                + 'takže o něm běh nevypovídá.');
           sessionData.generatedScript = combinedScripts;
           sessionData.performanceMetrics = lastPerformance;
           sessionData.videoUrl = lastVideoUrl;
           recordInLedger(sessionData);
           await db.saveSession(sessionId, sessionData);
 
-          broadcastToSession(sessionId, anyMeasured ? {
+          broadcastToSession(sessionId, measuredCount > 0 ? {
             type: 'completed',
             bugs: sessionData.bugs,
             summary: sessionData.summary,
-            success: sessionData.bugs.length === 0,
+            // Úspěch jen tehdy, když se změřilo všechno A nic se nenašlo.
+            success: vseZmereno && sessionData.bugs.length === 0,
             generatedScript: combinedScripts,
             performanceMetrics: lastPerformance,
             videoUrl: lastVideoUrl
@@ -842,6 +870,10 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           // Výkonnostní varování se dřív nikam nepropsala — agent je odděluje
           // od bugů, ale žádný konzument je nečetl.
           sessionData.warnings = result.warnings || [];
+          // Okolnosti běhu, ne verdikty: co bylo uložené před souhlasem
+          // a co se zmáčklo na cookie liště. Do `bugs` to nepatří.
+          sessionData.preConsent = result.preConsent || null;
+          sessionData.cookieBanner = result.cookieBanner || null;
           sessionData.summary = result.summary;
           sessionData.performanceMetrics = result.performanceMetrics;
           sessionData.generatedScript = result.generatedScript;

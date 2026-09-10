@@ -1,6 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import { IMPACT_TRANSLATIONS, RULE_TRANSLATIONS, TEST_TYPES } from '../../constants/testTypes.js';
 import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel } from '../../lib/compliance.js';
+import { execSummary, stavTrida } from '../../lib/exec-summary.js';
 
 /**
  * Tiskový report (Executive Summary) pro export do PDF přes Print CSS.
@@ -163,6 +164,57 @@ export default function PrintReport({
         </table>
       </div>
 
+      {/* Manažerské shrnutí.
+          Skládá se MECHANICKY z verdiktů, které už někdo změřil — bez
+          jazykového modelu. Je to první a u většiny čtenářů jediná
+          strana, kterou přečtou, takže tvrzení navíc je tu
+          nebezpečnější než kdekoli jinde v dokumentu. */}
+      {(() => {
+        const shrnuti = execSummary({
+          a11yResult, nis2Result, cookieResult, greenResult,
+          craVulnResult, aiActResult, chaosResult,
+        });
+        if (!shrnuti) return null;
+        return (
+          <div className="print-section">
+            <h3>Shrnutí pro vedení</h3>
+            <div className={`print-badge ${shrnuti.nesplneno > 0
+              ? 'error' : (shrnuti.neprukazne > 0 ? 'warning' : 'success')}`}>
+              {shrnuti.zaver}
+            </div>
+
+            <table className="print-table" style={{ marginTop: '15px' }}>
+              <thead>
+                <tr>
+                  <th style={{ width: '40%' }}>Oblast</th>
+                  <th style={{ width: '25%' }}>Výsledek</th>
+                  <th>Z čeho plyne</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shrnuti.polozky.map((p) => (
+                  <tr key={p.nazev}>
+                    <td><strong>{p.nazev}</strong></td>
+                    {/* Stav nese TEXT, ne jen barva — jinak by ho
+                        v černobílém tisku nikdo nepřečetl. */}
+                    <td className={`stav-${stavTrida(p.stav)}`}>{p.popisek}</td>
+                    <td style={{ fontSize: '13px', color: '#475569' }}>{p.duvod}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <p style={{ marginTop: '10px', fontSize: '13px', color: '#475569' }}>
+              „Bez nálezu" znamená, že kontrola v rozsahu, který nástroj
+              měří, nic nenašla — není to potvrzení splnění předpisu.
+              „Neprůkazné" není závada: je to oblast, o které se z tohoto
+              běhu nedá nic tvrdit. Podrobnosti ke každé oblasti jsou
+              v sekcích níž.
+            </p>
+          </div>
+        );
+      })()}
+
       {/* Výsledek běhu agenta.
           Do reportu se dosud předávaly POUZE `liveLogs` — tedy kroky.
           Nálezy (`bugs`), varování, závěr běhu i jeho stav zůstávaly na
@@ -181,6 +233,69 @@ export default function PrintReport({
 
             {activeSession?.summary && (
               <p style={{ marginTop: '10px', fontSize: '14px' }}>{activeSession.summary}</p>
+            )}
+
+            {/* Co bylo uložené PŘED souhlasem a co se zmáčklo na liště.
+                Pořadí je součástí důkazu: agent lištu odkliká až po
+                zaznamenání stavu před souhlasem, jinak by si vlastní
+                zjištění zničil. V dokumentu to musí být vidět, jinak
+                čtenář nepozná, v jakém stavu web agent testoval. */}
+            {(activeSession?.cookieBanner || activeSession?.preConsent) && (
+              <>
+                <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                  Stav před souhlasem a cookie lišta
+                </p>
+                <ul style={{ paddingLeft: '20px' }}>
+                  {Array.isArray(activeSession.preConsent?.cookies)
+                    && activeSession.preConsent.cookies.length > 0 && (
+                    <li style={{ fontSize: '14px', color: '#475569' }}>
+                      Před souhlasem uloženo {activeSession.preConsent.cookies.length} sledovaných
+                      cookies: {activeSession.preConsent.cookies.join(', ')}.
+                    </li>
+                  )}
+                  {Array.isArray(activeSession.preConsent?.storage)
+                    && activeSession.preConsent.storage.length > 0 && (
+                    <li style={{ fontSize: '14px', color: '#475569' }}>
+                      Před souhlasem uloženo {activeSession.preConsent.storage.length} sledovaných
+                      položek úložiště: {activeSession.preConsent.storage.join(', ')}.
+                    </li>
+                  )}
+                  {/* `null` = NEZMĚŘENO, `[]` = změřeno a prázdno.
+                      Slít to v jedno by znamenalo napsat „nic se
+                      neuložilo" o měření, které se nepovedlo. */}
+                  {activeSession.preConsent
+                    && !Array.isArray(activeSession.preConsent.cookies)
+                    && !Array.isArray(activeSession.preConsent.storage) && (
+                    <li style={{ fontSize: '14px', color: '#475569' }}>
+                      Stav před souhlasem se nepodařilo zaznamenat
+                      {activeSession.preConsent.chyba ? ` (${activeSession.preConsent.chyba})` : ''}.
+                      Z toho neplyne, že se nic neuložilo.
+                    </li>
+                  )}
+                  {activeSession.preConsent
+                    && Array.isArray(activeSession.preConsent.cookies)
+                    && Array.isArray(activeSession.preConsent.storage)
+                    && activeSession.preConsent.cookies.length === 0
+                    && activeSession.preConsent.storage.length === 0 && (
+                    <li style={{ fontSize: '14px', color: '#475569' }}>
+                      Před souhlasem nebyla uložena žádná položka ze sledovaného
+                      seznamu. Seznam není vyčerpávající — není to doklad souladu.
+                    </li>
+                  )}
+                  {activeSession.cookieBanner && (
+                    <li style={{ fontSize: '14px', color: '#475569' }}>
+                      {activeSession.cookieBanner.clicked
+                        ? `Lišta odkliknuta volbou „${activeSession.cookieBanner.label}" — `
+                          + 'zbytek běhu proto probíhal bez souhlasu s marketingovými cookies.'
+                        : (activeSession.cookieBanner.reason === 'lista-nenalezena'
+                          ? 'Cookie lišta nebyla nalezena.'
+                          : 'Cookie lišta nebyla odkliknuta '
+                            + `(${activeSession.cookieBanner.reason || 'důvod není zaznamenán'}). Část běhu mohla `
+                            + 'proběhnout pod překryvem.')}
+                    </li>
+                  )}
+                </ul>
+              </>
             )}
 
             {activeSession?.performanceMetrics && (

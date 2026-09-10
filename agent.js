@@ -18,6 +18,9 @@ import { detectCdn } from './cdn-detect.js';
 // podřetězcové hledání nad krátkými jehlami vyrábělo nálezy na klíčích
 // jako `userSegment` nebo `image_gallery` a nikdo to netestoval.
 import { isTrackerStorageKey, isTrackerCookieName } from './tracker-match.js';
+import {
+  dismissCookieBanner, popisOdkliknuti, popisPredSouhlasem,
+} from './cookie-banner.js';
 // Geolokační databáze u neznámé adresy vrací výplňový záznam, který
 // vypadá jako plnohodnotný výsledek. Bez tohohle rozlišení z něj vznikalo
 // „prokazatelně mimo EU/EHP".
@@ -1265,6 +1268,59 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
   });
 }
 
+/**
+ * Co je uložené PŘED tím, než kdokoli cokoli odsouhlasil.
+ *
+ * Snímá se hned po načtení stránky a před odkliknutím cookie lišty.
+ * Po odkliknutí by už nešlo poznat, co si web uložil sám od sebe.
+ *
+ * `context.cookies()` se používá schválně místo `document.cookie` —
+ * ten nevidí HttpOnly cookies, tedy právě ty, které nastavuje
+ * serverové trackování.
+ */
+async function snapshotPredSouhlasem(context, page, { cekaniMs = 5000 } = {}) {
+  // Stejná prodleva jako v `auditGDPRCookies`, a ze stejného důvodu:
+  // trackery se často načítají opožděně, z `setTimeout` po `networkidle`.
+  // Bez čekání by snímek hlásil prázdno u webu, který se za sekundu
+  // uloží — a v jednom dokumentu by pak stály dvě věty, které si
+  // odporují.
+  await new Promise((r) => setTimeout(r, cekaniMs));
+
+  // `null` znamená NEZMĚŘENO, prázdné pole ZMĚŘENO A PRÁZDNO.
+  // Tiché `.catch(() => [])` z neúspěchu dělalo větu „nic nebylo
+  // uloženo" — přesně ta chyba, kvůli které vznikl úkol #49.
+  let cookies = null;
+  let chyba = null;
+  try {
+    cookies = (await context.cookies())
+      .filter((c) => isTrackerCookieName(c.name))
+      .map((c) => `${c.name} (${c.domain})`);
+  } catch (err) {
+    chyba = `cookies: ${err.message}`;
+  }
+
+  let storage = null;
+  try {
+    const klice = await page.evaluate(() => {
+      const vysledek = [];
+      // Přístup k `window.localStorage` sám o sobě vyhazuje, když je
+      // úložiště zakázané — proto je uvnitř try, ne mimo něj.
+      for (const jmeno of ['localStorage', 'sessionStorage']) {
+        try {
+          const uloziste = window[jmeno];
+          for (let i = 0; i < uloziste.length; i++) vysledek.push(uloziste.key(i));
+        } catch { /* zakázané úložiště */ }
+      }
+      return vysledek;
+    });
+    storage = klice.filter((k) => isTrackerStorageKey(k));
+  } catch (err) {
+    chyba = chyba ? `${chyba}; úložiště: ${err.message}` : `úložiště: ${err.message}`;
+  }
+
+  return { cookies, storage, chyba, cekaniMs };
+}
+
 export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, sessionId) {
   // sessionId je POVINNÉ, protože je součástí názvu artefaktů.
   //
@@ -1430,6 +1486,11 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     });
   }
 
+  // Stav před souhlasem a výsledek odkliknutí lišty. Obojí se vrací
+  // volajícímu, aby to mohlo do záznamu běhu i do reportu.
+  let preConsent = null;
+  let cookieBanner = null;
+
   // Kolik položek už bylo odesláno v předchozích krocích (viz stepData níž).
   let emittedLogCount = 0;
   let emittedBugCount = 0;
@@ -1438,6 +1499,60 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
   try {
     if (onStepProgress) onStepProgress({ step: 0, action: 'Navigace', detail: `Otevírání ${url}` });
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+
+    // --- Cookie lišta ---
+    //
+    // POŘADÍ NENÍ NÁHODNÉ. Nejdřív se zaznamená stav PŘED souhlasem,
+    // teprve pak se lišta odklikne. Kdyby zmizela dřív, přišli bychom
+    // o vlastní důkaz: co se uložilo dřív, než návštěvník cokoli
+    // odsouhlasil, je ta nejzajímavější věc na celém běhu.
+    //
+    // Lišta se přitom odkliknout MUSÍ — překrývá stránku a chytá
+    // kliknutí, takže agent bez toho utrácel kroky za proklikávání
+    // něčeho, co je pod překryvem, a část běhů se k testované aplikaci
+    // vůbec nedostala.
+    if (llmConfig.dismissCookieBanner !== false) {
+      // `consoleLogs` je pole OBJEKTŮ `{type, text, timestamp}` — čte
+      // je `determineNextAction` i UI. Vkládat sem holý řetězec
+      // znamenalo `[undefined] undefined` v promptu modelu a prázdný
+      // řádek v záznamu běhu.
+      const poznamka = (text) => consoleLogs.push({
+        type: 'auraguard', text, timestamp: new Date().toISOString(),
+      });
+
+      try {
+        preConsent = await snapshotPredSouhlasem(context, page, {
+          // Prodleva před snímkem je konfigurovatelná hlavně kvůli
+          // testům; v provozu se drží na 5 s jako v GDPR skeneru.
+          cekaniMs: llmConfig.preConsentWaitMs ?? 5000,
+        });
+        for (const veta of popisPredSouhlasem(preConsent)) poznamka(veta);
+
+        const vysledek = await dismissCookieBanner(page);
+        cookieBanner = vysledek;
+        poznamka(popisOdkliknuti(vysledek));
+        if (onStepProgress) {
+          onStepProgress({
+            step: 0, action: 'Cookie lišta', detail: popisOdkliknuti(vysledek),
+          });
+        }
+        if (vysledek.clicked) {
+          // Lišta mizí s animací; bez toho by první screenshot zachytil
+          // půlku překryvu a agent by se rozhodoval podle něj.
+          await page.waitForTimeout(500);
+        }
+      } catch (err) {
+        // Chyba obsluhy lišty NENÍ zjištění o webu. Do `runErrors`
+        // proto taky ne — běh kvůli ní neztrácí platnost, jen mohl
+        // proběhnout pod překryvem.
+        cookieBanner = { clicked: false, label: null, reason: `chyba: ${err.message}` };
+        consoleLogs.push({
+          type: 'auraguard',
+          text: popisOdkliknuti(cookieBanner),
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
 
     while (currentStep <= maxSteps && !isFinished) {
       // 1. Gather current state
@@ -1628,7 +1743,11 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
           : 'Test dosáhl limitu maximálního počtu kroků.',
       performanceMetrics,
       generatedScript,
-      videoUrl
+      videoUrl,
+      // Stav před souhlasem a co se na liště zmáčklo. Do `bugs` to
+      // nepatří — je to popis okolností běhu, ne verdikt o webu.
+      preConsent,
+      cookieBanner,
     };
   } finally {
     if (browser) {

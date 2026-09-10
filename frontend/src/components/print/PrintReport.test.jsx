@@ -20,6 +20,19 @@ const zaklad = {
 
 const vykresli = (props) => render(<PrintReport {...zaklad} {...props} />);
 
+/**
+ * Sekce se hledá podle nadpisu, ne přes první `.print-badge` v dokumentu.
+ *
+ * Shrnutí pro vedení se renderuje PŘED všemi ostatními sekcemi a používá
+ * stejná slova („Neprůkazné", „Bez nálezu"), takže neomezené
+ * `screen.getByText` by sahalo do něj.
+ */
+const sekceEl = (nadpis) => screen.getByText(nadpis).closest('.print-section');
+const sekce = (nadpis) => within(sekceEl(nadpis));
+/** První odznak dané sekce — Green Deal jich má dva (eko třída, rezidence). */
+const odznak = (nadpis) => sekceEl(nadpis).querySelector('.print-badge');
+
+
 describe('sekce přístupnosti — tři stavy', () => {
   test('položky k ručnímu posouzení nedovolí tvrdit splnění', () => {
     vykresli({
@@ -32,8 +45,9 @@ describe('sekce přístupnosti — tři stavy', () => {
       },
     });
 
-    expect(screen.getByText(/Neprůkazné/i)).toBeInTheDocument();
-    expect(screen.getByText(/k ručnímu posouzení: 2/i)).toBeInTheDocument();
+    const s = sekce(/Výsledky EAA/);
+    expect(s.getByText(/Neprůkazné/i)).toBeInTheDocument();
+    expect(s.getByText(/k ručnímu posouzení: 2/i)).toBeInTheDocument();
     // Musí být vidět, CO se má posoudit — ne jen počet.
     expect(screen.getByText(/Kontrast na obrázkovém pozadí/)).toBeInTheDocument();
     expect(screen.getByText(/Titulky u videa/)).toBeInTheDocument();
@@ -41,7 +55,7 @@ describe('sekce přístupnosti — tři stavy', () => {
 
   test('čistý výsledek bez ručních položek je splněno', () => {
     vykresli({ a11yResult: { violations: [], incomplete: [] } });
-    expect(screen.getByText(/Splněno/i)).toBeInTheDocument();
+    expect(sekce(/Výsledky EAA/).getByText(/Splněno/i)).toBeInTheDocument();
   });
 
   test('porušení je nález', () => {
@@ -51,7 +65,7 @@ describe('sekce přístupnosti — tři stavy', () => {
         incomplete: [],
       },
     });
-    expect(screen.getByText(/Nesplněno/i)).toBeInTheDocument();
+    expect(sekce(/Výsledky EAA/).getByText(/Nesplněno/i)).toBeInTheDocument();
   });
 
   test('nenačtená stránka se přizná, ne vydává za bez závad', () => {
@@ -64,8 +78,9 @@ describe('sekce přístupnosti — tři stavy', () => {
         navigationError: 'Server odpověděl 403.',
       },
     });
-    expect(screen.getByText(/Neprůkazné/i)).toBeInTheDocument();
-    expect(screen.getByText(/neplyne, že je bez závad/i)).toBeInTheDocument();
+    const s = sekce(/Výsledky EAA/);
+    expect(s.getByText(/Neprůkazné/i)).toBeInTheDocument();
+    expect(s.getByText(/neplyne, že je bez závad/i)).toBeInTheDocument();
   });
 });
 
@@ -86,17 +101,6 @@ describe('sekce cookies — neprůkazné není nesplněno', () => {
   });
 });
 
-/**
- * Sekce se hledá podle nadpisu, ne přes první `.print-badge` v dokumentu.
- *
- * Sekce běhu agenta se renderuje PŘED všemi ostatními, takže by jinak
- * každý budoucí test, který předá `activeSession` spolu s jiným
- * výsledkem, tiše kontroloval odznak z jiné sekce.
- */
-const sekceEl = (nadpis) => screen.getByText(nadpis).closest('.print-section');
-const sekce = (nadpis) => within(sekceEl(nadpis));
-/** První odznak dané sekce — Green Deal jich má dva (eko třída, rezidence). */
-const odznak = (nadpis) => sekceEl(nadpis).querySelector('.print-badge');
 
 describe('NIS2 — hlavičky mají tři stavy, ne dva', () => {
   const nis2 = (nis2Detail) => ({
@@ -316,5 +320,106 @@ describe('eko třída se neurčuje podle podřetězce', () => {
   test('rozhoduje první znak, ne výskyt písmene v popisu', () => {
     vykresli(green('F (Znečišťující A-třídou to není)'));
     expect(odznak(/Green Deal & GDPR/).className).toMatch(/error/);
+  });
+});
+
+describe('shrnutí pro vedení', () => {
+  test('bez jediného skenu se netiskne', () => {
+    // Tabulka „0 porušení" o webu, na který se nikdo nepodíval, je
+    // to nejnebezpečnější tvrzení, jaké může v shrnutí vzniknout.
+    vykresli({ activeSession: { status: 'completed', bugs: [] } });
+    expect(screen.queryByText('Shrnutí pro vedení')).not.toBeInTheDocument();
+  });
+
+  test('kladný stav se jmenuje „Bez nálezu", ne „Splněno"', () => {
+    // Sken nedokazuje splnění předpisu — dokazuje jen, že v rozsahu,
+    // který měří, nic nenašel.
+    vykresli({ a11yResult: { violations: [], incomplete: [] } });
+    const s = sekce('Shrnutí pro vedení');
+    expect(s.getByText('Bez nálezu')).toBeInTheDocument();
+    expect(s.queryByText('Splněno')).not.toBeInTheDocument();
+  });
+
+  test('neprůkazná oblast zablokuje kladný závěr', () => {
+    vykresli({
+      a11yResult: { violations: [], incomplete: [] },
+      greenResult: {
+        green: { rating: 'A (Zelený)', co2Grams: 0.5, totalMb: 0.6 },
+        residency: { isEUCompliant: null, warning: 'za CDN', locations: [] },
+      },
+    });
+    const b = odznak('Shrnutí pro vedení');
+    expect(b.className).toMatch(/warning/);
+    expect(b.textContent).toMatch(/Na doklad souladu to nestačí/);
+  });
+
+  test('porušení posune odznak do červené', () => {
+    vykresli({
+      cookieResult: {
+        gdpr: { isCompliant: false, rating: 'NÁLEZ', suspiciousItems: ['_ga'] },
+      },
+    });
+    expect(odznak('Shrnutí pro vedení').className).toMatch(/error/);
+    expect(sekce('Shrnutí pro vedení').getByText('Vyžaduje nápravu')).toBeInTheDocument();
+  });
+
+  test('stav nese text, ne jen barvu', () => {
+    // Černobílý tisk je u dokumentu pro úřad běžný.
+    vykresli({ a11yResult: { violations: [], incomplete: [] } });
+    const bunka = sekceEl('Shrnutí pro vedení').querySelector('.stav-success');
+    expect(bunka.textContent.trim()).toBe('Bez nálezu');
+  });
+});
+
+describe('cookie lišta v záznamu běhu', () => {
+  test('vytiskne se, CO se zmáčklo', () => {
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [],
+        preConsent: { cookies: [], storage: [] },
+        cookieBanner: { clicked: true, label: 'Pouze nezbytné', reason: 'odmitnuto' },
+      },
+    });
+    const s = sekce(/Výsledek běhu agenta/);
+    expect(s.getByText(/Pouze nezbytné/)).toBeInTheDocument();
+    expect(s.getByText(/bez souhlasu s marketingovými cookies/)).toBeInTheDocument();
+  });
+
+  test('stav před souhlasem se tiskne i když je čistý — a bez tvrzení o souladu', () => {
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [],
+        preConsent: { cookies: [], storage: [] },
+        cookieBanner: { clicked: false, label: null, reason: 'lista-nenalezena' },
+      },
+    });
+    const s = sekce(/Výsledek běhu agenta/);
+    expect(s.getByText(/Seznam není vyčerpávající — není to doklad souladu/))
+      .toBeInTheDocument();
+    expect(s.getByText(/lišta nebyla nalezena/i)).toBeInTheDocument();
+  });
+
+  test('trackery uložené před souhlasem se vypíšou jmény', () => {
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [],
+        preConsent: { cookies: ['_ga (.example.cz)'], storage: ['_hjSession'] },
+        cookieBanner: { clicked: true, label: 'Odmítnout vše', reason: 'odmitnuto' },
+      },
+    });
+    const s = sekce(/Výsledek běhu agenta/);
+    expect(s.getByText(/_ga \(\.example\.cz\)/)).toBeInTheDocument();
+    expect(s.getByText(/_hjSession/)).toBeInTheDocument();
+  });
+
+  test('neodkliknutá lišta upozorní na následek', () => {
+    // Běh pod překryvem je jiný běh než běh na odkryté stránce.
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [],
+        cookieBanner: { clicked: false, label: null, reason: 'lista-nalezena-bez-odmitnuti' },
+      },
+    });
+    expect(sekce(/Výsledek běhu agenta/).getByText(/pod překryvem/)).toBeInTheDocument();
   });
 });

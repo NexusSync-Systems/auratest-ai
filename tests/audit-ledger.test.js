@@ -286,8 +286,24 @@ describe('auditResultOf — předpis otisku je zapsaný, ne odvozený', () => {
     // Crawler větev dřív neposílala `warnings`, takže se struktura mezi
     // cestami lišila a otisk nešlo reprodukovat.
     expect(Object.keys(auditResultOf({})).sort()).toEqual(
-      ['bugs', 'runErrors', 'status', 'steps', 'summary', 'warnings']
+      [
+        'bugs', 'cookieBanner', 'preConsent', 'runErrors', 'status',
+        'steps', 'summary', 'warnings',
+      ]
     );
+  });
+
+  test('okolnosti běhu jsou kryté otiskem', () => {
+    // `preConsent` a `cookieBanner` mění, CO se vlastně měřilo: jestli
+    // se snímek stavu před souhlasem povedl a jestli agent lištu
+    // odklikl. Mimo otisk by šlo obojí ve spisu přepsat a otisk by dál
+    // hlásil „souhlasí".
+    const r = auditResultOf({
+      preConsent: { cookies: ['_ga'], storage: [] },
+      cookieBanner: { clicked: true, label: 'Pouze nezbytné', reason: 'odmitnuto' },
+    });
+    expect(r.preConsent).toEqual({ cookies: ['_ga'], storage: [] });
+    expect(r.cookieBanner.label).toBe('Pouze nezbytné');
   });
 
   test('chyby měření do otisku patří, ale odděleně od nálezů', () => {

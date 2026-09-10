@@ -106,7 +106,10 @@ describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
         provider: 'apfel',
         model: 'llama3',
         host: 'http://localhost:11434/v1/chat/completions',
-        maxSteps: 1
+        maxSteps: 1,
+        // Testy měří odchyt událostí, ne cookies. Bez tohohle by každý
+        // z nich čekal 5 s na snímek stavu před souhlasem.
+        preConsentWaitMs: 0,
       },
       () => {},
       'session_test_auraguard'
@@ -136,7 +139,10 @@ describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
         provider: 'apfel',
         model: 'llama3',
         host: 'http://localhost:11434/v1/chat/completions',
-        maxSteps: 1
+        maxSteps: 1,
+        // Testy měří odchyt událostí, ne cookies. Bez tohohle by každý
+        // z nich čekal 5 s na snímek stavu před souhlasem.
+        preConsentWaitMs: 0,
       },
       () => {},
       'session_test_perf'
@@ -178,7 +184,10 @@ describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
         provider: 'apfel',
         model: 'llama3',
         host: 'http://localhost:11434/v1/chat/completions',
-        maxSteps: 1
+        maxSteps: 1,
+        // Testy měří odchyt událostí, ne cookies. Bez tohohle by každý
+        // z nich čekal 5 s na snímek stavu před souhlasem.
+        preConsentWaitMs: 0,
       },
       () => {},
       'session_test_exception'

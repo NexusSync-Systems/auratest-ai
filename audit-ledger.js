@@ -139,6 +139,11 @@ export function auditResultOf(session) {
     // Chyby měření jsou součást zjištění o běhu, takže do otisku patří —
     // jen se nikdy nevydávají za nálezy na auditovaném webu.
     runErrors: session.runErrors ?? [],
+    // Okolnosti běhu, které mění, CO se vlastně měřilo: stav před
+    // souhlasem a to, jestli a jak se odklikla cookie lišta. Bez nich
+    // by šlo obojí ve spisu přepsat a otisk by dál hlásil „souhlasí".
+    preConsent: session.preConsent ?? null,
+    cookieBanner: session.cookieBanner ?? null,
     summary: session.summary ?? null,
     steps: (session.steps ?? []).map((step) => {
       // Cesta ke screenshotu je artefakt, ne zjištění.

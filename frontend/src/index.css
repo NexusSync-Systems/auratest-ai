@@ -1107,6 +1107,14 @@ textarea {
     color: #b45309 !important;
   }
 
+  /* Stav ve shrnutí pro vedení.
+     Barva je jen doplněk — samotný stav nese vždy text v buňce
+     („Bez nálezu" / „Vyžaduje nápravu" / „Neprůkazné"), aby ho přečetl
+     i černobílý tisk a čtečka obrazovky. */
+  .stav-success { color: #047857 !important; font-weight: 600; }
+  .stav-error { color: #b91c1c !important; font-weight: 600; }
+  .stav-warning { color: #b45309 !important; font-weight: 600; }
+
   /* Zachování grafiky pozadí u tabulek a odznaků */
   * {
     -webkit-print-color-adjust: exact !important;

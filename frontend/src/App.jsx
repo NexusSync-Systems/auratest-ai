@@ -28,6 +28,7 @@ import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
+import { execSummary } from './lib/exec-summary.js';
 import { useRoutedTab } from './hooks/useRoutedTab.js';
 import { isProtectedTab } from './lib/routes.js';
 import LandingPage from './components/public/LandingPage.jsx';
@@ -1801,6 +1802,41 @@ export default function App() {
                          </button>
                        </div>
                      </div>
+
+                     {/* Shrnutí pro vedení — stejná data jako v PDF.
+                         Sestavuje se mechanicky z verdiktů, ne modelem. */}
+                     {(() => {
+                       const shrnuti = execSummary({
+                         a11yResult, nis2Result, cookieResult, greenResult,
+                         craVulnResult, aiActResult, chaosResult,
+                       });
+                       if (!shrnuti) return null;
+                       const barva = shrnuti.nesplneno > 0
+                         ? '#ef4444' : (shrnuti.neprukazne > 0 ? '#f59e0b' : '#10b981');
+                       return (
+                         <div style={{ marginBottom: '24px' }}>
+                           <h3 style={{ color: 'var(--accent)', marginTop: 0 }}>Shrnutí pro vedení</h3>
+                           <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', borderLeft: `4px solid ${barva}`, marginBottom: '12px', color: 'var(--text-main)' }}>
+                             {shrnuti.zaver}
+                           </div>
+                           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                             <tbody>
+                               {shrnuti.polozky.map((p) => (
+                                 <tr key={p.nazev} style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                                   <td style={{ padding: '8px 4px', color: 'var(--text-main)' }}>{p.nazev}</td>
+                                   <td style={{ padding: '8px 4px', whiteSpace: 'nowrap', fontWeight: 600, color: complianceColor(
+                                     p.stav === 'pass' ? true : (p.stav === 'fail' ? false : null)
+                                   ) }}>
+                                     {p.popisek}
+                                   </td>
+                                   <td style={{ padding: '8px 4px', color: 'var(--text-secondary)' }}>{p.duvod}</td>
+                                 </tr>
+                               ))}
+                             </tbody>
+                           </table>
+                         </div>
+                       );
+                     })()}
 
                      {/* EAA Audit */}
                      {a11yResult && (
