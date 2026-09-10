@@ -1758,7 +1758,21 @@ export default function App() {
                             </div>
                           </div>
                         )}
+                        {/* Export patří tam, kde běh končí.
+                            „Generovat PDF" bylo jen v hlavičce „Průběh
+                            testu" — tedy nad seznamem kroků, který je
+                            u delšího běhu odscrollovaný pryč. Uživatel
+                            dočte kartu „Test dokončen" a export tam
+                            nenajde. */}
                         <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+                          <button
+                            className="btn"
+                            type="button"
+                            style={{ flex: 1, backgroundColor: 'var(--accent)', color: 'white' }}
+                            onClick={() => window.print()}
+                          >
+                            <Printer size={16} style={{ marginRight: '6px' }} /> Generovat PDF
+                          </button>
                           <button className="btn btn-secondary" style={{ flex: 1 }} onClick={handleExportJson}>
                             💾 Export (JSON)
                           </button>
