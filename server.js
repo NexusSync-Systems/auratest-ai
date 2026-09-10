@@ -757,6 +757,14 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           let combinedScripts = '';
           let lastPerformance = null;
           let lastVideoUrl = null;
+          // Crawler jako jediná větev ignoroval `measured` a `runErrors`
+          // a nastavoval `completed` natvrdo. Běh, kde selhalo měření
+          // VŠECH stránek, tak skončil se `status: 'completed'` a
+          // prázdným seznamem nálezů — tedy v neměnném záznamu i v PDF
+          // jako „prozkoumáno, nic nenalezeno".
+          let anyMeasured = false;
+          const totalRunErrors = [];
+          const totalWarnings = [];
 
           for (const targetUrl of targetUrls) {
             broadcastToSession(sessionId, { type: 'progress', message: `🕷️ CRAWLER: Otevírám ${targetUrl}` });
@@ -770,6 +778,11 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
             }, sessionId);
 
             totalBugs.push(...result.bugs);
+            // Stačí jedna změřená stránka, aby běh nesl výsledek; chyby
+            // měření se sbírají ze všech a do nálezů se nemíchají.
+            if (result.measured !== false) anyMeasured = true;
+            totalRunErrors.push(...(result.runErrors || []));
+            totalWarnings.push(...(result.warnings || []));
             lastPerformance = result.performanceMetrics || lastPerformance;
             lastVideoUrl = result.videoUrl || lastVideoUrl;
             if (result.generatedScript) {
@@ -777,16 +790,20 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
             }
           }
 
-          sessionData.status = 'completed';
+          sessionData.status = anyMeasured ? 'completed' : 'failed';
           sessionData.bugs = [...new Set(totalBugs)];
-          sessionData.summary = `Crawler prozkoumal ${targetUrls.length} stránek. Nalezeno ${sessionData.bugs.length} chyb.`;
+          sessionData.runErrors = totalRunErrors;
+          sessionData.warnings = totalWarnings;
+          sessionData.summary = anyMeasured
+            ? `Crawler prozkoumal ${targetUrls.length} stránek. Nalezeno ${sessionData.bugs.length} chyb.`
+            : `Crawler nezměřil ani jednu z ${targetUrls.length} stránek. Běh nemá výsledek.`;
           sessionData.generatedScript = combinedScripts;
           sessionData.performanceMetrics = lastPerformance;
           sessionData.videoUrl = lastVideoUrl;
           recordInLedger(sessionData);
           await db.saveSession(sessionId, sessionData);
 
-          broadcastToSession(sessionId, {
+          broadcastToSession(sessionId, anyMeasured ? {
             type: 'completed',
             bugs: sessionData.bugs,
             summary: sessionData.summary,
@@ -794,6 +811,10 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
             generatedScript: combinedScripts,
             performanceMetrics: lastPerformance,
             videoUrl: lastVideoUrl
+          } : {
+            // Nezměřený běh nesmí do UI dorazit jako „úspěšně dokončen".
+            type: 'failed',
+            error: sessionData.summary,
           });
 
         } else {

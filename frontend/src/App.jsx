@@ -87,6 +87,9 @@ export default function App() {
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const [activeSession, setActiveSession] = useState(null);
+  // Vynucené znovunačtení detailu session, i když se `selectedSessionId`
+  // nezměnil. Viz komentář u effectu níž.
+  const [sessionRefresh, setSessionRefresh] = useState(0);
   
   // Settings State
   const [aiProvider, setAiProvider] = useState('ollama'); // 'ollama' or 'apfel'
@@ -852,6 +855,18 @@ export default function App() {
   }, []);
 
   // Fetch full details when selecting a session
+  //
+  // `sessionRefresh` je tu proto, že po dokončení běhu volal WS handler
+  // `setSelectedSessionId(sessionId)` se STEJNOU hodnotou, jakou tam
+  // vložilo spuštění testu. React se na shodné hodnotě zastaví, závislost
+  // se nezmění a effect se znovu nespustí — takže `activeSession` zůstal
+  // navždy tím snímkem z okamžiku, kdy běh teprve začínal:
+  // `status: 'running'`, `bugs: []`.
+  //
+  // Na obrazovce to znamenalo, že se karta „Test dokončen" po vlastním
+  // běhu neukázala vůbec (jen po kliknutí do historie). V tiskovém
+  // reportu by to znamenalo horší věc: PDF z úspěšného běhu S NÁLEZY by
+  // tvrdilo, že běh neskončil, a nálezy by nevytisklo.
   useEffect(() => {
     if (!selectedSessionId) return;
 
@@ -873,7 +888,7 @@ export default function App() {
       });
 
     return () => controller.abort();
-  }, [selectedSessionId]);
+  }, [selectedSessionId, sessionRefresh]);
 
   // Scroll to bottom of steps log list
   useEffect(() => {
@@ -914,12 +929,14 @@ export default function App() {
         setIsRunning(false);
         setLiveProgress('Test byl úspěšně dokončen.');
         fetchSessions();
-        setSelectedSessionId(sessionId); // trigger reload
+        setSelectedSessionId(sessionId);
+        setSessionRefresh((n) => n + 1); // stejné id → effect sám nespustí
       } else if (msg.type === 'failed') {
         setIsRunning(false);
         setLiveProgress(`Test selhal: ${msg.error}`);
         fetchSessions();
-        setSelectedSessionId(sessionId); // trigger reload
+        setSelectedSessionId(sessionId);
+        setSessionRefresh((n) => n + 1); // stejné id → effect sám nespustí
       }
     };
 
@@ -3230,11 +3247,15 @@ export default function App() {
       {/* Skrytý tiskový report (Executive Summary) */}
       {/* Tiskový report je lazy — na obrazovce je skrytý přes .print-only,
           takže do hlavního bundlu ani do každého renderu nepatří. */}
+      {/* `activeSession` a `isRunning`: bez nich tiskl report z běhu agenta
+          jen KROKY — nálezy, závěr i stav běhu zůstaly na obrazovce. */}
       <Suspense fallback={null}>
         <PrintReport
           user={user}
           agentUrl={agentUrl}
           liveLogs={liveLogs}
+          activeSession={activeSession}
+          isRunning={isRunning}
           a11yResult={a11yResult}
           nis2Result={nis2Result}
           greenResult={greenResult}

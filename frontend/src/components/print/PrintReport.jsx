@@ -13,11 +13,115 @@ import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel } from
  * Nově je to samostatná komponenta načítaná přes React.lazy — do hlavního
  * bundlu se nedostane vůbec.
  */
+/**
+ * Stav jedné bezpečnostní hlavičky slovy.
+ *
+ * `agent.js` vrací u `hsts` a `csp` TROJSTAV — `true` / `false` / `null` —
+ * a u `null` výslovně zdůvodňuje proč: na nešifrovaném spojení prohlížeč
+ * HSTS ignoruje, takže její absence není volbou provozovatele a nálezem
+ * být nemůže. Tiskový report to zplošťoval ternárním operátorem
+ * `hsts ? 'Aktivní' : 'Chybí'`; `null` je falsy, takže v dokumentu pro
+ * úřad stálo „Chybí" o hlavičce, kterou nikdo neměřil.
+ *
+ * `false` navíc znamená dvě různé věci: hlavička chybí, nebo je přítomná
+ * a nechrání (`Referrer-Policy: unsafe-url`, CSP s `unsafe-inline`).
+ * Agent to rozlišuje v `weakHeaders`; report to má tisknout taky, protože
+ * provozovatel podle toho ví, jestli hlavičku doplnit, nebo opravit.
+ */
+function headerStateLabel(ok, label, nis2) {
+  if (ok === true) return 'Aktivní';
+  if (ok === null || ok === undefined) return 'Nelze posoudit';
+  if (nis2?.weakHeaders?.includes(label)) return 'Přítomná, ale nechrání';
+  if (nis2?.missingHeaders?.includes(label)) return 'Chybí';
+  // Starší uložený běh nová pole nemá. „Chybí" by pak bylo tvrzení
+  // o webu, který hlavičku klidně má — jen ji má neúčinnou. Neutrální
+  // znění říká jen to, co `false` skutečně znamená.
+  return 'Nesplněno';
+}
+
+/**
+ * Eko třída na barvu odznaku.
+ *
+ * Dřív se hledal podřetězec `'A'` a `'C'` v celém řetězci hodnocení.
+ * Fungovalo to jen náhodou — stačilo přidat další stupeň, jehož text
+ * obsahuje písmeno A (třeba „B (Nadprůměr)" s poznámkou), a odznak by
+ * zezelenal. Rozhoduje první znak, ostatní je popis.
+ */
+const EKO_ODZNAK = { A: 'success', B: 'success', C: 'warning', D: 'warning', E: 'error', F: 'error' };
+
+/**
+ * Průzkumný běh agenta je jediná část dokumentu, kde „nic jsme nenašli"
+ * NENÍ tvrzení o souladu. Agent klikal, kam ho napadlo; z toho, že
+ * nenarazil na chybu, neplyne, že aplikace žádnou nemá. Odznak proto
+ * nepoužívá `complianceLabel` — ten by tiskl „Splněno".
+ */
+/**
+ * Předpisový sken NENÍ běh agenta.
+ *
+ * Server ukládá obojí do stejné kolekce a `buildScanSession` zakládá
+ * předpisovou kontrolu s `bugs: []` a `status: 'completed'` schválně —
+ * spis ta pole čte u každého běhu. Kliknutím na takový záznam v historii
+ * se dostane do `activeSession` a bez tohohle rozlišení by PDF
+ * z předpisové kontroly tvrdilo, že proběhl průzkumný běh agenta a nic
+ * nenašel. Žádný agent přitom neběžel.
+ *
+ * Rozlišení je stejné jako v `case-file.js`: co není `compliance-scan`,
+ * je agentní běh (starší záznamy `kind` nemají vůbec).
+ */
+function jeAgentniBeh(session) {
+  return Boolean(session) && session.kind !== 'compliance-scan';
+}
+
+function behAgenta(session, isRunning) {
+  if (isRunning || !session || session.status !== 'completed') {
+    return {
+      trida: 'warning',
+      nadpis: isRunning ? 'Běh nebyl dokončen' : 'Běh neskončil úspěšně',
+      poznamka: isRunning
+        ? 'Dokument zachycuje stav v okamžiku tisku. Kroky pod ním nejsou '
+          + 'úplným záznamem běhu a závěr z nich vyvozovat nelze.'
+        : 'Běh se nedokončil, takže nemá výsledek. Z toho neplyne, že je '
+          + 'aplikace bez závad, ani že závady má.',
+    };
+  }
+  // Chybějící pole není prázdný seznam.
+  //
+  // `bugs: []` je ZMĚŘENÁ nepřítomnost nálezu. `bugs: undefined` znamená,
+  // že seznam nálezů běh vůbec nenese — starší uložený záznam, jiná
+  // cesta zápisu. `?.length ?? 0` z toho dělalo nulu, a tedy zelený
+  // odznak „nic jsme nenašli" nad během, který se na nálezy nedíval.
+  if (!Array.isArray(session.bugs)) {
+    return {
+      trida: 'warning',
+      nadpis: 'Dokončeno — seznam nálezů běh neobsahuje',
+      poznamka: 'Záznam běhu nenese seznam nálezů. Nelze z něj vyvodit ani '
+        + 'to, že se něco našlo, ani to, že se nenašlo nic.',
+    };
+  }
+  const nalezy = session.bugs.length;
+  if (nalezy > 0) {
+    return {
+      trida: 'error',
+      nadpis: `Dokončeno — nalezeno ${nalezy} ${nalezy === 1 ? 'problém' : (nalezy < 5 ? 'problémy' : 'problémů')}`,
+      poznamka: 'Nálezy jsou vypsané níž tak, jak je agent zaznamenal.',
+    };
+  }
+  return {
+    trida: 'success',
+    nadpis: 'Dokončeno — agent na žádný problém nenarazil',
+    poznamka: 'Průzkumný běh není úplný test. Agent prošel jen cesty, na '
+      + 'které během běhu narazil; z absence nálezu neplyne, že je '
+      + 'aplikace bez závad.',
+  };
+}
+
 export default function PrintReport({
   chaosResult,
   user,
   agentUrl,
   liveLogs,
+  activeSession = null,
+  isRunning = false,
   a11yResult,
   nis2Result,
   greenResult,
@@ -58,6 +162,102 @@ export default function PrintReport({
           </tbody>
         </table>
       </div>
+
+      {/* Výsledek běhu agenta.
+          Do reportu se dosud předávaly POUZE `liveLogs` — tedy kroky.
+          Nálezy (`bugs`), varování, závěr běhu i jeho stav zůstávaly na
+          obrazovce a do PDF se nedostaly. Dokument nadepsaný „Compliance
+          Report" tak o zjištěném problému mlčel a čtenář z něj vyvodil,
+          že se nic nenašlo. */}
+      {(jeAgentniBeh(activeSession) || isRunning) && (() => {
+        const stav = behAgenta(activeSession, isRunning);
+        return (
+          <div className="print-section">
+            <h3>Výsledek běhu agenta</h3>
+            <div className={`print-badge ${stav.trida}`}>{stav.nadpis}</div>
+            <p style={{ marginTop: '10px', fontSize: '14px', color: '#475569' }}>
+              {stav.poznamka}
+            </p>
+
+            {activeSession?.summary && (
+              <p style={{ marginTop: '10px', fontSize: '14px' }}>{activeSession.summary}</p>
+            )}
+
+            {activeSession?.performanceMetrics && (
+              <table className="print-table" style={{ marginTop: '15px' }}>
+                <tbody>
+                  <tr>
+                    <th style={{ width: '30%' }}>Načtení stránky:</th>
+                    <td>
+                      {activeSession.performanceMetrics.loadTimeMs
+                        ? `${activeSession.performanceMetrics.loadTimeMs} ms`
+                        : 'neměřeno'}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Titulek stránky:</th>
+                    <td>{activeSession.performanceMetrics.title || 'chybí'}</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+
+            {activeSession?.bugs?.length > 0 && (
+              <>
+                <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                  Detekované problémy ({activeSession.bugs.length})
+                </p>
+                <ul style={{ paddingLeft: '20px' }}>
+                  {activeSession.bugs.map((b, i) => (
+                    <li key={i} style={{ marginBottom: '6px', fontSize: '14px', color: '#475569' }}>
+                      {b}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {/* Chyby MĚŘENÍ, oddělené od nálezů.
+                Agent je ukládá zvlášť právě proto, aby je nikdo nemohl
+                číst jako zjištění o zákazníkově webu. V dokumentu ale
+                být musí — jinak u nedokončeného běhu stojí „běh se
+                nedokončil" bez jediného slova o tom proč. */}
+            {activeSession?.runErrors?.length > 0 && (
+              <>
+                <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                  Chyby měření ({activeSession.runErrors.length})
+                </p>
+                <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#475569' }}>
+                  Tohle nejsou nálezy o testované aplikaci — je to seznam
+                  toho, co se nepodařilo změřit.
+                </p>
+                <ul style={{ paddingLeft: '20px' }}>
+                  {activeSession.runErrors.map((e, i) => (
+                    <li key={i} style={{ marginBottom: '6px', fontSize: '14px', color: '#475569' }}>
+                      {typeof e === 'string' ? e : (e?.message || JSON.stringify(e))}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {activeSession?.warnings?.length > 0 && (
+              <>
+                <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                  Varování ({activeSession.warnings.length})
+                </p>
+                <ul style={{ paddingLeft: '20px' }}>
+                  {activeSession.warnings.map((w, i) => (
+                    <li key={i} style={{ marginBottom: '6px', fontSize: '14px', color: '#475569' }}>
+                      {w}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* EAA Audit */}
       {a11yResult && (
@@ -129,8 +329,8 @@ export default function PrintReport({
       {greenResult && (
         <div className="print-section">
           <h3>Green Deal & GDPR</h3>
-          <div className={`print-badge ${greenResult.green.rating.includes('A') ? 'success' : greenResult.green.rating.includes('C') ? 'warning' : 'error'}`}>
-            Eko Třída: {greenResult.green.rating}
+          <div className={`print-badge ${EKO_ODZNAK[String(greenResult.green.rating || '').trim().charAt(0).toUpperCase()] || 'warning'}`}>
+            Eko Třída: {greenResult.green.rating || 'neurčena'}
           </div>
           <table className="print-table" style={{ marginBottom: '20px' }}>
             <tbody>
@@ -250,10 +450,50 @@ export default function PrintReport({
       {nis2Result && (
         <div className="print-section">
           <h3>NIS2 & PQC (Kvantová Bezpečnost)</h3>
-          <table className="print-table" style={{ marginBottom: '20px' }}>
+
+          {/* Jediná sekce, která dosud netiskla verdikt vůbec.
+              Čtenář viděl dvě zploštělé hlavičky a parametry TLS — ne
+              závěr, a ne to, co se posoudit nepodařilo.
+
+              Verdikt se VÝSLOVNĚ vztahuje k hlavičkám, ne k NIS2 jako
+              celku — sám agent to v `scope` říká a ten se tiskne pod
+              tabulkou. Odznak „[Splněno]" pod nadpisem „NIS2" by jinak
+              znamenal tvrzení o splnění směrnice na základě kontroly
+              šesti HTTP hlaviček.
+
+              Text se odvozuje z `isCompliant`, ne z `headersComplete`:
+              to je u neprůkazného výsledku `true` (nic nechybí ani
+              neselhalo, jen se to nedalo posoudit), takže by v dokumentu
+              stálo „[Neprůkazné] hlavičky jsou kompletní" — a slovo
+              v závorce větu nepřebije. */}
+          <div className={`print-badge ${complianceBadgeClass(nis2Result.nis2.isCompliant)}`}>
+            {`Bezpečnostní hlavičky [${complianceLabel(nis2Result.nis2.isCompliant)}]: `}
+            {nis2Result.nis2.isCompliant === true
+              ? 'všechny posuzované hlavičky jsou nastavené a chrání.'
+              : (nis2Result.nis2.isCompliant === false
+                ? 'rozbor jednotlivých hlaviček je níž.'
+                : 'část hlaviček se posoudit nepodařilo, rozbor je níž.')}
+          </div>
+
+          <table className="print-table" style={{ marginTop: '15px', marginBottom: '20px' }}>
             <tbody>
-              <tr><th style={{ width: '30%' }}>HSTS:</th><td>{nis2Result.nis2.hsts ? 'Aktivní' : 'Chybí'}</td></tr>
-              <tr><th>CSP:</th><td>{nis2Result.nis2.csp ? 'Aktivní' : 'Chybí'}</td></tr>
+              {/* Všech šest posuzovaných hlaviček, i když jsou v pořádku.
+                  Dřív tu byly jen HSTS a CSP a zbylé čtyři se objevily
+                  pouze jako nález — čtenář tedy nepoznal, jestli se
+                  vůbec kontrolovaly. */}
+              {[
+                ['HSTS', 'hsts', 'Strict-Transport-Security'],
+                ['CSP', 'csp', 'Content-Security-Policy'],
+                ['X-Content-Type-Options', 'xContentTypeOptions', 'X-Content-Type-Options'],
+                ['Ochrana proti rámování', 'xFrameOptions', 'X-Frame-Options / frame-ancestors'],
+                ['Referrer-Policy', 'referrerPolicy', 'Referrer-Policy'],
+                ['Permissions-Policy', 'permissionsPolicy', 'Permissions-Policy'],
+              ].map(([popisek, klic, label]) => (
+                <tr key={klic}>
+                  <th style={{ width: '30%' }}>{popisek}:</th>
+                  <td>{headerStateLabel(nis2Result.nis2[klic], label, nis2Result.nis2)}</td>
+                </tr>
+              ))}
               <tr><th>Vyjednaný protokol:</th><td>{nis2Result.pqc.protocol}</td></tr>
               <tr>
                 <th>Post-kvantová výměna klíčů:</th>
@@ -268,6 +508,64 @@ export default function PrintReport({
               <tr><th>Certifikační autorita:</th><td>{nis2Result.pqc.issuer}</td></tr>
             </tbody>
           </table>
+
+          {/* Tři seznamy zvlášť. Agent je rozlišuje a zdůvodňuje proč:
+              verdikt je u chybějící a slabé hlavičky stejný, ale TVRZENÍ
+              ne — a nepravdivé tvrzení v compliance reportu je vada,
+              i když vede ke správnému závěru. Neprůkazné pak není ani
+              jedno z toho. */}
+          {nis2Result.nis2.missingHeaders?.length > 0 && (
+            <>
+              <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                Chybějící hlavičky ({nis2Result.nis2.missingHeaders.length})
+              </p>
+              <ul style={{ paddingLeft: '20px' }}>
+                {nis2Result.nis2.missingHeaders.map((h) => (
+                  <li key={h} style={{ fontSize: '14px', color: '#475569' }}>{h}</li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {nis2Result.nis2.weakHeaders?.length > 0 && (
+            <>
+              <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                Hlavičky, které jsou přítomné, ale nechrání ({nis2Result.nis2.weakHeaders.length})
+              </p>
+              <ul style={{ paddingLeft: '20px' }}>
+                {nis2Result.nis2.weakHeaders.map((h) => (
+                  <li key={h} style={{ fontSize: '14px', color: '#475569' }}>{h}</li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {nis2Result.nis2.inconclusiveHeaders?.length > 0 && (
+            <>
+              <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                Hlavičky, které se posoudit nepodařilo ({nis2Result.nis2.inconclusiveHeaders.length})
+              </p>
+              <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#475569' }}>
+                Tyhle hlavičky nejsou splněné ani porušené. Typicky jde
+                o web běžící po http://, kde je prohlížeč ignoruje — jejich
+                absence tam není volbou provozovatele.
+              </p>
+              <ul style={{ paddingLeft: '20px' }}>
+                {nis2Result.nis2.inconclusiveHeaders.map((h) => (
+                  <li key={h} style={{ fontSize: '14px', color: '#475569' }}>{h}</li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {/* Vymezení rozsahu. Agent v něm výslovně říká, že nejde
+              o posouzení shody s NIS2 jako celkem — bez toho by nadpis
+              sekce a odznak dohromady tvrdily víc, než sken umí. */}
+          {nis2Result.nis2.scope && (
+            <p style={{ marginTop: '15px', fontSize: '0.8rem', color: '#475569' }}>
+              {nis2Result.nis2.scope}
+            </p>
+          )}
           {nis2Result.pqc.tlsIssues?.length > 0 && (
             <ul>
               {nis2Result.pqc.tlsIssues.map((issue) => <li key={issue}>{issue}</li>)}
