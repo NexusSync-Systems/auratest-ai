@@ -254,6 +254,72 @@ describe('Artefakty jsou za přihlášením a patří vlastníkovi', () => {
     const res = await request(app).get('/api/videos/session_abc_video.webm');
     expect(res.statusCode).toBe(404);
   });
+
+  /**
+   * A TEĎ TO, CO SE STÁT MÁ.
+   *
+   * Všechny testy výš ověřují, co se stát NESMÍ — cizí běh, path traversal,
+   * token v query. Kdyby ale byla rozbitá i cesta k VLASTNÍMU artefaktu,
+   * prošly by úplně stejně. Přechod na stahování s hlavičkou proto zůstal
+   * měsíc neověřený: nikdo netušil, jestli se obrázky vůbec zobrazí.
+   *
+   * Ten pozitivní případ je tady. Ověřuje se i to, že se sessionId dá
+   * z názvu souboru zpátky složit — jméno vzniká přes `safeFileToken`,
+   * takže kdyby ten převod znak změnil, hledal by se v databázi jiný běh
+   * a vlastní artefakt by vracel 404.
+   */
+  it('vlastní artefakt se skutečně vydá', async () => {
+    const { SCREENSHOTS_DIR, VIDEOS_DIR, ensureDir, safeFileToken } =
+      await import('../paths.js');
+    const fs = await import('fs');
+    const path = await import('path');
+
+    // Formát, jaký sessionId doopravdy má (server.js: `session_${randomUUID()}`).
+    const sessionId = 'session_550e8400-e29b-41d4-a716-446655440000';
+    expect(safeFileToken(sessionId)).toBe(sessionId);
+
+    mockStore.sessions.push({ id: sessionId, userId: 'user-a' });
+    mockCurrentUserId = 'user-a';
+
+    const jmeno = `${safeFileToken(sessionId)}_step_1.png`;
+    const soubor = path.join(ensureDir(SCREENSHOTS_DIR), jmeno);
+    // Nejmenší platné PNG — obsah nerozhoduje, jde o cestu k němu.
+    fs.writeFileSync(soubor, Buffer.from(
+      '89504e470d0a1a0a0000000d4948445200000001000000010806000000'
+      + '1f15c4890000000a49444154789c6300010000050001'
+      + '0d0a2db40000000049454e44ae426082', 'hex'
+    ));
+
+    try {
+      const res = await request(app).get(`/api/screenshots/${jmeno}`);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toMatch(/image\/png/);
+      expect(res.body.length).toBeGreaterThan(0);
+    } finally {
+      fs.rmSync(soubor, { force: true });
+    }
+  });
+
+  it('vlastní video se skutečně vydá', async () => {
+    const { VIDEOS_DIR, ensureDir, safeFileToken } = await import('../paths.js');
+    const fs = await import('fs');
+    const path = await import('path');
+
+    const sessionId = 'session_550e8400-e29b-41d4-a716-446655440001';
+    mockStore.sessions.push({ id: sessionId, userId: 'user-a' });
+    mockCurrentUserId = 'user-a';
+
+    const jmeno = `${safeFileToken(sessionId)}_video.webm`;
+    const soubor = path.join(ensureDir(VIDEOS_DIR), jmeno);
+    fs.writeFileSync(soubor, Buffer.from('1a45dfa3', 'hex'));
+
+    try {
+      const res = await request(app).get(`/api/videos/${jmeno}`);
+      expect(res.statusCode).toBe(200);
+    } finally {
+      fs.rmSync(soubor, { force: true });
+    }
+  });
 });
 
 describe('SSRF guard je zapojený do audit endpointů', () => {
