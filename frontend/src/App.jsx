@@ -974,6 +974,19 @@ export default function App() {
     setLiveProgress('Inicializace Playwright prohlížeče a agenta...');
     setActiveSession(null);
 
+    // Staré výsledky auditů musí pryč.
+    //
+    // Každý audit si je při spuštění čistí sám, jen agentní běh na to
+    // zapomínal. Mělo to dva následky. Ten viditelný: panel s výsledky
+    // a živý náhled prohlížeče sdílejí totéž místo, takže dokud tam
+    // visel starý výsledek, screenshoty z běhu se neměly kam vykreslit.
+    //
+    // Ten vážnější: na obrazovce zůstaly nálezy z PŘEDCHOZÍHO běhu, klidně
+    // na jiné adrese, vedle právě běžícího testu — a nic nenaznačovalo, že
+    // se týkají něčeho jiného. U nástroje, který má o každém tvrzení říct,
+    // z čeho pochází, je to nepřijatelné.
+    clearAllResults();
+
     try {
       const res = await authFetch('/api/run-test', {
         method: 'POST',
