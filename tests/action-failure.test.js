@@ -86,3 +86,66 @@ describe('classifyActionFailure', () => {
     expect(r.message).toContain('kroku 7');
   });
 });
+
+/**
+ * Skutečný běh na drinkboostup.cz: pod „Detekované problémy" stálo
+ *
+ *   Akce 'click' v kroku 7 selhala: page.click: Timeout 5000ms exceeded.
+ *   Call log: - waiting for locator(…) - locator resolved to <button …>
+ *   - attempting click action 2 × waiting for element to be visible,
+ *   enabled and stable - element is visible, enabled and stable
+ *   - scrolling into view if needed - done scrolling - element is outside
+ *   of the viewport - retrying click action - waiting 20ms 2 × …
+ *
+ * Tedy jako NÁLEZ o zákazníkově webu. Přitom to znamená, že se agent na
+ * prvek nedostal — stejná situace jako u překryvu, jen bez vlastní větve.
+ */
+const timeoutMimoViewport = `page.click: Timeout 5000ms exceeded.
+Call log:
+  - waiting for locator('[data-qa-id="73"]')
+  - locator resolved to <button data-qa-id="73">Zavřít detail</button>
+  - attempting click action
+  - scrolling into view if needed
+  - done scrolling
+  - element is outside of the viewport
+  - retrying click action - waiting 20ms
+  - retrying click action - waiting 100ms
+  - retrying click action - waiting 500ms`;
+
+describe('prvek mimo viditelnou část okna', () => {
+  test('není vada aplikace', () => {
+    const r = classifyActionFailure('click', 7, timeoutMimoViewport);
+    expect(r.kind).toBe('viewport');
+    expect(r.isAppFault).toBe(false);
+  });
+
+  test('věta netvrdí ani vadu, ani její nepřítomnost', () => {
+    const r = classifyActionFailure('click', 7, timeoutMimoViewport);
+    expect(r.message).toMatch(/neplyne vada aplikace ani její nepřítomnost/);
+    expect(r.message).toMatch(/agent se na prvek nedostal/);
+  });
+
+  test('vnitřní call log Playwrightu se do zprávy netáhne', () => {
+    const r = classifyActionFailure('click', 7, timeoutMimoViewport);
+    expect(r.message).not.toMatch(/retrying click action/);
+    expect(r.message).not.toMatch(/waiting for locator/);
+  });
+});
+
+describe('skutečné selhání aplikace se zkrátí, ale neztratí příčinu', () => {
+  test('call log se ustřihne, první věta zůstane', () => {
+    const r = classifyActionFailure('click', 3,
+      'page.click: Element is not attached to the DOM.\nCall log:\n  - '
+      + 'retrying click action - waiting 20ms\n'.repeat(50));
+    expect(r.kind).toBe('app');
+    expect(r.isAppFault).toBe(true);
+    expect(r.message).toMatch(/not attached to the DOM/);
+    expect(r.message).not.toMatch(/retrying click action/);
+    expect(r.message.length).toBeLessThan(400);
+  });
+
+  test('krátká zpráva bez call logu zůstane celá', () => {
+    const r = classifyActionFailure('type', 2, 'Element is disabled.');
+    expect(r.message).toMatch(/Element is disabled\.$/);
+  });
+});

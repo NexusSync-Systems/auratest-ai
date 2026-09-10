@@ -419,6 +419,18 @@ function actionTargetKey(action, target) {
   return `${action}:${target === null || target === undefined ? 'null' : String(target)}`;
 }
 
+/**
+ * Jednotné znění nálezu z konzole.
+ *
+ * Musí ho použít KAŽDÁ cesta, která chybu z konzole zapisuje — jinak
+ * `addFinding` (deduplikace podle celého řetězce) tutéž chybu započítá
+ * tolikrát, kolik je formulací.
+ */
+function consoleFinding(text) {
+  const t = String(text ?? 'neznámá chyba');
+  return `Detekována chyba v konzoli: "${t.length > 300 ? `${t.slice(0, 297)}…` : t}"`;
+}
+
 function hasRuntimeSignals(consoleLogs, networkErrors) {
   const hasConsoleError = (consoleLogs || []).some((log) => log?.type === 'error' || /\berror\b/i.test(log?.text || ''));
   return hasConsoleError || (networkErrors || []).length > 0;
@@ -427,7 +439,15 @@ function hasRuntimeSignals(consoleLogs, networkErrors) {
 function summarizeRuntimeSignal(consoleLogs, networkErrors) {
   const consoleError = (consoleLogs || []).find((log) => log?.type === 'error' || /\berror\b|ReferenceError|TypeError/i.test(log?.text || ''));
   if (consoleError) {
-    return `V konzoli je chyba: ${String(consoleError.text || consoleError.message || 'neznámá chyba').slice(0, 160)}`;
+    // TOTOŽNÉ znění jako v posluchači `page.on('console')`.
+    //
+    // Dřív tu stálo „V konzoli je chyba: …" a v posluchači „Detekována
+    // chyba v konzoli: …" — dva různé prefixy pro TÝŽ řádek konzole.
+    // `addFinding` deduplikuje podle celého řetězce, takže se jedna
+    // chyba započítala dvakrát a report tvrdil „nalezeny 4 problémy"
+    // tam, kde byly dva různé fakty. Počet v dokumentu pro úřad je
+    // tvrzení jako každé jiné.
+    return consoleFinding(consoleError.text || consoleError.message || 'neznámá chyba');
   }
   const networkError = (networkErrors || [])[0];
   if (networkError) {
@@ -1422,7 +1442,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     if (text.startsWith('[AuraAuraGuard-')) {
       addFinding(WARNING_PREFIXES.some((p) => text.startsWith(p)) ? warnings : bugs, text);
     } else if (type === 'error') {
-      addFinding(bugs, `Detekována chyba v konzoli: "${text}"`);
+      addFinding(bugs, consoleFinding(text));
     }
   });
 
