@@ -318,3 +318,41 @@ describe('věty o stavu před souhlasem', () => {
     expect(v.join(' ')).toMatch(/_hjSession/);
   });
 });
+
+describe('zmáčknuto ≠ zmizelo', () => {
+  /**
+   * Skutečný běh na drinkboostup.cz: report tvrdil „Lišta odkliknuta
+   * volbou Pouze nezbytné — zbytek běhu proto probíhal bez souhlasu
+   * s marketingovými cookies" a o odstavec níž pětkrát „prvek překrývá
+   * jiná vrstva, typicky cookie lišta". Polovina běhu selhala na
+   * překryvu, který podle dokumentu neměl existovat.
+   *
+   * `clicked: true` znamená, že klik proběhl. Že tím lišta zmizela, je
+   * DŮSLEDEK a musí se ověřit.
+   */
+  test('ověřené zmizení smí tvrdit důsledek', () => {
+    const v = popisOdkliknuti({ reason: 'odmitnuto-overeno', label: 'Pouze nezbytné' });
+    expect(v).toMatch(/zmizela/);
+  });
+
+  test('lišta, která zůstala, důsledek tvrdit NESMÍ', () => {
+    const v = popisOdkliknuti({ reason: 'odmitnuto-lista-zustala', label: 'Pouze nezbytné' });
+    expect(v).toMatch(/ZŮSTALA/);
+    expect(v).toMatch(/pod překryvem/);
+    expect(v).not.toMatch(/proto probíhal bez souhlasu/);
+  });
+
+  test('neověřené zmizení se přizná', () => {
+    const v = popisOdkliknuti({ reason: 'odmitnuto-neovereno', label: 'Odmítnout vše' });
+    expect(v).toMatch(/ověřit nepodařilo/);
+    expect(v).not.toMatch(/zmizela\b(?!.*nepodařilo)/);
+  });
+
+  test('čtyři stavy jsou čtyři různé věty', () => {
+    const vety = [
+      'odmitnuto-overeno', 'odmitnuto-lista-zustala',
+      'odmitnuto-neovereno', 'lista-nenalezena',
+    ].map((reason) => popisOdkliknuti({ reason, label: 'X' }));
+    expect(new Set(vety).size).toBe(4);
+  });
+});

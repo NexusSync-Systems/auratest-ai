@@ -69,6 +69,39 @@ const EKO_ODZNAK = { A: 'success', B: 'success', C: 'warning', D: 'warning', E: 
  * Rozlišení je stejné jako v `case-file.js`: co není `compliance-scan`,
  * je agentní běh (starší záznamy `kind` nemají vůbec).
  */
+/**
+ * Věta o cookie liště do dokumentu.
+ *
+ * Rozlišuje čtyři stavy, protože každý znamená něco jiného pro to, CO
+ * vlastně agent testoval: lištu odkliknutou a ověřeně pryč, odkliknutou
+ * ale pořád na stránce, odkliknutou bez ověření, a neodkliknutou.
+ */
+function popisListy(b) {
+  if (!b) return null;
+  if (b.clicked) {
+    if (b.reason === 'odmitnuto-lista-zustala') {
+      return `Zmáčknuta volba „${b.label}", ale lišta na stránce ZŮSTALA. `
+        + 'Zbytek běhu proto mohl probíhat pod překryvem a volba se '
+        + 'nemusela projevit.';
+    }
+    if (b.reason === 'odmitnuto-neovereno' || b.reason === 'odmitnuto') {
+      return `Zmáčknuta volba „${b.label}". Jestli tím lišta zmizela, `
+        + 'se ověřit nepodařilo.';
+    }
+    return `Lišta odkliknuta volbou „${b.label}" a ověřeně zmizela — zbytek `
+      + 'běhu proto probíhal bez souhlasu s marketingovými cookies.';
+  }
+  if (b.reason === 'lista-nenalezena') return 'Cookie lišta nebyla nalezena.';
+  if (b.reason === 'lista-nalezena-bez-odmitnuti') {
+    return 'Cookie lišta nalezena, ale bez jednoznačného tlačítka odmítnutí. '
+      + 'Nezmáčknuto nic — volba souhlasu není na nástroji. Část běhu '
+      + 'mohla proběhnout pod překryvem.';
+  }
+  return 'Cookie lišta nebyla odkliknuta '
+    + `(${b.reason || 'důvod není zaznamenán'}). Část běhu mohla proběhnout `
+    + 'pod překryvem.';
+}
+
 function jeAgentniBeh(session) {
   return Boolean(session) && session.kind !== 'compliance-scan';
 }
@@ -284,14 +317,14 @@ export default function PrintReport({
                   )}
                   {activeSession.cookieBanner && (
                     <li style={{ fontSize: '14px', color: '#475569' }}>
-                      {activeSession.cookieBanner.clicked
-                        ? `Lišta odkliknuta volbou „${activeSession.cookieBanner.label}" — `
-                          + 'zbytek běhu proto probíhal bez souhlasu s marketingovými cookies.'
-                        : (activeSession.cookieBanner.reason === 'lista-nenalezena'
-                          ? 'Cookie lišta nebyla nalezena.'
-                          : 'Cookie lišta nebyla odkliknuta '
-                            + `(${activeSession.cookieBanner.reason || 'důvod není zaznamenán'}). Část běhu mohla `
-                            + 'proběhnout pod překryvem.')}
+                      {/* Zmáčknuto ≠ zmizelo.
+                          Dřív tu stálo „zbytek běhu proto probíhal bez
+                          souhlasu s marketingovými cookies" pokaždé, když
+                          klik prošel. Skutečný běh to vyvrátil: ve stejném
+                          dokumentu bylo o odstavec níž pětkrát „prvek
+                          překrývá jiná vrstva, typicky cookie lišta".
+                          Důsledek se teď tvrdí jen, když se ověřil. */}
+                      {popisListy(activeSession.cookieBanner)}
                     </li>
                   )}
                 </ul>

@@ -377,12 +377,43 @@ describe('cookie lišta v záznamu běhu', () => {
       activeSession: {
         status: 'completed', bugs: [],
         preConsent: { cookies: [], storage: [] },
-        cookieBanner: { clicked: true, label: 'Pouze nezbytné', reason: 'odmitnuto' },
+        cookieBanner: { clicked: true, label: 'Pouze nezbytné', reason: 'odmitnuto-overeno' },
       },
     });
     const s = sekce(/Výsledek běhu agenta/);
     expect(s.getByText(/Pouze nezbytné/)).toBeInTheDocument();
     expect(s.getByText(/bez souhlasu s marketingovými cookies/)).toBeInTheDocument();
+  });
+
+  test('lišta, která po kliknutí zůstala, důsledek netvrdí', () => {
+    // Skutečný běh na drinkboostup.cz: dokument tvrdil „zbytek běhu
+    // proto probíhal bez souhlasu s marketingovými cookies" a o odstavec
+    // níž pětkrát „prvek překrývá jiná vrstva, typicky cookie lišta".
+    // Zmáčknuto není zmizelo.
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [],
+        cookieBanner: {
+          clicked: true, label: 'Pouze nezbytné', reason: 'odmitnuto-lista-zustala',
+        },
+      },
+    });
+    const s = sekce(/Výsledek běhu agenta/);
+    expect(s.getByText(/ZŮSTALA/)).toBeInTheDocument();
+    expect(s.queryByText(/proto probíhal bez souhlasu/)).not.toBeInTheDocument();
+  });
+
+  test('neověřené zmizení se v dokumentu přizná', () => {
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [],
+        cookieBanner: {
+          clicked: true, label: 'Odmítnout vše', reason: 'odmitnuto-neovereno',
+        },
+      },
+    });
+    expect(sekce(/Výsledek běhu agenta/).getByText(/ověřit nepodařilo/))
+      .toBeInTheDocument();
   });
 
   test('stav před souhlasem se tiskne i když je čistý — a bez tvrzení o souladu', () => {
@@ -404,7 +435,7 @@ describe('cookie lišta v záznamu běhu', () => {
       activeSession: {
         status: 'completed', bugs: [],
         preConsent: { cookies: ['_ga (.example.cz)'], storage: ['_hjSession'] },
-        cookieBanner: { clicked: true, label: 'Odmítnout vše', reason: 'odmitnuto' },
+        cookieBanner: { clicked: true, label: 'Odmítnout vše', reason: 'odmitnuto-overeno' },
       },
     });
     const s = sekce(/Výsledek běhu agenta/);

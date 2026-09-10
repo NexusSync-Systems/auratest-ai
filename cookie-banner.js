@@ -393,7 +393,36 @@ export async function dismissCookieBanner(page, { timeoutMs = 5000 } = {}) {
       return { clicked: false, label: volba.text, reason: `klik-selhal: ${err.message}` };
     }
 
-    return { clicked: true, label: volba.text.trim(), reason: 'odmitnuto' };
+    // ZMÁČKNUTO ≠ ZMIZELO.
+    //
+    // Skutečný běh na drinkboostup.cz to ukázal názorně: report tvrdil
+    // „Lišta odkliknuta volbou Pouze nezbytné — zbytek běhu proto
+    // probíhal bez souhlasu s marketingovými cookies" a o odstavec níž
+    // pětkrát „prvek překrývá jiná vrstva, typicky cookie lišta".
+    // Polovina běhu selhala na překryvu, který podle dokumentu neměl
+    // existovat.
+    //
+    // `clicked: true` znamená jen, že Playwright klik provedl. Že tím
+    // lišta zmizela, je DŮSLEDEK — a ten se musí ověřit, ne odvodit.
+    await page.waitForTimeout(600).catch(() => {});
+    let zbyva = null;
+    try {
+      const po = await page.evaluate(KOD_SBERU);
+      zbyva = po.some((k) => k.vListe);
+    } catch { /* ověření se nepodařilo — `null` to říká nahlas */ }
+
+    if (zbyva === true) {
+      return {
+        clicked: true,
+        label: volba.text.trim(),
+        reason: 'odmitnuto-lista-zustala',
+      };
+    }
+    return {
+      clicked: true,
+      label: volba.text.trim(),
+      reason: zbyva === false ? 'odmitnuto-overeno' : 'odmitnuto-neovereno',
+    };
   } finally {
     // Úklid ve VŠECH cestách, ne jen po kliknutí. Značka v DOM by se
     // jinak dostala do screenshotů, do stavu posílaného modelu
@@ -458,7 +487,18 @@ export function popisPredSouhlasem(s) {
 /** Věta do záznamu běhu. Popisuje, co se stalo, ne co z toho plyne. */
 export function popisOdkliknuti(vysledek) {
   switch (vysledek.reason) {
+    case 'odmitnuto-overeno':
+      return `Cookie lišta: zmáčknuto „${vysledek.label}" a lišta zmizela `
+        + '(po zaznamenání stavu před souhlasem).';
+    case 'odmitnuto-lista-zustala':
+      return `Cookie lišta: zmáčknuto „${vysledek.label}", ale lišta na stránce `
+        + 'ZŮSTALA. Zbytek běhu mohl probíhat pod překryvem a volba se '
+        + 'nemusela projevit.';
+    case 'odmitnuto-neovereno':
+      return `Cookie lišta: zmáčknuto „${vysledek.label}"; jestli tím zmizela, `
+        + 'se ověřit nepodařilo.';
     case 'odmitnuto':
+      // Starší uložené záznamy, kde se ověření ještě nedělalo.
       return `Cookie lišta: zmáčknuto „${vysledek.label}" (po zaznamenání stavu před souhlasem).`;
     case 'lista-nenalezena':
       return 'Cookie lišta: nenalezena.';
