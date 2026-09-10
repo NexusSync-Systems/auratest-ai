@@ -7,12 +7,24 @@
  * `eu-west-1` znamená datové centrum v Irsku. Zdrojem je dokumentace
  * poskytovatele, ne odhad z názvu.
  *
- * PROČ SE NEHÁDÁ Z NÁZVU
+ * PROČ SE NEHÁDÁ ZE ZEMĚPISNÉHO PREFIXU
  * Nabízelo by se číst prefix: `eu-` je Evropa, `us-` Amerika. Jenže
  * „Evropa" není země a GDPR se ptá na zemi, respektive na to, jestli je
  * v EHP. `eu-west-1` je Irsko, `eu-west-2` Londýn — tedy Spojené
  * království, které v EHP NENÍ. Kdo by to odvodil z prefixu, vyrobil by
  * falešné „v pořádku" u přenosu do třetí země. Proto výčet.
+ *
+ * ROZDÍL PROTI NÁZVU, KTERÝ ZEMI OBSAHUJE
+ * Něco jiného je identifikátor, do kterého poskytovatel jméno země přímo
+ * napsal: `germanywc`, `norwaye`, `switzerlandn`, `eusc-de-east-1`. Tam
+ * se nic neodvozuje ze zeměpisné oblasti — čte se to, co poskytovatel
+ * sám pojmenoval. Azure má dva německé regiony a oba jsou v Německu, tedy
+ * i kdyby se pletlo, KTERÝ z nich to je, ZEMĚ zůstává správná. A o zemi
+ * tu jde.
+ *
+ * Tyhle položky jsou níž označené, protože Microsoft zkrácené tvary ve
+ * svém seznamu regionů neuvádí — v datech o rozsazích je ale používá
+ * výhradně je, plné názvy se tam nevyskytují vůbec.
  *
  * NEZNÁMÝ REGION DÁVÁ `null`
  * Poskytovatelé regiony přidávají. Region, který tu není, znamená
@@ -43,11 +55,16 @@ const AWS = {
   'sa-east-1': 'BR',
   'mx-central-1': 'MX',
   // Asie a Tichomoří
-  'ap-east-1': 'HK', 'ap-east-2': 'HK',
+  // `ap-east-2` je Tchaj-pej, ne Hongkong — ověřeno v tabulce regionů AWS.
+  // Původně tu bylo HK odvozené z podobnosti s `ap-east-1`, což je přesně
+  // ten druh domněnky, který tenhle soubor zakazuje.
+  'ap-east-1': 'HK', 'ap-east-2': 'TW',
   'ap-south-1': 'IN', 'ap-south-2': 'IN',
   'ap-northeast-1': 'JP', 'ap-northeast-2': 'KR', 'ap-northeast-3': 'JP',
   'ap-southeast-1': 'SG', 'ap-southeast-2': 'AU', 'ap-southeast-3': 'ID',
-  'ap-southeast-4': 'AU', 'ap-southeast-5': 'MY', 'ap-southeast-7': 'TH',
+  'ap-southeast-4': 'AU', 'ap-southeast-5': 'MY',
+  'ap-southeast-6': 'NZ',   // Nový Zéland — v tabulce regionů AWS
+  'ap-southeast-7': 'TH',
   // Blízký východ a Afrika
   'me-south-1': 'BH', 'me-central-1': 'AE',
   'il-central-1': 'IL',
@@ -55,6 +72,7 @@ const AWS = {
   'cn-north-1': 'CN', 'cn-northwest-1': 'CN',
   // Evropský suverénní cloud. Kód regionu nese zemi přímo („de").
   'eusc-de-east-1': 'DE',
+  // Zemi nese `us` v názvu; v tabulce regionů AWS tenhle kód není.
   'us-south-1': 'US',
 };
 
@@ -100,11 +118,17 @@ const AZURE = {
   'israelcentral': 'IL',
   'southafricanorth': 'ZA', 'southafricawest': 'ZA',
 
-  // ── Zkrácené názvy ────────────────────────────────────────────────────
+  // ── Identifikátory ze značek služeb ───────────────────────────────────
   //
-  // Azure uvádí tytéž regiony v datech o rozsazích i zkráceně. Nejde
-  // o jiná místa, jen o jiný zápis; bez nich by adresa v německém nebo
-  // norském regionu vyšla jako neprůkazná.
+  // V datech o rozsazích Azure používá VÝHRADNĚ tyhle tvary; plné názvy
+  // ze seznamu regionů (`germanywestcentral`, `norwayeast`…) se v nich
+  // nevyskytují vůbec. Bez nich by celá evropská infrastruktura Azure
+  // mimo Irsko, Nizozemsko a Švédsko vyšla jako neprůkazná.
+  //
+  // Microsoft je ve svém seznamu regionů neuvádí, takže korespondence
+  // s konkrétním regionem není doložená. Doložená je ale ZEMĚ, a ta tu
+  // rozhoduje: identifikátor jméno země obsahuje a Azure nemá dva regiony
+  // téhož jména v různých zemích.
   'germanyn': 'DE', 'germanywc': 'DE',
   'centralfrance': 'FR', 'southfrance': 'FR',
   'norwaye': 'NO', 'norwayw': 'NO',
@@ -115,8 +139,7 @@ const AZURE = {
   'malaysiasouth': 'MY',
   'israelnorthwest': 'IL',
   'taiwannorthwest': 'TW',
-  // Regiony ve Spojených státech. Azure je pojmenovává důsledně
-  // `<směr>us`, takže zemi nese samotný název.
+  // Regiony ve Spojených státech — zemi nese `us` v samotném názvu.
   'eastus3': 'US', 'northeastus5': 'US', 'southcentralus2': 'US',
   'southeastus': 'US', 'southeastus3': 'US', 'southeastus5': 'US',
   'southwestus': 'US',
@@ -157,8 +180,8 @@ const GCP = {
   // Blízký východ a Afrika
   'me-west1': 'IL', 'me-central1': 'QA', 'me-central2': 'SA',
   'africa-south1': 'ZA',
-  // Regiony, které Google na stránce s lokalitami neuvádí, ale objevují
-  // se v rozsazích. Prefix `us-` u Googlu důsledně znamená Spojené státy.
+  // Google je na stránce s lokalitami neuvádí, ale v rozsazích jsou.
+  // Zemi nese `us` v názvu — stejná úvaha jako u ostatních poskytovatelů.
   'us-central2': 'US', 'us-east7': 'US', 'us-west8': 'US',
 };
 

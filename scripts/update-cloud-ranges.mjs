@@ -73,16 +73,31 @@ const sources = [];
 /** Regiony, které jsme v datech potkali, ale neumíme převést na zemi. */
 const neznameRegiony = new Set();
 
+/** Zahozené položky — poskytovatel může poslat i nesmysl. */
+const zahozeno = [];
+
 function pridej({ provider, cidr, region, service }) {
   if (!cidr || !cidr.includes('.')) return; // jen IPv4
-  const [ip, bitsRaw] = cidr.split('/');
-  const bits = Number(bitsRaw);
-  if (!Number.isInteger(bits)) return;
 
-  const okt = ip.split('.').map(Number);
-  if (okt.length !== 4 || okt.some((o) => !Number.isInteger(o) || o > 255)) return;
+  // Přísný rozbor, ne `Number()` nad čímkoli.
+  //
+  // Bez něj procházely zápisy jako `1.2.3.0/-8`, `0x0a.1.2.3/24` nebo
+  // `1e2.1.1.1/24`. To první je nejhorší: záporný počet bitů dá rozsah
+  // pokrývající CELÝ adresní prostor, takže by každá jinak neznámá adresa
+  // dostala zemi z jediného poškozeného řádku. Selhání směrem k tvrzení
+  // je u důkazního nástroje ta nejhorší varianta.
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr.trim());
+  if (!m) { zahozeno.push({ provider, cidr, duvod: 'nečitelný zápis' }); return; }
+
+  const okt = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+  const bits = Number(m[5]);
+  if (okt.some((o) => o > 255) || bits > 32) {
+    zahozeno.push({ provider, cidr, duvod: 'hodnota mimo rozsah' });
+    return;
+  }
+
   const size = 2 ** (32 - bits);
-  const start = Math.floor(((okt[0] * 256 + okt[1]) * 256 + okt[2]) * 256 + okt[3]) ;
+  const start = ((okt[0] * 256 + okt[1]) * 256 + okt[2]) * 256 + okt[3];
   const s = Math.floor(start / size) * size;
 
   if (region && !regionCountry(provider, region)) neznameRegiony.add(`${provider}:${region}`);
@@ -156,13 +171,45 @@ if (azure?.values) {
   });
 }
 
-// ── Zápis ────────────────────────────────────────────────────────────────
-if (ranges.length === 0) {
+// ── Kontrola, že nový snímek není horší než ten stávající ────────────────
+//
+// Původně tu stálo jen „aspoň jeden rozsah". Když ale selhaly Azure a AWS
+// a prošel jen Google, skript spokojeně zapsal tisícovku rozsahů místo
+// osmdesáti tisíc a skončil úspěchem. Všichni zákazníci na Azure by pak
+// spadli zpět na geolokaci a nic by to nehlásilo — výpadek zdroje je
+// v běhu jen jeden řádek „nepodařilo se".
+function konec(zprava) {
   console.error('');
-  console.error('Nepodařilo se stáhnout ani jeden zdroj — snímek se nepřepisuje.');
-  console.error('Přepsat ho prázdným souborem by bylo horší než nechat starý:');
-  console.error('sken by přišel o rozsahy a nikdo by nevěděl proč.');
+  console.error(zprava);
+  console.error('Snímek se NEPŘEPISUJE. Starý a úplný je lepší než nový a děravý.');
+  console.error('Vynutit zápis jde přepínačem --force.');
   process.exit(1);
+}
+
+const force = args.includes('--force');
+
+if (ranges.length === 0 && !force) {
+  konec('Nepodařilo se stáhnout ani jeden zdroj.');
+}
+
+const OCEKAVANI = ['aws', 'gcp', 'azure'];
+const chybi = OCEKAVANI.filter((p) => !sources.some((s) => s.provider === p));
+if (chybi.length > 0 && !force) {
+  konec(`Nepodařilo se stáhnout: ${chybi.join(', ')}.`);
+}
+
+// Propad počtu proti stávajícímu snímku.
+try {
+  const stary = JSON.parse(fs.readFileSync(OUT, 'utf8'));
+  const predtim = (stary.ranges || []).length;
+  if (predtim > 0 && ranges.length < predtim * 0.8 && !force) {
+    konec(
+      `Nový snímek má ${ranges.length} rozsahů, stávající ${predtim} `
+      + '— propad o víc než pětinu vypadá na neúplné stažení.'
+    );
+  }
+} catch {
+  // Stávající snímek neexistuje — první běh, není s čím porovnávat.
 }
 
 ranges.sort((a, b) => a.s - b.s);
@@ -179,6 +226,15 @@ console.log(`Zapsáno ${ranges.length} rozsahů do ${path.relative(PROJECT_ROOT,
 console.log(`Velikost: ${(fs.statSync(OUT).size / 1024 / 1024).toFixed(1)} MB`);
 for (const s of sources) {
   console.log(`  ${s.provider.padEnd(6)} snímek: ${s.snapshot ?? 'neuveden'}`);
+}
+
+if (zahozeno.length > 0) {
+  console.log('');
+  console.log(`Zahozeno ${zahozeno.length} nečitelných zápisů:`);
+  for (const z of zahozeno.slice(0, 10)) {
+    console.log(`  ${z.provider} ${z.cidr} — ${z.duvod}`);
+  }
+  if (zahozeno.length > 10) console.log(`  … a dalších ${zahozeno.length - 10}`);
 }
 
 if (neznameRegiony.size > 0) {

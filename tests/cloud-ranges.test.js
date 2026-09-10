@@ -39,6 +39,16 @@ beforeAll(() => {
       rozsah('azure', '4.223.166.0/24', 'swedencentral', 'AzureCloud'),
       rozsah('azure', '20.50.0.0/16', 'westeurope', 'AzureCloud'),
       rozsah('azure', '13.107.42.0/24', '', 'AzureFrontDoor.Frontend'),
+      // Prázdný region u BĚŽNÉ služby — Azure vlastnost `region` u části
+      // značek neuvádí. Není to anycast a nesmí přebít regionální rozsah
+      // téže šířky.
+      rozsah('azure', '20.50.0.0/16', '', 'AzureMonitor'),
+      // Anycast a regionální rozsah na TÉMŽE prefixu. Vyhrát musí anycast.
+      rozsah('aws', '3.29.57.0/26', 'me-central-1', 'CLOUDFRONT_ORIGIN_FACING'),
+      rozsah('aws', '3.29.57.0/26', 'GLOBAL', 'CLOUDFRONT'),
+      // Velmi široký blok — kdysi se kvůli pevnému stropu při zpětném
+      // průchodu vůbec nenašel.
+      rozsah('azure', '100.64.0.0/10', 'westeurope', 'AzureCloud'),
       rozsah('aws', '52.30.0.0/16', 'eu-west-1', 'EC2'),
       rozsah('aws', '52.86.0.0/16', 'us-east-1', 'EC2'),
       rozsah('aws', '18.160.0.0/15', 'GLOBAL', 'CLOUDFRONT'),
@@ -141,7 +151,7 @@ describe('doložitelnost snímku', () => {
   it('vrací datum, zdroje i počet', () => {
     const s = rangesSnapshot(SNIMEK);
     expect(s.generatedAt).toBe('2026-09-09T00:00:00.000Z');
-    expect(s.count).toBe(9);
+    expect(s.count).toBe(13);
     expect(s.sources[0].provider).toBe('azure');
   });
 });
@@ -190,22 +200,81 @@ describe('globální rozsahy a zkrácené názvy', () => {
     expect(regionCountry('gcp', 'global')).toBeNull();
   });
 
-  it('zkrácené názvy Azure míří na tytéž země', () => {
-    // Azure uvádí regiony dvojím zápisem. Bez zkrácených tvarů by adresa
-    // v německém nebo norském datovém centru vyšla jako neprůkazná.
-    expect(regionCountry('azure', 'germanywc')).toBe(regionCountry('azure', 'germanywestcentral'));
-    expect(regionCountry('azure', 'norwaye')).toBe(regionCountry('azure', 'norwayeast'));
-    expect(regionCountry('azure', 'centralfrance')).toBe(regionCountry('azure', 'francecentral'));
+  it('identifikátory Azure mají zemi tam, kde ji nesou v názvu', () => {
+    // Dřív tu stálo porovnání dvou položek TÉŽE mapy — test, který nemohl
+    // selhat, ať byla mapa jakákoli, a neověřoval nic. Ověřovat se má
+    // hodnota, ne shoda s jinou hodnotou z téhož zdroje.
+    expect(regionCountry('azure', 'germanywc')).toBe('DE');
+    expect(regionCountry('azure', 'germanyn')).toBe('DE');
+    expect(regionCountry('azure', 'norwaye')).toBe('NO');
+    expect(regionCountry('azure', 'centralfrance')).toBe('FR');
+    // Švýcarsko v EHP NENÍ — chyba tímhle směrem by zamlčela přenos
+    // do třetí země.
     expect(regionCountry('azure', 'switzerlandn')).toBe('CH');
+    expect(regionCountry('azure', 'switzerlandw')).toBe('CH');
   });
 
-  it('regiony, které jistě neznáme, zůstávají neprůkazné', () => {
-    // Google je na své stránce s lokalitami neuvádí. Odhadovat u
-    // evropského regionu zemi by znamenalo tvrdit něco o EHP bez podkladu.
+  it('ap-east-2 je Tchaj-wan, ne Hongkong', () => {
+    // Původně tu bylo HK odvozené z podobnosti s `ap-east-1`. Dokumentace
+    // AWS uvádí Asia Pacific (Taipei). Verdikt o EHP se tím nemění, ale
+    // zpráva pro úřad tvrdila nesprávnou zemi — a tvrzení o zemi je jádro
+    // celého výstupu.
+    expect(regionCountry('aws', 'ap-east-1')).toBe('HK');
+    expect(regionCountry('aws', 'ap-east-2')).toBe('TW');
+  });
+
+  it('ap-southeast-6 je Nový Zéland, ne neznámý region', () => {
+    // Tenhle test dřív tvrdil opak a tím mezeru v mapě povyšoval na záměr.
+    // Region je přitom v dokumentaci AWS a ve snímku má 62 rozsahů —
+    // adresa v něm propadala na geolokaci, která ji řadila do Polska.
+    expect(regionCountry('aws', 'ap-southeast-6')).toBe('NZ');
+  });
+
+  it('regiony bez doloženého umístění zůstávají neprůkazné', () => {
+    // Tyhle nikde doložené nejsou a jméno země v sobě nenesou. Odhadnout
+    // u evropského regionu zemi by znamenalo tvrdit něco o EHP bez
+    // podkladu.
     expect(regionCountry('gcp', 'europe-west15')).toBeNull();
     expect(regionCountry('gcp', 'asia-southeast3')).toBeNull();
-    expect(regionCountry('aws', 'ap-southeast-6')).toBeNull();
+    expect(regionCountry('aws', 'me-west-1')).toBeNull();
     expect(regionCountry('aws', 'sa-west-1')).toBeNull();
     expect(regionCountry('azure', 'northeurope2')).toBeNull();
+  });
+});
+
+
+/**
+ * Nálezy z recenze nového modulu.
+ *
+ * Všechny tři vznikly tím, že o výsledku rozhodovalo pořadí prvků v poli
+ * nebo pevný strop — tedy náhoda, ne pravidlo.
+ */
+describe('rozhodovat musí pravidlo, ne pořadí v poli', () => {
+  it('anycast na témže prefixu přebije regionální údaj', () => {
+    // Ověřeno nad skutečným snímkem: ve 120 bodech dostala adresa krytá
+    // službou CloudFront zemi, protože při shodě šířky vyhrál ten rozsah,
+    // na který se narazilo dřív.
+    const r = lookupCloudIp('3.29.57.5', SNIMEK);
+    expect(r.anycast).toBe(true);
+    expect(r.country).toBeNull();
+  });
+
+  it('rozsah bez regionu nepřebije ten s regionem', () => {
+    // Ve 3 510 bodech vyhrála prázdná varianta a adresa se vrátila jako
+    // „běží za CDN" — nezměřené tvrzení o topologii sítě u služby, která
+    // CDN není.
+    const r = lookupCloudIp('20.50.1.1', SNIMEK);
+    expect(r.anycast).toBe(false);
+    expect(r.region).toBe('westeurope');
+    expect(r.country).toBe('NL');
+  });
+
+  it('velmi široký blok se najde i tak', () => {
+    // Pevný strop 4000 položek při zpětném průchodu už dnes nestačil —
+    // u bloku 20.192.0.0/10 je potřeba 5479 kroků. Adresy v něm vycházely
+    // jako nenalezené. Hledá se nově podle největšího rozsahu ve snímku.
+    const r = lookupCloudIp('100.90.1.1', SNIMEK);
+    expect(r).not.toBeNull();
+    expect(r.country).toBe('NL');
   });
 });

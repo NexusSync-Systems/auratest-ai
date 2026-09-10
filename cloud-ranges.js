@@ -57,13 +57,40 @@ export const ANYCAST_SERVICES = new Set([
 /**
  * Názvy regionů, které znamenají „globální", ne konkrétní místo.
  *
- * Bez nich by takový rozsah vyšel jako region, který jen neumíme převést
- * na zemi. To je pravda o výsledku, ale ne o příčině: tady se nejedná
- * o mezeru v naší tabulce, nýbrž o to, že místo neexistuje.
+ * PRÁZDNÝ ŘETĚZEC SEM NEPATŘÍ.
+ * Původně tu byl a byla to chyba: 35 131 z 69 044 rozsahů Azure, tedy
+ * skoro polovina, má region prázdný. Nejde o globální služby — jsou to
+ * značky jako `AzureSQL`, `AzureMonitor` nebo `LogicApps`, u nichž Azure
+ * vlastnost `region` prostě neuvádí. Prohlásit je za anycast znamenalo
+ * napsat zákazníkovi do spisu, že jeho doména „běží za CDN, kde
+ * geolokace ukazuje na nejbližší PoP" — tvrzení o topologii sítě, které
+ * nikdo neměřil a které u databázové služby není pravdivé.
+ *
+ * Chybějící region znamená NEZNÁMÉ MÍSTO, ne globální službu. Rozdíl je
+ * v tom, co se o adrese smí říct.
  */
-const GLOBAL_REGIONS = new Set(['global', 'GLOBAL', '']);
+const GLOBAL_REGIONS = new Set(['global', 'GLOBAL']);
 
 let cache = null;
+
+/**
+ * Největší rozsah ve snímku — určuje, jak daleko zpět se musí hledat.
+ *
+ * Počítá se jednou při načtení. Bez toho by se buď procházel celý seznam,
+ * nebo by se musel volit pevný strop, což se už jednou ukázalo jako
+ * krátké.
+ */
+function maxRangeSize(ranges) {
+  if (ranges.__maxSize === undefined) {
+    let max = 0;
+    for (const r of ranges) {
+      const size = r.e - r.s + 1;
+      if (size > max) max = size;
+    }
+    Object.defineProperty(ranges, '__maxSize', { value: max, enumerable: false });
+  }
+  return ranges.__maxSize;
+}
 
 /** Převede IPv4 na číslo. Vrací `null` u čehokoli, co IPv4 není. */
 export function ipv4ToInt(ip) {
@@ -144,26 +171,54 @@ export function lookupCloudIp(ip, file = RANGES_FILE) {
     else hi = mid;
   }
 
-  // Odtud zpět: hledá se nejužší rozsah, který adresu obsahuje.
+  // Odtud zpět: seberou se VŠECHNY rozsahy, které adresu obsahují.
   //
-  // Zpět se jde jen omezeně. Rozsahy se překrývají, ale ne donekonečna;
-  // bez stropu by se u husté oblasti procházel celý seznam a lookup by
-  // přestal být levný.
-  let best = null;
-  for (let i = lo - 1; i >= 0 && i >= lo - 4000; i--) {
+  // Dřív se hledal jen jeden „nejužší" a při shodě šířky vyhrál ten, na
+  // který se narazilo dřív — tedy náhoda daná pořadím v poli. Mělo to dva
+  // následky, oba ověřené nad skutečným snímkem: ve 120 bodech dostala
+  // adresa krytá službou CloudFront zemi, přestože se anycast má vyřadit,
+  // a ve 3 510 bodech přebil rozsah bez regionu ten s regionem.
+  //
+  // Kam až zpět: rozsahy jsou seřazené podle začátku, takže stačí jít,
+  // dokud je vzdálenost menší než největší rozsah ve snímku. Dřív tu byl
+  // pevný strop 4000 položek a už dnes nestačil — u bloku 20.192.0.0/10
+  // je potřeba 5479 kroků, takže adresy v něm vycházely jako nenalezené.
+  const maxSize = maxRangeSize(ranges);
+  const kryjici = [];
+  for (let i = lo - 1; i >= 0; i--) {
     const r = ranges[i];
-    if (r.e < n) continue;
-    if (best === null || r.b > best.b) best = r;
+    // Za tímhle bodem už žádný rozsah adresu obsáhnout nemůže.
+    if (n - r.s >= maxSize) break;
+    if (r.e >= n) kryjici.push(r);
   }
-  if (!best) return null;
+  if (kryjici.length === 0) return null;
 
-  const anycast = ANYCAST_SERVICES.has(best.svc) || GLOBAL_REGIONS.has(best.r);
+  // Anycast rozhoduje kterýkoli kryjící rozsah, ne jen ten nejužší.
+  // Když je adresa vedená pod CloudFrontem, je anycast bez ohledu na to,
+  // že ji zároveň pokrývá regionální blok.
+  const anycast = kryjici.some(
+    (r) => ANYCAST_SERVICES.has(r.svc) || GLOBAL_REGIONS.has(r.r)
+  );
+
+  // Zemi určuje nejužší rozsah, který nějakou zemi vůbec zná. Rozsah bez
+  // regionu nebo s regionem mimo naši tabulku se přeskočí — neurčuje nic,
+  // takže nemá co přebíjet ten, který určuje.
+  let sZemi = null;
+  let nejuzsi = kryjici[0];
+  for (const r of kryjici) {
+    if (r.b > nejuzsi.b) nejuzsi = r;
+    if (!r.r || GLOBAL_REGIONS.has(r.r)) continue;
+    if (!regionCountry(r.p, r.r)) continue;
+    if (sZemi === null || r.b > sZemi.b) sZemi = r;
+  }
+
+  const zdroj = sZemi || nejuzsi;
   return {
-    provider: best.p,
-    region: best.r || null,
-    country: anycast ? null : regionCountry(best.p, best.r),
-    service: best.svc || null,
-    prefix: best.cidr,
+    provider: zdroj.p,
+    region: zdroj.r || null,
+    country: anycast ? null : (sZemi ? regionCountry(sZemi.p, sZemi.r) : null),
+    service: zdroj.svc || null,
+    prefix: zdroj.cidr,
     anycast,
   };
 }

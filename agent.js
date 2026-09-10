@@ -2633,6 +2633,30 @@ export async function auditGreenAndResidency(url) {
         continue;
       }
 
+      // Adresa JE v rozsazích poskytovatele, ale region neumíme převést.
+      //
+      // Propadnout tady na geolokační databázi by bylo to nejhorší možné:
+      // sáhli bychom po zdroji, jehož nespolehlivost u cloudových adres je
+      // důvodem existence celého tohohle modulu. Ověřeno nad skutečným
+      // snímkem — adresa 5.60.32.1 leží v aws ap-southeast-6, tedy podle
+      // dokumentace AWS na Novém Zélandu, a geolokační databáze ji řadí do
+      // Polska „s jistotou". Sken by z toho vydal kladné potvrzení
+      // rezidence v EHP o serveru na druhé straně planety.
+      //
+      // Když poskytovatel adresu zná a my jeho region neumíme přeložit, je
+      // to mezera v naší tabulce — a ta se řeší doplněním, ne odhadem.
+      if (cloud) {
+        unlocatedDomains.push({
+          domain,
+          ip,
+          reason: cloud.anycast
+            ? `rozsah ${cloud.prefix} je globální (${cloud.provider}), umístění dat z něj neplyne`
+            : `${cloud.provider} uvádí region ${cloud.region || 'neuvedený'}, který neumíme převést na zemi`,
+        });
+        locations.push({ domain, ip, country: null, isEU: null, onCdn: false });
+        continue;
+      }
+
       // Nejen „záznam chybí", ale i „záznam nic neurčuje".
       //
       // Ověřeno na vlastní infrastruktuře: 4.223.166.194 je server v Azure
