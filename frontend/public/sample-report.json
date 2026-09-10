@@ -1,5 +1,5 @@
 {
-  "measuredAt": "2026-09-09T15:36:00.489Z",
+  "measuredAt": "2026-09-10T08:41:18.177Z",
   "target": "https://auraguard.nexusstack.eu",
   "note": "Naměřeno skutečným během nástroje, ne ručně sestaveno. Nálezy popisují stav cílového webu v uvedený čas.",
   "sections": {
@@ -242,6 +242,7 @@
               "npm": "react",
               "type": "Framework",
               "version": null,
+              "truncatedScan": false,
               "confidence": "presence-only",
               "evidence": "react.element",
               "sources": [
@@ -253,6 +254,7 @@
               "npm": "react-dom",
               "type": "Library",
               "version": null,
+              "truncatedScan": false,
               "confidence": "presence-only",
               "evidence": "createRoot=Qc.createRoot,Ps.hydrateRoot=Qc.hydrateRoot",
               "sources": [
@@ -279,6 +281,8 @@
             "scriptsUnreadable": 0,
             "sourceMapPackages": 0,
             "truncated": false,
+            "truncatedScripts": [],
+            "droppedSourceMapPackages": 0,
             "httpError": null
           },
           "conflicts": [],
@@ -302,13 +306,17 @@
             {
               "domain": "auraguard.nexusstack.eu",
               "ip": "4.223.166.194",
-              "country": null,
-              "isEU": null,
-              "onCdn": false
+              "country": "SE",
+              "isEU": true,
+              "onCdn": false,
+              "isOrigin": true,
+              "source": "rozsah poskytovatele",
+              "cloudProvider": "azure",
+              "cloudRegion": "swedencentral"
             },
             {
               "domain": "fonts.googleapis.com",
-              "ip": "142.251.143.138",
+              "ip": "192.178.25.10",
               "country": "US",
               "onCdn": true,
               "cdnProvider": "Google",
@@ -317,7 +325,7 @@
             },
             {
               "domain": "fonts.gstatic.com",
-              "ip": "142.251.142.227",
+              "ip": "172.217.19.227",
               "country": "US",
               "onCdn": true,
               "cdnProvider": "gstatic.com",
@@ -330,7 +338,7 @@
           "cdnDomains": [
             {
               "domain": "fonts.googleapis.com",
-              "ip": "142.251.143.138",
+              "ip": "192.178.25.10",
               "country": "US",
               "onCdn": true,
               "cdnProvider": "Google",
@@ -338,26 +346,41 @@
             },
             {
               "domain": "fonts.gstatic.com",
-              "ip": "142.251.142.227",
+              "ip": "172.217.19.227",
               "country": "US",
               "onCdn": true,
               "cdnProvider": "gstatic.com",
               "cdnEvidence": "hostname obsahuje „gstatic.com\""
             }
           ],
-          "unlocatedDomains": [
-            {
-              "domain": "auraguard.nexusstack.eu",
-              "ip": "4.223.166.194",
-              "reason": "databáze adresu neumístila (výplňová souřadnice)"
-            }
-          ],
-          "measuredDomains": 0,
-          "geoipDatabaseDate": "2026-08-31T14:22:06.000Z",
+          "unlocatedDomains": [],
+          "measuredDomains": 1,
+          "geoipDatabaseDate": "2026-09-09T18:41:24.000Z",
+          "cloudRangesSnapshot": {
+            "generatedAt": "2026-09-09T18:33:23.207Z",
+            "sources": [
+              {
+                "provider": "aws",
+                "url": "https://ip-ranges.amazonaws.com/ip-ranges.json",
+                "snapshot": "2026-09-09-14-37-05"
+              },
+              {
+                "provider": "gcp",
+                "url": "https://www.gstatic.com/ipranges/cloud.json",
+                "snapshot": "2026-09-09T07:04:23.436403"
+              },
+              {
+                "provider": "azure",
+                "url": "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/ServiceTags_Public_20260907.json",
+                "snapshot": "changeNumber 417"
+              }
+            ],
+            "count": 80598
+          },
           "originHost": "auraguard.nexusstack.eu",
-          "originMeasured": false,
-          "isEUCompliant": null,
-          "warning": "Umístění serverů se nepodařilo posoudit u žádné domény. Z verdiktu vyřazeno: 2 běží za CDN, kde geolokace ukazuje na nejbližší PoP, ne na místo uložení dat — rezidenci u nich doloží smlouva s poskytovatelem, ne tohle měření; u 1 nenašla geolokační databáze záznam k adrese. Doménu auditovaného webu (auraguard.nexusstack.eu) se umístit nepodařilo, takže o rezidenci dat provozovatele tenhle sken neříká nic — posouzené domény patří jiným službám."
+          "originMeasured": true,
+          "isEUCompliant": true,
+          "warning": "Všech 1 posouzených serverů je v EU/EHP (celkem domén: 3). Z verdiktu vyřazeno: 2 běží za CDN, kde geolokace ukazuje na nejbližší PoP, ne na místo uložení dat — rezidenci u nich doloží smlouva s poskytovatelem, ne tohle měření."
         }
       },
       "error": null
@@ -367,6 +390,16 @@
         "success": true,
         "url": "https://auraguard.nexusstack.eu/",
         "navigationError": null,
+        "engine": {
+          "name": "axe-core",
+          "version": "4.12.1",
+          "tags": [
+            "wcag2a",
+            "wcag2aa",
+            "wcag21a",
+            "wcag21aa"
+          ]
+        },
         "violations": [
           {
             "id": "color-contrast",
@@ -417,10 +450,10 @@
         "type": "page",
         "name": "Ukázkový cíl",
         "url": "https://auraguard.nexusstack.eu",
-        "timestamp": "2026-09-09T15:36:00.458Z",
+        "timestamp": "2026-09-10T08:41:18.134Z",
         "ok": true,
         "status": 200,
-        "durationMs": 31,
+        "durationMs": 43,
         "error": null
       },
       "error": null

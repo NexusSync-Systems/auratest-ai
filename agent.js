@@ -2462,6 +2462,19 @@ function residencyVerdict(measured, nonEULocations, originMeasured) {
   return true;
 }
 
+/**
+ * Skloňování počtu serverů.
+ *
+ * Text jde do dokumentu předkládaného úřadu. „Všech 1 posouzených serverů"
+ * tam působí nedbale a nedbalost v tom, co jde ověřit na první pohled,
+ * podrývá důvěru i v to, co ověřit nejde.
+ */
+function serveru(n) {
+  if (n === 1) return 'jediný posouzený server je';
+  if (n >= 2 && n <= 4) return `všechny ${n} posouzené servery jsou`;
+  return `všech ${n} posouzených serverů je`;
+}
+
 function residencyWarning(totalDomains, measured, nonEULocations, cdnDomains, unlocatedDomains) {
   const vyrazeno = [];
   if (cdnDomains.length > 0) {
@@ -2487,7 +2500,8 @@ function residencyWarning(totalDomains, measured, nonEULocations, cdnDomains, un
     return `${nonEULocations.length} z ${measured.length} posouzených serverů je mimo EU/EHP `
       + `(celkem domén: ${totalDomains}).${poznamka}`;
   }
-  return `Všech ${measured.length} posouzených serverů je v EU/EHP `
+  const veta = serveru(measured.length);
+  return `${veta.charAt(0).toUpperCase()}${veta.slice(1)} v EU/EHP `
     + `(celkem domén: ${totalDomains}).${poznamka}`;
 }
 
