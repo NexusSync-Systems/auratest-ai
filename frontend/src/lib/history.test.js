@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import {
-  zkracenyTyp, stavBehu, casBehu, nadpisDne, seskupPodleDne,
+  zkracenyTyp, stavBehu, casBehu, nadpisDne, seskupPodleDne, VYSVETLENI,
 } from './history.js';
 
 /**
@@ -192,5 +192,50 @@ describe('stav se neodvozuje z počtu nálezů, když ten počet nic neznamená'
   test('běh bez čitelného času se neoznačí za mrtvý', () => {
     // Nečitelné datum neznamená, že běh spadl. Spíš varovat než tvrdit.
     expect(stavBehu({ status: 'running', timestamp: 'nesmysl' }).stav).toBe('bezi');
+  });
+});
+
+describe('vysvětlení stavů', () => {
+  test('každý stav nese vlastní vysvětlení', () => {
+    // Bez něj si čtenář přebere všechny tři podobné odznaky jako
+    // „asi dobrý" nebo „asi špatný" a trojstav je jen ozdoba.
+    const stavy = [
+      stavBehu({ status: 'completed', bugsCount: 0 }),
+      stavBehu({ status: 'completed', bugsCount: 3 }),
+      stavBehu({ status: 'failed', bugsCount: 0 }),
+      stavBehu({ status: 'running', heartbeatAt: new Date().toISOString() }),
+      stavBehu({ status: 'completed', kind: 'compliance-scan', verdict: null }),
+    ];
+    for (const s of stavy) {
+      expect(typeof s.popis).toBe('string');
+      expect(s.popis.length).toBeGreaterThan(20);
+    }
+    // Pět různých stavů, pět různých vět. Kdyby se dvě shodovaly,
+    // znamenalo by to, že se dva stavy čtou stejně — a pak nemá smysl
+    // je rozlišovat.
+    expect(new Set(stavy.map((s) => s.popis)).size).toBe(5);
+  });
+
+  test('„Bez nálezu" se nevydává za potvrzení souladu', () => {
+    const s = stavBehu({ status: 'completed', bugsCount: 0 });
+    expect(s.popis).toMatch(/Není to potvrzení souladu/);
+  });
+
+  test('„Neprůkazné" není závada ani její nepřítomnost', () => {
+    const s = stavBehu({ status: 'completed', kind: 'compliance-scan', verdict: null });
+    expect(s.popis).toMatch(/Není to závada ani její nepřítomnost/);
+  });
+
+  test('„Nedokončeno" netvrdí nic o aplikaci', () => {
+    const s = stavBehu({ status: 'failed', bugsCount: 0 });
+    expect(s.popis).toMatch(/neplyne, že je aplikace bez závad/);
+  });
+
+  test('vysvětlení sedí s tím, co rozhodlo o stavu', () => {
+    // Vysvětlení je u zdroje, ne v šabloně — jinak by se mohlo
+    // rozejít s rozhodováním.
+    expect(stavBehu({ status: 'completed', bugsCount: 0 }).popis)
+      .toBe(VYSVETLENI.ciste);
+    expect(stavBehu({ status: 'failed' }).popis).toBe(VYSVETLENI.nedokonceno);
   });
 });

@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { ChevronRight, ExternalLink, Loader2, Printer, Download, Send } from 'lucide-react';
-import { seskupPodleDne, stavBehu, zkracenyTyp, casBehu } from '../lib/history.js';
+import { seskupPodleDne, stavBehu, zkracenyTyp, casBehu, VYSVETLENI } from '../lib/history.js';
 
 /**
  * Historie běhů: rozkliknutím náhled, tlačítkem plný detail.
@@ -54,10 +54,37 @@ export default function HistoryList({
 
   return (
     <>
-      <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '16px' }}>
+      <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '12px' }}>
         Celkem {sessions.length} {sessions.length === 1 ? 'běh' : (sessions.length < 5 ? 'běhy' : 'běhů')}.
         Kliknutím se rozbalí náhled, tlačítkem se otevře celý záznam.
       </p>
+
+      {/* Legenda stavů.
+          Rozdíl mezi „Bez nálezu", „Nedokončeno" a „Neprůkazné" je to,
+          na čem celý nástroj stojí — a v seznamu jsou to tři podobně
+          vypadající odznaky. Bez vysvětlení si je čtenář přebere jako
+          „asi dobrý" / „asi špatný" a trojstav je jen ozdoba. */}
+      <details className="history-legenda">
+        <summary>Co znamenají jednotlivé stavy</summary>
+        <dl>
+          {[
+            ['ciste', 'Bez nálezu'],
+            ['nalezy', 'Nález / Porušení'],
+            ['nedokonceno', 'Neprůkazné'],
+            ['nedokonceno', 'Nedokončeno'],
+            ['nedokonceno', 'Bez odezvy'],
+            ['bezi', 'Běží'],
+          ].map(([trida, popisek], i) => (
+            <div key={popisek}>
+              <dt><span className={`history-stav ${trida}`}>{popisek}</span></dt>
+              <dd>{[
+                VYSVETLENI.ciste, VYSVETLENI.nalezy, VYSVETLENI.neprukazne,
+                VYSVETLENI.nedokonceno, VYSVETLENI.bezodezvy, VYSVETLENI.bezi,
+              ][i]}</dd>
+            </div>
+          ))}
+        </dl>
+      </details>
 
       {seskupPodleDne(sessions).map((skupina) => (
         <div key={skupina.nadpis} style={{ marginBottom: '20px' }}>
@@ -84,12 +111,23 @@ export default function HistoryList({
                     <span className="history-row-time">{casBehu(s.timestamp)}</span>
                     <span className="history-row-url">{s.url || ''}</span>
                     <span className="history-row-type">{zkracenyTyp(s.goal)}</span>
-                    {/* Stav nese TEXT, ne jen barvu. */}
-                    <span className={`history-stav ${stav.trida}`}>{stav.popisek}</span>
+                    {/* Stav nese TEXT, ne jen barvu — a `title` k němu
+                        dává celou větu, protože samotné „Neprůkazné"
+                        si čtenář přeloží jako „asi špatný". */}
+                    <span className={`history-stav ${stav.trida}`} title={stav.popis}>
+                      {stav.popisek}
+                    </span>
                   </button>
 
                   {je && (
                     <div className="history-nahled" id={`nahled-${s.id}`}>
+                      {/* Co ten stav znamená, hned nahoře v náhledu.
+                          Tooltip na odznaku je pro rychlé nahlédnutí,
+                          tohle pro toho, kdo si běh opravdu otevřel. */}
+                      <p className="history-stav-popis">
+                        <span className={`history-stav ${stav.trida}`}>{stav.popisek}</span>
+                        {' '}{stav.popis}
+                      </p>
                       <Nahled zaznam={detaily[s.id]} souhrn={s} />
                       <Akce
                         zaznam={detaily[s.id]}

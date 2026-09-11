@@ -57,6 +57,33 @@ export function zkracenyTyp(goal) {
 }
 
 /**
+ * Co který stav znamená.
+ *
+ * Rozdíl mezi „Bez nálezu", „Nedokončeno" a „Neprůkazné" je přesně to,
+ * na čem celý nástroj stojí — a v seznamu jsou to tři podobně vypadající
+ * odznaky. Bez vysvětlení je trojstav jen ozdoba: uživatel si všechny
+ * tři přečte jako „asi dobrý" nebo „asi špatný".
+ *
+ * Vysvětlení je u zdroje, ne v šabloně, aby se nemohlo rozejít
+ * s rozhodováním v `stavBehu` níž.
+ */
+export const VYSVETLENI = {
+  ciste: 'Kontrola proběhla celá a v jejím rozsahu se nic nenašlo. '
+    + 'Není to potvrzení souladu — rozsah je dán tím, co nástroj měří.',
+  nalezy: 'Kontrola proběhla celá a něco našla. Podrobnosti jsou '
+    + 'v záznamu běhu.',
+  neprukazne: 'Kontrola proběhla, ale na závěr to nestačilo. Není to '
+    + 'závada ani její nepřítomnost — o téhle oblasti se z běhu nedá '
+    + 'nic tvrdit.',
+  nedokonceno: 'Běh se nedokončil, takže nemá výsledek. Z toho neplyne, '
+    + 'že je aplikace bez závad, ani že závady má.',
+  bezodezvy: 'Běh zůstal rozdělaný déle, než trvá nejdelší povolené '
+    + 'měření. Nejspíš se nedokončil; jeho výsledek se nedozvíme.',
+  bezi: 'Měření právě probíhá. Výsledek zatím neexistuje.',
+  neznamy: 'Záznam nenese údaj, ze kterého by se stav dal určit.',
+};
+
+/**
  * Stav běhu pro odznak v seznamu.
  *
  * @param {{status?: string, bugsCount?: number, kind?: string,
@@ -77,16 +104,16 @@ export function stavBehu(s, now = Date.now()) {
     // o týchž záznamech: nahoře „3 běhy bez odezvy", dole „Běží".
     const zacatek = Date.parse(s?.timestamp);
     if (!Number.isNaN(zacatek) && now - zacatek >= STALE_AFTER_MS) {
-      return { stav: 'bezodezvy', popisek: 'Bez odezvy', trida: 'nedokonceno' };
+      return { stav: 'bezodezvy', popisek: 'Bez odezvy', trida: 'nedokonceno', popis: VYSVETLENI.bezodezvy };
     }
-    return { stav: 'bezi', popisek: 'Běží', trida: 'bezi' };
+    return { stav: 'bezi', popisek: 'Běží', trida: 'bezi', popis: VYSVETLENI.bezi };
   }
   if (status === 'failed') {
     // Nedokončený běh NENÍ běh bez nálezu. Nikdo se nedíval.
-    return { stav: 'nedokonceno', popisek: 'Nedokončeno', trida: 'nedokonceno' };
+    return { stav: 'nedokonceno', popisek: 'Nedokončeno', trida: 'nedokonceno', popis: VYSVETLENI.nedokonceno };
   }
   if (status !== 'completed') {
-    return { stav: 'neznamy', popisek: 'Neznámý stav', trida: 'nedokonceno' };
+    return { stav: 'neznamy', popisek: 'Neznámý stav', trida: 'nedokonceno', popis: VYSVETLENI.neznamy };
   }
   // Předpisový sken nese verdikt v `checks`, ne v `bugs`.
   //
@@ -96,22 +123,22 @@ export function stavBehu(s, now = Date.now()) {
   // úplně stejně jako čistý.
   if (s?.kind === 'compliance-scan') {
     if (s.verdict === false) {
-      return { stav: 'nalezy', popisek: 'Porušení', trida: 'nalezy' };
+      return { stav: 'nalezy', popisek: 'Porušení', trida: 'nalezy', popis: VYSVETLENI.nalezy };
     }
     if (s.verdict === true) {
-      return { stav: 'ciste', popisek: 'Bez nálezu', trida: 'ciste' };
+      return { stav: 'ciste', popisek: 'Bez nálezu', trida: 'ciste', popis: VYSVETLENI.ciste };
     }
-    return { stav: 'neprukazne', popisek: 'Neprůkazné', trida: 'nedokonceno' };
+    return { stav: 'neprukazne', popisek: 'Neprůkazné', trida: 'nedokonceno', popis: VYSVETLENI.neprukazne };
   }
 
   if (typeof nalezy !== 'number') {
     // Záznam nenese počet nálezů — z toho se „bez nálezu" vyvodit nedá.
-    return { stav: 'neznamy', popisek: 'Bez údaje o nálezech', trida: 'nedokonceno' };
+    return { stav: 'neznamy', popisek: 'Bez údaje o nálezech', trida: 'nedokonceno', popis: VYSVETLENI.neznamy };
   }
   if (nalezy > 0) {
-    return { stav: 'nalezy', popisek: `${nalezy} ${vetNalez(nalezy)}`, trida: 'nalezy' };
+    return { stav: 'nalezy', popisek: `${nalezy} ${vetNalez(nalezy)}`, trida: 'nalezy', popis: VYSVETLENI.nalezy };
   }
-  return { stav: 'ciste', popisek: 'Bez nálezu', trida: 'ciste' };
+  return { stav: 'ciste', popisek: 'Bez nálezu', trida: 'ciste', popis: VYSVETLENI.ciste };
 }
 
 function vetNalez(n) {
