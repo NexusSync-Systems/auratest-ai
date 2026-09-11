@@ -169,16 +169,106 @@ code, pre {
  * a položka unesla jen doménu a počet chyb. Tady je celá šířka pracovní
  * plochy, takže se vejde čas, adresa, typ i stav na jeden řádek.
  */
+.history-entry {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: rgba(255, 255, 255, 0.01);
+  overflow: hidden;
+}
+
+.history-entry.open {
+  border-color: var(--accent);
+  background-color: rgba(139, 92, 246, 0.04);
+}
+
+.history-day-heading {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.history-chevron {
+  color: var(--text-muted);
+  transition: transform var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.history-entry.open .history-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+/* Náhled po rozkliknutí.
+   Odpovídá na „byl to tenhle?" na místě; do celého záznamu se přepíná
+   až tlačítkem. Dřív kliknutí rovnou přehodilo na jinou sekci, takže
+   hledání jednoho běhu mezi padesáti znamenalo padesát přepnutí. */
+.history-nahled {
+  padding: 4px 16px 16px 32px;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.history-nahled-text {
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.history-nahled-fakta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 16px;
+  margin-bottom: 10px;
+}
+
+.history-nahled-fakta dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dark);
+}
+
+.history-nahled-fakta dd {
+  color: var(--text-main);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.history-nahled-seznam {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.history-nahled-seznam li {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.history-nahled-vic {
+  color: var(--text-dark);
+  font-size: 0.75rem;
+}
+
+.spin-inline {
+  display: inline-block;
+  vertical-align: -2px;
+  animation: spin 1s linear infinite;
+}
+
 .history-row {
   display: grid;
-  grid-template-columns: 56px 1fr auto auto;
+  grid-template-columns: 16px 56px 1fr auto auto;
   align-items: center;
   gap: 12px;
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background-color: rgba(255, 255, 255, 0.01);
+  border: none;
+  background: transparent;
   color: inherit;
   font: inherit;
   text-align: left;
@@ -187,7 +277,6 @@ code, pre {
 }
 
 .history-row:hover {
-  border-color: var(--accent);
   background-color: rgba(255, 255, 255, 0.03);
 }
 
@@ -237,7 +326,7 @@ code, pre {
 
 @media (max-width: 720px) {
   .history-row {
-    grid-template-columns: 56px 1fr;
+    grid-template-columns: 16px 56px 1fr;
     row-gap: 4px;
   }
 }

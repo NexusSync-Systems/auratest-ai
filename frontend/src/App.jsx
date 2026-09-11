@@ -30,7 +30,7 @@ import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
 import { execSummary } from './lib/exec-summary.js';
-import { seskupPodleDne, stavBehu, zkracenyTyp, casBehu } from './lib/history.js';
+import HistoryList from './components/HistoryList.jsx';
 import { useRoutedTab } from './hooks/useRoutedTab.js';
 import { isProtectedTab } from './lib/routes.js';
 import LandingPage from './components/public/LandingPage.jsx';
@@ -1462,7 +1462,7 @@ export default function App() {
             </h1>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
               {activeTab === 'agent' && 'Agent provádí akce jako člověk a hledá chyby za běhu'}
-              {activeTab === 'history' && 'Všechny dosavadní běhy — kliknutím se otevře záznam'}
+              {activeTab === 'history' && 'Rozkliknutím náhled běhu, tlačítkem celý záznam'}
               {activeTab === 'compare' && 'Porovnává textový a vizuální obsah mezi dvěma verzemi webu'}
               {activeTab === 'audit' && 'Kontrola překladů na webu proti databázi nebo nadefinovanému slovníku'}
               {activeTab === 'auraguard' && 'Plánovaný syntetický monitoring a sběr klientských chyb v reálném čase'}
@@ -2432,49 +2432,15 @@ export default function App() {
               odhlašovacího tlačítka. Na desítky běhů to bylo málo místa
               a nešlo v tom nic hledat. Tady je celá šířka pracovní
               plochy, takže se vejde i URL, typ, čas a stav najednou. */}
+          {/* Historie testů. Rozkliknutím náhled, tlačítkem celý záznam —
+              viz components/HistoryList.jsx. */}
           {user && activeTab === 'history' && (
             <div className="card" style={{ maxWidth: '900px' }}>
-              {sessions.length === 0 ? (
-                <p style={{ color: 'var(--text-muted)' }}>
-                  Zatím tu není žádný běh. Spusťte test v sekci „AI QA Agent".
-                </p>
-              ) : (
-                <>
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '16px' }}>
-                    Celkem {sessions.length} {sessions.length === 1 ? 'běh' : (sessions.length < 5 ? 'běhy' : 'běhů')}.
-                    Kliknutím se záznam otevře v sekci AI QA Agent.
-                  </p>
-                  {seskupPodleDne(sessions).map((skupina) => (
-                    <div key={skupina.nadpis} style={{ marginBottom: '20px' }}>
-                      <h3 style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                        {skupina.nadpis}
-                      </h3>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {skupina.bezy.map((s) => {
-                          const stav = stavBehu(s);
-                          return (
-                            <button
-                              type="button"
-                              key={s.id}
-                              className="history-row"
-                              onClick={() => { setSelectedSessionId(s.id); setActiveTab('agent'); }}
-                              title={s.goal || ''}
-                            >
-                              <span className="history-row-time">{casBehu(s.timestamp)}</span>
-                              <span className="history-row-url">{s.url || getDomain(s.url)}</span>
-                              <span className="history-row-type">{zkracenyTyp(s.goal)}</span>
-                              {/* Stav nese TEXT, ne jen barvu. „Nedokončeno"
-                                  je vlastní stav: 0 nálezů u selhaného běhu
-                                  znamená, že se nikdo nedíval. */}
-                              <span className={`history-stav ${stav.trida}`}>{stav.popisek}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </>
-              )}
+              <HistoryList
+                sessions={sessions}
+                authFetch={authFetch}
+                onOpenDetail={(id) => { setSelectedSessionId(id); setActiveTab('agent'); }}
+              />
             </div>
           )}
 
