@@ -25,6 +25,7 @@ export const DEFAULT_TAB = 'auraguard';
 /** Sekce aplikace — vyžadují přihlášení. */
 export const TAB_TO_PATH = {
   agent: '/agent',
+  history: '/historie',
   compare: '/porovnani-verzi',
   audit: '/audit-prekladu',
   auraguard: '/hub',

@@ -22,6 +22,7 @@ import {
   Printer,
   User,
   Wrench,
+  History as HistoryIcon,
 } from 'lucide-react';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
@@ -1365,6 +1366,14 @@ export default function App() {
             <Play size={16} />
             <span>AI QA Agent</span>
           </button>
+          <button
+            className={`nav-item ${activeTab === 'history' ? 'active' : ''}`}
+            aria-current={activeTab === 'history' ? 'page' : undefined}
+            onClick={() => { setActiveTab('history'); }}
+          >
+            <HistoryIcon size={16} />
+            <span>Historie testů</span>
+          </button>
           <button 
             className={`nav-item ${activeTab === 'compare' ? 'active' : ''}`}
             aria-current={activeTab === 'compare' ? 'page' : undefined}
@@ -1408,54 +1417,6 @@ export default function App() {
         </nav>
         )}
 
-        <div className="sidebar-divider" />
-        <span className="sidebar-section-title">Historie testů</span>
-        
-        <div className="history-list" style={{ flexGrow: 1, overflowY: 'auto' }}>
-          {sessions.length === 0 ? (
-            <div style={{ color: 'var(--text-dark)', fontSize: '0.75rem', padding: '8px' }}>
-              Žádné předchozí testy.
-            </div>
-          ) : (
-            /* Seskupeno po dnech a s výsledkem na první pohled.
-               Dřív tu byla jen doména, počet chyb a celý dlouhý `goal` —
-               čtyři běhy na tutéž doménu vypadaly identicky a kliknout
-               se dalo jedině naslepo. */
-            seskupPodleDne(sessions).map((skupina) => (
-              <div key={skupina.nadpis} className="history-group">
-                <div className="history-day">{skupina.nadpis}</div>
-                {skupina.bezy.map((s) => {
-                  const stav = stavBehu(s);
-                  return (
-                    /* Dřív <div onClick> — nefokusovatelné, neovladatelné klávesnicí. */
-                    <button
-                      type="button"
-                      key={s.id}
-                      className={`history-item ${selectedSessionId === s.id ? 'active' : ''}`}
-                      onClick={() => { setSelectedSessionId(s.id); setActiveTab('agent'); }}
-                      aria-current={selectedSessionId === s.id ? 'true' : undefined}
-                      title={`${s.url || ''} — ${s.goal || ''}`}
-                      style={selectedSessionId === s.id ? { borderColor: 'var(--accent)' } : {}}
-                    >
-                      <div className="history-item-header">
-                        <span className="history-url">{getDomain(s.url)}</span>
-                        <span className="history-time">{casBehu(s.timestamp)}</span>
-                      </div>
-                      <div className="history-meta">
-                        <span className="history-type">{zkracenyTyp(s.goal)}</span>
-                        {/* Stav nese TEXT, ne jen barvu. A „Nedokončeno"
-                            je vlastní stav — `0 nálezů` u selhaného běhu
-                            znamená, že se nikdo nedíval. */}
-                        <span className={`history-stav ${stav.trida}`}>{stav.popisek}</span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            ))
-          )}
-        </div>
-
         <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', marginTop: 'auto' }}>
           {user ? (
             <>
@@ -1492,6 +1453,7 @@ export default function App() {
                 nástroj sám překládá. */}
             <h1 style={{ fontSize: '1.25rem', margin: 0 }}>
               {activeTab === 'agent' && 'Autonomní AI QA Agent'}
+              {activeTab === 'history' && 'Historie testů'}
               {activeTab === 'compare' && 'Porovnávání stránek (Prod vs Preview)'}
               {activeTab === 'audit' && 'Audit překladů a lokalizace'}
               {activeTab === 'auraguard' && 'AuraAuraGuard Hub'}
@@ -1500,6 +1462,7 @@ export default function App() {
             </h1>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
               {activeTab === 'agent' && 'Agent provádí akce jako člověk a hledá chyby za běhu'}
+              {activeTab === 'history' && 'Všechny dosavadní běhy — kliknutím se otevře záznam'}
               {activeTab === 'compare' && 'Porovnává textový a vizuální obsah mezi dvěma verzemi webu'}
               {activeTab === 'audit' && 'Kontrola překladů na webu proti databázi nebo nadefinovanému slovníku'}
               {activeTab === 'auraguard' && 'Plánovaný syntetický monitoring a sběr klientských chyb v reálném čase'}
@@ -2464,6 +2427,57 @@ export default function App() {
           )}
 
           {/* Tab 2: Compare Tool */}
+          {/* Záložka: Historie testů.
+              Dřív to byl seznam v postranním menu vysoký 250 px vedle
+              odhlašovacího tlačítka. Na desítky běhů to bylo málo místa
+              a nešlo v tom nic hledat. Tady je celá šířka pracovní
+              plochy, takže se vejde i URL, typ, čas a stav najednou. */}
+          {user && activeTab === 'history' && (
+            <div className="card" style={{ maxWidth: '900px' }}>
+              {sessions.length === 0 ? (
+                <p style={{ color: 'var(--text-muted)' }}>
+                  Zatím tu není žádný běh. Spusťte test v sekci „AI QA Agent".
+                </p>
+              ) : (
+                <>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '16px' }}>
+                    Celkem {sessions.length} {sessions.length === 1 ? 'běh' : (sessions.length < 5 ? 'běhy' : 'běhů')}.
+                    Kliknutím se záznam otevře v sekci AI QA Agent.
+                  </p>
+                  {seskupPodleDne(sessions).map((skupina) => (
+                    <div key={skupina.nadpis} style={{ marginBottom: '20px' }}>
+                      <h3 style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                        {skupina.nadpis}
+                      </h3>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {skupina.bezy.map((s) => {
+                          const stav = stavBehu(s);
+                          return (
+                            <button
+                              type="button"
+                              key={s.id}
+                              className="history-row"
+                              onClick={() => { setSelectedSessionId(s.id); setActiveTab('agent'); }}
+                              title={s.goal || ''}
+                            >
+                              <span className="history-row-time">{casBehu(s.timestamp)}</span>
+                              <span className="history-row-url">{s.url || getDomain(s.url)}</span>
+                              <span className="history-row-type">{zkracenyTyp(s.goal)}</span>
+                              {/* Stav nese TEXT, ne jen barvu. „Nedokončeno"
+                                  je vlastní stav: 0 nálezů u selhaného běhu
+                                  znamená, že se nikdo nedíval. */}
+                              <span className={`history-stav ${stav.trida}`}>{stav.popisek}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+
           {user && activeTab === 'compare' && (
             <div className="diff-layout">
               <form className="card" onSubmit={handleCompare}>

@@ -107,3 +107,16 @@ describe('co je veřejné a co ne', () => {
     expect(Object.values(PUBLIC_TAB_TO_PATH)).not.toContain('/sample-report.json');
   });
 });
+
+describe('historie testů má vlastní adresu', () => {
+  test('/historie otevře seznam běhů', () => {
+    // Seznam byl dřív v postranním menu, takže na něj nešlo poslat
+    // odkaz ani ho založit do záložek.
+    expect(tabFromPath('/historie')).toBe('history');
+    expect(TAB_TO_PATH.history).toBe('/historie');
+  });
+
+  test('je za přihlášením jako ostatní sekce', () => {
+    expect(isProtectedTab('history')).toBe(true);
+  });
+});
