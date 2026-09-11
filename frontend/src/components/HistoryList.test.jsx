@@ -235,3 +235,33 @@ describe('akce nad záznamem', () => {
     expect(onPrint).toHaveBeenCalledWith('a');
   });
 });
+
+describe('legenda stavů', () => {
+  test('je v seznamu vždycky, i sbalená', () => {
+    // Rozdíl mezi „Bez nálezu", „Neprůkazné" a „Nedokončeno" je to, na
+    // čem nástroj stojí. Bez legendy jsou to tři podobné odznaky.
+    vykresli();
+    expect(screen.getByText('Co znamenají jednotlivé stavy')).toBeInTheDocument();
+  });
+
+  test('vysvětluje všech šest stavů', () => {
+    vykresli();
+    const legenda = screen.getByText('Co znamenají jednotlivé stavy').closest('details');
+    expect(within(legenda).getAllByRole('definition')).toHaveLength(6);
+    expect(within(legenda).getByText(/Není to potvrzení souladu/)).toBeInTheDocument();
+    expect(within(legenda).getByText(/Není to závada ani její nepřítomnost/)).toBeInTheDocument();
+  });
+
+  test('odznak nese vysvětlení i v tooltipu', () => {
+    vykresli();
+    const odznak = screen.getByText('2 nálezy');
+    expect(odznak).toHaveAttribute('title', expect.stringContaining('Kontrola proběhla'));
+  });
+
+  test('v rozbaleném náhledu je vysvětlení textem, ne jen tooltipem', async () => {
+    vykresli({ authFetch: odpoved({ summary: 'Hotovo.', status: 'completed', bugs: [] }) });
+    await userEvent.click(screen.getAllByRole('button')[0]);
+    const nahled = document.querySelector('.history-nahled');
+    expect(within(nahled).getByText(/Kontrola proběhla celá a něco našla/)).toBeInTheDocument();
+  });
+});
