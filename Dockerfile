@@ -1,7 +1,7 @@
 # Verze musí odpovídat `playwright` v package.json — image nese předinstalované
 # binárky prohlížečů pro svou verzi. Při nesouladu (image 1.44 vs balíček 1.60)
 # končí běh chybou "Executable doesn't exist".
-FROM mcr.microsoft.com/playwright:v1.60.0-jammy AS builder
+FROM mcr.microsoft.com/playwright:v1.63.0-jammy AS builder
 
 WORKDIR /app
 
@@ -50,7 +50,7 @@ RUN cd frontend && npm run build
 # Runtime: bez devDependencies (jest, eslint, vitest, supertest, concurrently)
 # a bez zdrojů frontendu.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM mcr.microsoft.com/playwright:v1.60.0-jammy
+FROM mcr.microsoft.com/playwright:v1.63.0-jammy
 
 WORKDIR /app
 
