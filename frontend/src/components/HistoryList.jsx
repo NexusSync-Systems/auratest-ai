@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { ChevronRight, ExternalLink, Loader2 } from 'lucide-react';
+import { ChevronRight, ExternalLink, Loader2, Printer, Download, Send } from 'lucide-react';
 import { seskupPodleDne, stavBehu, zkracenyTyp, casBehu } from '../lib/history.js';
 
 /**
@@ -16,7 +16,10 @@ import { seskupPodleDne, stavBehu, zkracenyTyp, casBehu } from '../lib/history.j
  * načíst, řekne to — nedopočítává z toho, co má v seznamu, protože
  * počet nálezů a verdikt jsou dvě různé věci podle druhu běhu.
  */
-export default function HistoryList({ sessions, authFetch, onOpenDetail }) {
+export default function HistoryList({
+  sessions, authFetch, onOpenDetail,
+  onPrint, onExportJson, onSlack, slackNastaven = false,
+}) {
   const [otevreny, setOtevreny] = useState(null);
   const [detaily, setDetaily] = useState({});
 
@@ -88,15 +91,15 @@ export default function HistoryList({ sessions, authFetch, onOpenDetail }) {
                   {je && (
                     <div className="history-nahled" id={`nahled-${s.id}`}>
                       <Nahled zaznam={detaily[s.id]} souhrn={s} />
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={() => onOpenDetail(s.id)}
-                        style={{ marginTop: '12px', fontSize: '0.8rem', padding: '6px 12px' }}
-                      >
-                        Otevřít celý záznam
-                        <ExternalLink size={14} style={{ marginLeft: '6px' }} />
-                      </button>
+                      <Akce
+                        zaznam={detaily[s.id]}
+                        id={s.id}
+                        onOpenDetail={onOpenDetail}
+                        onPrint={onPrint}
+                        onExportJson={onExportJson}
+                        onSlack={onSlack}
+                        slackNastaven={slackNastaven}
+                      />
                     </div>
                   )}
                 </div>
@@ -199,5 +202,79 @@ function Nahled({ zaznam, souhrn }) {
         {chybyMereni?.length > 0 && `Chyby měření: ${chybyMereni.length}.`}
       </p>
     </>
+  );
+}
+
+/**
+ * Akce nad jedním záznamem.
+ *
+ * PROČ SE ČEKÁ NA NAČTENÝ ZÁZNAM
+ * JSON i Slack pracují s daty toho běhu, ne s tím, co je zrovna
+ * v aplikaci. Dokud se záznam nenačte, nemají z čeho vyjít, takže se
+ * nenabízejí — nabídnout je a poslat kolegům shrnutí cizího běhu je
+ * horší než počkat vteřinu.
+ *
+ * PDF U PŘEDPISOVÉHO SKENU
+ * Tiskový report staví na výsledcích skenů v paměti aplikace. Uložený
+ * předpisový sken je nese v `checks`, které report číst neumí — vytiskl
+ * by se skoro prázdný dokument s hlavičkou, a to je horší než žádný.
+ * Pro doložení předpisové kontroly je určený spis v Doložitelnosti.
+ */
+function Akce({ zaznam, id, onOpenDetail, onPrint, onExportJson, onSlack, slackNastaven }) {
+  const hotovo = zaznam?.stav === 'hotovo';
+  const data = hotovo ? zaznam.data : null;
+  const jeSken = data?.kind === 'compliance-scan';
+
+  return (
+    <div className="history-akce">
+      <button
+        type="button"
+        className="btn btn-secondary"
+        onClick={() => onOpenDetail(id)}
+      >
+        Otevřít celý záznam
+        <ExternalLink size={14} style={{ marginLeft: '6px' }} />
+      </button>
+
+      {onPrint && (
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => onPrint(id)}
+          disabled={!hotovo || jeSken}
+          title={jeSken
+            ? 'Předpisový sken se dokládá spisem v sekci Doložitelnost — tiskový report jeho verdikty číst neumí.'
+            : 'Načte záznam a otevře tiskový dialog'}
+        >
+          <Printer size={14} style={{ marginRight: '6px' }} /> PDF
+        </button>
+      )}
+
+      {onExportJson && (
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => onExportJson(data)}
+          disabled={!hotovo}
+          title={hotovo ? 'Stáhnout záznam jako JSON' : 'Záznam se ještě nenačetl'}
+        >
+          <Download size={14} style={{ marginRight: '6px' }} /> JSON
+        </button>
+      )}
+
+      {onSlack && (
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => onSlack(data)}
+          disabled={!hotovo || !slackNastaven}
+          title={slackNastaven
+            ? (hotovo ? 'Odeslat shrnutí tohoto běhu na Slack' : 'Záznam se ještě nenačetl')
+            : 'Slack webhook není nastavený — doplňte ho v Nastavení.'}
+        >
+          <Send size={14} style={{ marginRight: '6px' }} /> Slack
+        </button>
+      )}
+    </div>
   );
 }

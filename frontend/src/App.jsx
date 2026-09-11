@@ -518,6 +518,38 @@ export default function App() {
     }
   };
 
+  /**
+   * Odešle na Slack shrnutí DANÉHO běhu.
+   *
+   * Dřív se do zprávy dosazovala `agentUrl` — tedy adresa ve formuláři,
+   * ne adresa běhu. Odeslat z historie by znamenalo napsat kolegům
+   * „audit pro X" o běhu, který se týkal Y.
+   */
+  const odesliNaSlack = async (zaznam) => {
+    if (!profileSlackWebhook) {
+      alert('Nejprve si nastavte Slack Webhook v Nastavení (Profil).');
+      return;
+    }
+    const adresa = zaznam?.url || 'neuvedená adresa';
+    const nalezy = Array.isArray(zaznam?.bugs) ? zaznam.bugs.length : null;
+    // Počet se uvádí jen tehdy, když ho záznam opravdu nese.
+    const veta = nalezy === null
+      ? `AuraGuard: běh pro *${adresa}* — počet nálezů záznam neuvádí.`
+      : `AuraGuard dokončil běh pro *${adresa}*: ${nalezy} ${nalezy === 1 ? 'nález' : (nalezy < 5 ? 'nálezy' : 'nálezů')}.`;
+    try {
+      const response = await authFetch('/api/notify/slack', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webhookUrl: profileSlackWebhook, text: `${veta}\nPodrobnosti jsou v aplikaci.` }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      alert('Zpráva byla odeslána na Slack.');
+    } catch (e) {
+      alert(`Odeslání na Slack selhalo: ${e.message}`);
+    }
+  };
+
   const handleSendToSlack = async () => {
     if (!profileSlackWebhook) {
       alert("Nejprve si nastavte Slack Webhook v Nastavení (Profil).");
@@ -1048,16 +1080,54 @@ export default function App() {
     }
   };
 
-  const handleExportJson = () => {
-    if (!activeSession) return;
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(activeSession, null, 2));
-    const downloadAnchorNode = document.createElement('a');
-    downloadAnchorNode.setAttribute("href", dataStr);
-    downloadAnchorNode.setAttribute("download", `auratest-export-${activeSession.id}.json`);
-    document.body.appendChild(downloadAnchorNode);
-    downloadAnchorNode.click();
-    downloadAnchorNode.remove();
-  };
+  /** Stáhne DANÝ záznam, ne „ten, co je zrovna v aplikaci". */
+  const stahniJson = useCallback((zaznam) => {
+    if (!zaznam) return;
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(zaznam, null, 2));
+    const odkaz = document.createElement('a');
+    odkaz.setAttribute('href', dataStr);
+    odkaz.setAttribute('download', `auratest-export-${zaznam.id}.json`);
+    document.body.appendChild(odkaz);
+    odkaz.click();
+    odkaz.remove();
+  }, []);
+
+  const handleExportJson = () => stahniJson(activeSession);
+
+  /**
+   * Vytiskne konkrétní záznam z historie.
+   *
+   * `window.print()` tiskne `PrintReport`, a ten čte STAV APLIKACE —
+   * `activeSession` a výsledky skenů. Zavolat ho rovnou z historie by
+   * znamenalo vytisknout data běhu, který je zrovna načtený, pod hlavičkou
+   * běhu, na který uživatel klikl. Přesně ta záměna, kvůli které se při
+   * spuštění testu čistí výsledky.
+   *
+   * Záznam se proto nejdřív načte do stavu, výsledky cizích skenů se
+   * vyhodí a teprve pak se tiskne.
+   */
+  const vytiskniZaznam = useCallback(async (id) => {
+    try {
+      const res = await authFetch(`/api/sessions/${id}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      clearAllResults();
+      setActiveSession(data);
+      setLiveLogs(data.steps || []);
+      setSelectedSessionId(id);
+      setSelectedStepIndex(null);
+      setLiveProgress('');
+      setAgentUrl(data.url || '');
+
+      // Tisk až po překreslení — jinak by prohlížeč sáhl po dokumentu,
+      // který ještě nese předchozí stav.
+      await new Promise((r) => setTimeout(r, 300));
+      window.print();
+    } catch (err) {
+      alert(`Záznam se nepodařilo připravit k tisku: ${err.message}`);
+    }
+  }, [authFetch, clearAllResults]);
 
   // 2. Run Compare (Prod vs Preview Diff)
   const handleCompare = async (e) => {
@@ -2440,6 +2510,10 @@ export default function App() {
                 sessions={sessions}
                 authFetch={authFetch}
                 onOpenDetail={(id) => { setSelectedSessionId(id); setActiveTab('agent'); }}
+                onPrint={vytiskniZaznam}
+                onExportJson={stahniJson}
+                onSlack={odesliNaSlack}
+                slackNastaven={Boolean(profileSlackWebhook)}
               />
             </div>
           )}

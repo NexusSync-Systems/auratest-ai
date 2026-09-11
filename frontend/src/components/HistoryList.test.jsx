@@ -161,3 +161,77 @@ describe('náhled po rozkliknutí', () => {
     expect(onOpenDetail).toHaveBeenCalledWith('a');
   });
 });
+
+describe('akce nad záznamem', () => {
+  const hotovy = {
+    id: 'a', url: 'https://test.example.cz/', status: 'completed',
+    bugs: ['x', 'y'], summary: 'Hotovo.',
+  };
+
+  const otevri = async (props, index = 0) => {
+    vykresli(props);
+    await userEvent.click(screen.getAllByRole('button')[index]);
+    await waitFor(() => expect(screen.getByText(/Otevřít celý záznam/)).toBeInTheDocument());
+  };
+
+  test('JSON stáhne TEN záznam, ne ten zrovna načtený v aplikaci', async () => {
+    const onExportJson = vi.fn();
+    await otevri({ authFetch: odpoved(hotovy), onExportJson });
+
+    await userEvent.click(screen.getByRole('button', { name: /JSON/ }));
+    expect(onExportJson).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }));
+  });
+
+  test('Slack odesílá s daty toho běhu', async () => {
+    const onSlack = vi.fn();
+    await otevri({ authFetch: odpoved(hotovy), onSlack, slackNastaven: true });
+
+    await userEvent.click(screen.getByRole('button', { name: /Slack/ }));
+    expect(onSlack).toHaveBeenCalledWith(expect.objectContaining({
+      url: 'https://test.example.cz/',
+    }));
+  });
+
+  test('bez nastaveného webhooku je Slack vypnutý a řekne proč', async () => {
+    await otevri({ authFetch: odpoved(hotovy), onSlack: vi.fn(), slackNastaven: false });
+    const tlacitko = screen.getByRole('button', { name: /Slack/ });
+    expect(tlacitko).toBeDisabled();
+    expect(tlacitko).toHaveAttribute('title', expect.stringContaining('není nastavený'));
+  });
+
+  test('dokud se záznam nenačetl, akce nad ním se nenabízejí', async () => {
+    // Nabídnout je a poslat kolegům shrnutí cizího běhu je horší než
+    // počkat vteřinu.
+    const authFetch = vi.fn(() => new Promise(() => {}));
+    vykresli({ authFetch, onExportJson: vi.fn(), onSlack: vi.fn(), onPrint: vi.fn(), slackNastaven: true });
+    await userEvent.click(screen.getAllByRole('button')[0]);
+
+    expect(screen.getByRole('button', { name: /JSON/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Slack/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /PDF/ })).toBeDisabled();
+  });
+
+  test('PDF u předpisového skenu je vypnuté a odkáže na spis', async () => {
+    // Tiskový report staví na výsledcích skenů v paměti aplikace.
+    // Uložený sken je nese v `checks`, které report číst neumí —
+    // vytiskl by se skoro prázdný dokument s hlavičkou.
+    await otevri({
+      authFetch: odpoved({ id: 'b', kind: 'compliance-scan', status: 'completed', bugs: [], checks: [] }),
+      onPrint: vi.fn(),
+    }, 1);
+
+    const tlacitko = screen.getByRole('button', { name: /PDF/ });
+    expect(tlacitko).toBeDisabled();
+    expect(tlacitko).toHaveAttribute('title', expect.stringContaining('Doložitelnost'));
+  });
+
+  test('PDF u agentního běhu předává ID, ne data', async () => {
+    // Tisk musí záznam nejdřív načíst do stavu aplikace a vyhodit
+    // výsledky cizích skenů, jinak by dokument nesl data jiného běhu.
+    const onPrint = vi.fn();
+    await otevri({ authFetch: odpoved(hotovy), onPrint });
+
+    await userEvent.click(screen.getByRole('button', { name: /PDF/ }));
+    expect(onPrint).toHaveBeenCalledWith('a');
+  });
+});

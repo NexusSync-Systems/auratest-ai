@@ -254,6 +254,25 @@ code, pre {
   font-size: 0.75rem;
 }
 
+/* Akce nad záznamem. Tlačítka, která zatím nemají z čeho vyjít, se
+   nevypínají potichu — titulek říká proč. */
+.history-akce {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.history-akce .btn {
+  font-size: 0.8rem;
+  padding: 6px 12px;
+}
+
+.history-akce .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .spin-inline {
   display: inline-block;
   vertical-align: -2px;
