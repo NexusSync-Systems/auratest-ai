@@ -31,6 +31,7 @@ import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
 import { execSummary } from './lib/exec-summary.js';
 import HistoryList from './components/HistoryList.jsx';
+import VersionBadge from './components/VersionBadge.jsx';
 import { useRoutedTab } from './hooks/useRoutedTab.js';
 import { isProtectedTab } from './lib/routes.js';
 import LandingPage from './components/public/LandingPage.jsx';
@@ -1500,6 +1501,9 @@ export default function App() {
               >
                 Odhlásit se
               </button>
+              {/* Z čeho je tahle instalace postavená. Bez toho nešlo po
+                  nasazení poznat, jestli je vidět nová, nebo stará verze. */}
+              <VersionBadge />
             </>
           ) : (
             <button 

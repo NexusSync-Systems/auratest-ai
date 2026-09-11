@@ -41,6 +41,7 @@ import {
   AUDIT_TITLES,
 } from './audit-scope.js';
 
+import { serverBuildInfo } from './build-info.js';
 import {
   jeZaseknuty,
   zaznamPrerusenehoBehu,
@@ -735,6 +736,20 @@ app.get('/api/case-file', authenticateToken, (req, res, next) => {
     console.error('Export spisu selhal:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+/**
+ * Z čeho je postavený BĚŽÍCÍ server.
+ *
+ * Bez přihlášení schválně: je to provozní údaj, ne data zákazníka, a
+ * potřebuje ho i ten, kdo řeší, proč mu nasazení „nezabralo". Commit
+ * repozitáře není tajemství — kód je u zákazníka v prohlížeči.
+ *
+ * Frontend si svou verzi nese z buildu; rozdíl proti téhle znamená, že
+ * prohlížeč drží starý bundle.
+ */
+app.get('/api/version', (req, res) => {
+  res.json(serverBuildInfo());
 });
 
 app.get('/api/sessions', authenticateToken, async (req, res) => {

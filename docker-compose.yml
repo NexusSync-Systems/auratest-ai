@@ -11,6 +11,10 @@ services:
         VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID:-}
         VITE_FIREBASE_STORAGE_BUCKET: ${VITE_FIREBASE_STORAGE_BUCKET:-}
         VITE_FIREBASE_MESSAGING_SENDER_ID: ${VITE_FIREBASE_MESSAGING_SENDER_ID:-}
+        # Verze nasazení. Předává se ze skriptu nasazení; bez něj
+        # aplikace napíše „verze neznámá" místo vymyšleného čísla.
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        BUILD_TIME: ${BUILD_TIME:-}
     container_name: auratest-ai
     restart: unless-stopped
 

@@ -128,6 +128,21 @@ done
 
 echo
 echo "▶ Sestavení image (${PLATFORM})"
+# Verze nasazení se zapéká do image, aby šlo v UI poznat, co je vlastně
+# nasazené. Bez toho se po nasazení nedalo rozhodnout, jestli chybějící
+# část UI je nenasazený commit, nebo chyba v kódu.
+#
+# `git rev-parse` mimo repozitář selže — pak zůstane prázdno a aplikace
+# poctivě napíše „verze neznámá" místo vymyšleného čísla.
+GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo '')"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export GIT_COMMIT BUILD_TIME
+if [[ -n "$GIT_COMMIT" ]]; then
+    ok "Verze: ${GIT_COMMIT:0:7} (${BUILD_TIME})"
+else
+    warn "Commit se nepodarilo zjistit - aplikace ohlasi verze neznama."
+fi
+
 # --platform explicitně: kdyby se stavělo na jiné architektuře, vznikl by
 # image, který na cíli poběží leda přes emulaci, případně vůbec.
 DOCKER_DEFAULT_PLATFORM="$PLATFORM" docker compose build --pull

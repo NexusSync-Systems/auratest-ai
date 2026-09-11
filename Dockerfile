@@ -30,6 +30,20 @@ ARG VITE_FIREBASE_APP_ID
 ARG VITE_FIREBASE_STORAGE_BUCKET
 ARG VITE_FIREBASE_MESSAGING_SENDER_ID
 
+# Z čeho je tahle instalace postavená.
+#
+# Po nasazení jinak nejde poznat, jestli to, co je vidět v prohlížeči,
+# odpovídá repozitáři — a podle toho se rozhoduje, jestli nasadit znovu.
+# Frontend si hodnoty zapéká při buildu, server je čte za běhu z ENV;
+# rozdíl mezi nimi znamená, že prohlížeč drží starý bundle.
+#
+# Bez `--build-arg` zůstanou prázdné a aplikace poctivě napíše
+# „verze neznámá" místo vymyšleného čísla.
+ARG GIT_COMMIT
+ARG BUILD_TIME
+ENV VITE_GIT_COMMIT=$GIT_COMMIT
+ENV VITE_BUILD_TIME=$BUILD_TIME
+
 RUN cd frontend && npm run build
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -41,6 +55,12 @@ FROM mcr.microsoft.com/playwright:v1.60.0-jammy
 WORKDIR /app
 
 ENV NODE_ENV=production
+
+# Tytéž hodnoty i pro běžící server, aby šlo porovnat s frontendem.
+ARG GIT_COMMIT
+ARG BUILD_TIME
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV BUILD_TIME=$BUILD_TIME
 
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
