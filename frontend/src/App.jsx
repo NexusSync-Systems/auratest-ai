@@ -29,6 +29,7 @@ import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
 import { execSummary } from './lib/exec-summary.js';
+import { seskupPodleDne, stavBehu, zkracenyTyp, casBehu } from './lib/history.js';
 import { useRoutedTab } from './hooks/useRoutedTab.js';
 import { isProtectedTab } from './lib/routes.js';
 import LandingPage from './components/public/LandingPage.jsx';
@@ -880,6 +881,13 @@ export default function App() {
         setActiveSession(data);
         setLiveLogs(data.steps || []);
         setSelectedStepIndex(null);
+        // Text průběhu patří k běhu, ne k panelu.
+        //
+        // Kliknutím na jiný běh v historii se dřív nevyčistil, takže
+        // hlavička hlásila „Krok 8 dokončen." nad seznamem, který měl
+        // nula kroků — údaj z běhu A vedle běhu B. Tentýž druh záměny,
+        // jaký vedl k vyčištění výsledků při spuštění testu.
+        setLiveProgress(data.status === 'running' ? 'Běh pokračuje na serveru…' : '');
         if (data.status !== 'running') {
           setIsRunning(false);
         }
@@ -1409,27 +1417,41 @@ export default function App() {
               Žádné předchozí testy.
             </div>
           ) : (
-            sessions.map((s) => (
-              /* Dřív <div onClick> — nefokusovatelné, neovladatelné klávesnicí. */
-              <button
-                type="button"
-                key={s.id}
-                className={`history-item ${selectedSessionId === s.id ? 'active' : ''}`}
-                onClick={() => { setSelectedSessionId(s.id); setActiveTab('agent'); }}
-                aria-current={selectedSessionId === s.id ? 'true' : undefined}
-                style={selectedSessionId === s.id ? { borderColor: 'var(--accent)' } : {}}
-              >
-                <div className="history-item-header">
-                  <span className="history-url">{getDomain(s.url)}</span>
-                  {s.bugsCount > 0 && (
-                    <span className="history-bugs">
-                      <span aria-hidden="true">{s.bugsCount}x 🐛</span>
-                      <span className="sr-only">{`${s.bugsCount} nalezených chyb`}</span>
-                    </span>
-                  )}
-                </div>
-                <div className="history-goal">{s.goal}</div>
-              </button>
+            /* Seskupeno po dnech a s výsledkem na první pohled.
+               Dřív tu byla jen doména, počet chyb a celý dlouhý `goal` —
+               čtyři běhy na tutéž doménu vypadaly identicky a kliknout
+               se dalo jedině naslepo. */
+            seskupPodleDne(sessions).map((skupina) => (
+              <div key={skupina.nadpis} className="history-group">
+                <div className="history-day">{skupina.nadpis}</div>
+                {skupina.bezy.map((s) => {
+                  const stav = stavBehu(s);
+                  return (
+                    /* Dřív <div onClick> — nefokusovatelné, neovladatelné klávesnicí. */
+                    <button
+                      type="button"
+                      key={s.id}
+                      className={`history-item ${selectedSessionId === s.id ? 'active' : ''}`}
+                      onClick={() => { setSelectedSessionId(s.id); setActiveTab('agent'); }}
+                      aria-current={selectedSessionId === s.id ? 'true' : undefined}
+                      title={`${s.url || ''} — ${s.goal || ''}`}
+                      style={selectedSessionId === s.id ? { borderColor: 'var(--accent)' } : {}}
+                    >
+                      <div className="history-item-header">
+                        <span className="history-url">{getDomain(s.url)}</span>
+                        <span className="history-time">{casBehu(s.timestamp)}</span>
+                      </div>
+                      <div className="history-meta">
+                        <span className="history-type">{zkracenyTyp(s.goal)}</span>
+                        {/* Stav nese TEXT, ne jen barvu. A „Nedokončeno"
+                            je vlastní stav — `0 nálezů` u selhaného běhu
+                            znamená, že se nikdo nedíval. */}
+                        <span className={`history-stav ${stav.trida}`}>{stav.popisek}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             ))
           )}
         </div>
@@ -1701,63 +1723,38 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Kroky se sbalí, jakmile běh skončí.
-                        Deset až padesát karet po sobě odsunulo výsledek —
-                        nálezy, závěr, vygenerovaný skript — mimo obrazovku.
-                        Uživatel dole viděl uříznutý text a export nenašel.
-                        Během běhu je seznam otevřený, protože tehdy JE tím
-                        obsahem; po dokončení je zajímavý výsledek. */}
-                    <details className="steps-details" open={isRunning}>
-                      <summary className="steps-summary">
-                        Kroky agenta ({liveLogs.length})
-                        <span className="steps-hint">
-                          {isRunning ? 'průběžně přibývají' : 'rozbalit'}
-                        </span>
-                      </summary>
-                      <div className="logs-list">
-                      {liveLogs.map((step, index) => (
-                        <button
-                          type="button"
-                          key={step.step}
-                          className="step-card"
-                          aria-pressed={selectedStepIndex === index}
-                          style={selectedStepIndex === index ? { borderColor: 'var(--accent)', backgroundColor: 'var(--bg-secondary)' } : { cursor: 'pointer' }}
-                          onClick={() => setSelectedStepIndex(index)}
-                        >
-                          <div className="step-header">
-                            <span>Krok {step.step}</span>
-                            <span className="step-action-badge">{step.action}</span>
-                          </div>
-                          <div className="step-reasoning">
-                            <strong>Úvaha:</strong> {step.reasoning}
-                          </div>
-                          {step.target && (
-                            <div className="step-detail">
-                              Prvek [QA-ID: {step.target}] {step.value ? `s hodnotou "${step.value}"` : ''}
-                            </div>
-                          )}
-                        </button>
-                      ))}
-                        <div ref={logsEndRef} />
-                      </div>
-                    </details>
-
+                    {/* Shrnutí běhu pro vedení.
+                        Stojí ODDĚLENĚ od předpisové tabulky „Shrnutí pro
+                        vedení", a to schválně: průzkumný běh agenta není
+                        verdikt o souladu. Řádek „Bez nálezu" vedle
+                        předpisových verdiktů by sváděl číst proklikání
+                        webu jako doklad splnění, kterým není. */}
                     {activeSession && activeSession.status === 'completed' && (
                       <div className="completion-summary-card">
                         <div className="completion-header">
                           <div className="completion-icon">
                             <span aria-hidden="true">
-                              {activeSession.bugs && activeSession.bugs.length > 0 ? '⚠️' : '✅'}
+                              {activeSession.bugs?.length > 0 ? '⚠️' : (Array.isArray(activeSession.bugs) ? '✅' : '❔')}
                             </span>
                             <span className="sr-only">
-                              {activeSession.bugs && activeSession.bugs.length > 0 ? 'Nalezeny chyby' : 'Bez nálezu'}
+                              {activeSession.bugs?.length > 0 ? 'Nalezeny chyby' : (Array.isArray(activeSession.bugs) ? 'Bez nálezu' : 'Bez údaje o nálezech')}
                             </span>
                           </div>
                           <div>
-                            <h3 className="completion-title">Test dokončen</h3>
+                            <h3 className="completion-title">Shrnutí běhu</h3>
                             <p className="completion-subtitle">{activeSession.summary}</p>
                           </div>
                         </div>
+
+                        {/* Co rozsah běhu znamená. Bez téhle věty čte
+                            manažer „0 chyb" jako „aplikace je v pořádku". */}
+                        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                          {Array.isArray(activeSession.bugs) && activeSession.bugs.length === 0
+                            ? 'Průzkumný běh není úplný test. Agent prošel jen cesty, na které '
+                              + 'během běhu narazil — z absence nálezu neplyne, že je aplikace bez závad.'
+                            : 'Nálezy jsou vypsané níž tak, jak je agent zaznamenal. '
+                              + 'Rozsah je dán tím, kudy agent během běhu prošel.'}
+                        </p>
 
                         {activeSession.performanceMetrics && (
                           <div style={{ display: 'flex', gap: '8px', margin: '12px 0', fontSize: '0.85rem' }}>
@@ -1842,6 +1839,48 @@ export default function App() {
                         </div>
                       </div>
                     )}
+
+                    {/* Kroky JSOU AŽ POD výsledkem a po dokončení sbalené.
+                        Deset až padesát karet po sobě odsunulo výsledek —
+                        nálezy, závěr, vygenerovaný skript — mimo obrazovku,
+                        takže se uživatel ptal, kde vlastně shrnutí je.
+                        Během běhu je seznam otevřený, protože tehdy JE tím
+                        obsahem; po dokončení je zajímavý výsledek. */}
+                    <details className="steps-details" open={isRunning}>
+                      <summary className="steps-summary">
+                        Kroky agenta ({liveLogs.length})
+                        <span className="steps-hint">
+                          {isRunning ? 'průběžně přibývají' : 'rozbalit'}
+                        </span>
+                      </summary>
+                      <div className="logs-list">
+                      {liveLogs.map((step, index) => (
+                        <button
+                          type="button"
+                          key={step.step}
+                          className="step-card"
+                          aria-pressed={selectedStepIndex === index}
+                          style={selectedStepIndex === index ? { borderColor: 'var(--accent)', backgroundColor: 'var(--bg-secondary)' } : { cursor: 'pointer' }}
+                          onClick={() => setSelectedStepIndex(index)}
+                        >
+                          <div className="step-header">
+                            <span>Krok {step.step}</span>
+                            <span className="step-action-badge">{step.action}</span>
+                          </div>
+                          <div className="step-reasoning">
+                            <strong>Úvaha:</strong> {step.reasoning}
+                          </div>
+                          {step.target && (
+                            <div className="step-detail">
+                              Prvek [QA-ID: {step.target}] {step.value ? `s hodnotou "${step.value}"` : ''}
+                            </div>
+                          )}
+                        </button>
+                      ))}
+                        <div ref={logsEndRef} />
+                      </div>
+                    </details>
+
                   </div>
                 )}
               </div>

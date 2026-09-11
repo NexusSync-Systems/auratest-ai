@@ -179,10 +179,12 @@ code, pre {
 .history-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   overflow-y: auto;
   flex-grow: 1;
-  max-height: 250px;
+  /* Strop zvednutý z 250 px: se seskupením po dnech zabírají nadpisy
+     místo a při 250 px se vešly sotva tři běhy. */
+  max-height: 42vh;
+  position: relative;
 }
 
 .history-item {
@@ -203,25 +205,72 @@ code, pre {
 .history-item-header {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
   margin-bottom: 4px;
 }
+
+/* Nadpis dne. Lepivý, aby při scrollování bylo pořád vidět, ze kterého
+   dne jsou běhy, na které se zrovna kouká. */
+.history-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: var(--bg-secondary);
+  padding: 6px 8px 4px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.history-group { margin-bottom: 8px; }
+.history-group .history-item { margin-bottom: 6px; }
+
+.history-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-type {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Stav běhu. Barva je doplněk — popisek ho nese vždycky textem, takže
+   ho přečte i černobílý výstup a čtečka obrazovky.
+
+   „Nedokončeno" má vlastní barvu i text schválně: `0 nálezů` u běhu,
+   který se nedokončil, neznamená „nic se nenašlo", ale „nikdo se
+   nedíval". Splynout s čistým během nesmí. */
+.history-stav {
+  font-size: 0.68rem;
+  padding: 2px 6px;
+  border-radius: 10px;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.history-stav.ciste { color: #10b981; background: rgba(16, 185, 129, 0.12); }
+.history-stav.nalezy { color: #f87171; background: rgba(239, 68, 68, 0.12); }
+.history-stav.bezi { color: var(--accent); background: rgba(99, 102, 241, 0.12); }
+.history-stav.nedokonceno { color: #fbbf24; background: rgba(245, 158, 11, 0.12); }
 
 .history-url {
   font-weight: 500;
   color: var(--text-main);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.history-bugs {
-  color: var(--error);
-  font-weight: bold;
-}
-
-.history-goal {
-  color: var(--text-muted);
-  font-size: 0.75rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
