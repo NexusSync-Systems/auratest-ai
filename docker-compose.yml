@@ -14,6 +14,15 @@ services:
     container_name: auratest-ai
     restart: unless-stopped
 
+    # Čas na dopsání rozdělaných běhů při vypnutí.
+    #
+    # Server po SIGTERM přepíše běhy, které zrovna drží, na „nedokončeno"
+    # — bez toho by po každém nasazení zůstal záznam tvrdící „běží"
+    # navždycky. Výchozích 10 vteřin je na několik zápisů do Firestore
+    # těsných; server si sám hlídá rozpočet 5 s na zápisy a 10 s na celé
+    # ukončení, takže 20 s mu dá rezervu a zároveň nasazení nezdrží.
+    stop_grace_period: 20s
+
     # Bez stropu roste log kontejneru donekonečna a 50GB disk Oracle instance
     # se dá zaplnit rychleji, než by člověk čekal.
     logging:

@@ -64,6 +64,8 @@ jest.mock('../db.js', () => ({
   }),
 
   getSessions: jest.fn(async () => mockStore.sessions.filter((s) => s.userId === mockCurrentUserId)),
+  // Hlídač zaseknutých běhů čte napříč uživateli — nemá kontext přihlášení.
+  getRunningSessions: jest.fn(async () => mockStore.sessions.filter((s) => s.status === 'running')),
   getSession: jest.fn(async (id) => mockStore.sessions.find((s) => s.id === id) || null),
   saveSession: jest.fn(async (id, data) => {
     const idx = mockStore.sessions.findIndex((s) => s.id === id);

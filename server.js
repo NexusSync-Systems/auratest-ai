@@ -41,6 +41,137 @@ import {
   AUDIT_TITLES,
 } from './audit-scope.js';
 
+import {
+  jeZaseknuty,
+  zaznamPrerusenehoBehu,
+  HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_STALE_MS,
+} from './stale-runs.js';
+
+/**
+ * Rozdělané běhy TOHOHLE procesu.
+ *
+ * Klíč je sessionId, hodnota časovač tepu. Slouží ke dvěma věcem: běh
+ * si díky tepu drží známku života v databázi, a při korektním vypnutí
+ * víme, které záznamy máme dopsat — bez dotazu do databáze, na který
+ * při SIGTERM nemusí být čas.
+ */
+const beziciBehy = new Map();
+
+/** Identita procesu. Kdyby běželo víc instancí, jde poznat, čí běh je čí. */
+const instanceId = randomUUID();
+
+/**
+ * Začne běhu tepat.
+ *
+ * Bez tepu nejde odlišit dlouhý ŽIVÝ běh od mrtvého — podle času startu
+ * vypadají stejně. Zabít živý běh přitom znamená zahodit výsledek,
+ * o kterém se uživatel nikdy nedozví, takže se to nesmí odhadovat.
+ */
+function zacniTepat(sessionId) {
+  const tep = async () => {
+    try {
+      await db.saveSession(sessionId, { heartbeatAt: new Date().toISOString(), instanceId });
+    } catch (err) {
+      // Neúspěšný tep běh neshazuje. Nejhorší následek je, že hlídač
+      // po prahu prohlásí živý běh za mrtvý — a to je pořád lepší než
+      // shodit běh kvůli zápisu, který s měřením nesouvisí.
+      console.warn(`Tep běhu ${sessionId} selhal:`, err.message);
+    }
+  };
+  tep();
+  const timer = setInterval(tep, HEARTBEAT_INTERVAL_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  beziciBehy.set(sessionId, timer);
+}
+
+/** Běh doběhl (jakkoli) — tep se zastaví. */
+function prestanTepat(sessionId) {
+  const timer = beziciBehy.get(sessionId);
+  if (timer) clearInterval(timer);
+  beziciBehy.delete(sessionId);
+}
+
+/**
+ * Dopíše zaseknuté běhy.
+ *
+ * Volá se ze tří míst: při startu (doučistí zombie po předchozím
+ * procesu), periodicky (kryje tvrdé pády, kde vypnutí neproběhne)
+ * a při SIGTERM (pro běhy tohohle procesu).
+ *
+ * Přerušený běh se zapisuje jako `failed` s důvodem v `runErrors`.
+ * NIKDY jako `completed` — ten stav ve spisu znamená „výsledek platí" —
+ * a nikdy mezi `bugs`, protože to není nález o testovaném webu.
+ */
+async function doucistiZaseknuteBehy(duvod = 'bez-tepu') {
+  let sessions;
+  try {
+    sessions = await db.getRunningSessions();
+  } catch (err) {
+    console.warn('Nepodařilo se načíst rozdělané běhy:', err.message);
+    return 0;
+  }
+
+  let dopsano = 0;
+  for (const session of sessions) {
+    // 1. Běhy TOHOHLE procesu se nekontrolují vůbec.
+    //
+    // Jsou v `beziciBehy`, takže z definice žijí — a jediné chybné
+    // rozhodnutí (třeba série neúspěšných tepů kvůli kvótě Firestore)
+    // by živému běhu zastavilo tep a připravilo ho o možnost doložit,
+    // že běží. Zabít živý běh znamená zahodit výsledek, o kterém se
+    // uživatel nikdy nedozví.
+    if (beziciBehy.has(session.id)) continue;
+
+    if (!jeZaseknuty(session)) continue;
+
+    // 2. Stav se čte ZNOVU těsně před zápisem.
+    //
+    // Mezi dotazem a zápisem je několik síťových operací na položku —
+    // běh mohl mezitím doběhnout. Přepsat hotový výsledek na `failed`
+    // by ho nenávratně zahodilo a spis by běh vykázal jako neprůkazný,
+    // tedy tvrzení o vlastním měření, které neodpovídá skutečnosti.
+    let cerstvy;
+    try {
+      cerstvy = await db.getSession(session.id);
+    } catch (err) {
+      console.warn(`Běh ${session.id} se nepodařilo ověřit:`, err.message);
+      continue;
+    }
+    if (cerstvy?.status !== 'running') continue;
+    if (beziciBehy.has(session.id)) continue;
+    if (!jeZaseknuty(cerstvy)) continue;
+
+    // 3. Běh, který je už v neměnném záznamu, se nepřepisuje.
+    //
+    // `recordInLedger` se volá PŘED finálním zápisem session. Když ten
+    // zápis selže, zůstane v databázi `running`, zatímco v ledgeru už je
+    // položka o dokončeném běhu. Otisk kryje `status`, `summary`
+    // i `runErrors` — přepsat je znamená, že spis vytiskne „Otisk
+    // souhlasí: Ne". Tedy signál o porušené integritě záznamu, který
+    // způsobil náš vlastní úklid, na nejcitlivějším místě dokumentu.
+    if (cerstvy?.ledger?.recorded === true) {
+      console.warn(
+        `Běh ${session.id} visí jako running, ale je už v neměnném záznamu. `
+        + 'Nepřepisuji — vyžaduje ruční posouzení.'
+      );
+      continue;
+    }
+
+    try {
+      await db.saveSession(session.id, zaznamPrerusenehoBehu(cerstvy, duvod));
+      dopsano++;
+    } catch (err) {
+      console.warn(`Běh ${session.id} se nepodařilo dopsat:`, err.message);
+    }
+  }
+  if (dopsano > 0) {
+    console.log(`Dopsáno ${dopsano} zaseknutých běhů (${duvod}).`);
+  }
+  return dopsano;
+}
+
+
 // Global error handlers to prevent unhandled rejections from crashing the process
 // Po nezachycené výjimce je proces v nedefinovaném stavu (viselé Playwright
 // prohlížeče, poloviční zápisy do Firestore). Logovat a běžet dál je
@@ -721,6 +852,10 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
     return res.status(503).json({ error: 'Session se nepodařilo založit. Zkuste to znovu.' });
   }
 
+  // Tep začíná hned, jak je běh v databázi. Bez něj by ho hlídač
+  // po prahu prohlásil za mrtvý, i kdyby normálně pokračoval.
+  zacniTepat(sessionId);
+
   // Return sessionId immediately, run Playwright test in background
   res.json({ sessionId, artifactToken, status: 'running' });
 
@@ -747,6 +882,10 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
   // se drží ručně (res.finish by ho uvolnil předčasně).
   (async () => {
     if (!browserSlots.tryAcquire()) {
+      // `return` je před `try`/`finally` níž, takže se tep musí zastavit
+      // tady — jinak by běh, který se nikdy nespustil, tepal navěky
+      // a hlídač by ho považoval za živý.
+      prestanTepat(sessionId);
       sessionData.status = 'failed';
       sessionData.summary = 'Server zpracovává maximum souběžných testů. Zkuste to znovu za chvíli.';
       await db.saveSession(sessionId, sessionData).catch(() => {});
@@ -932,6 +1071,9 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
         summary: `Interní chyba serveru: ${criticalErr.message}`
       });
     } finally {
+      // Ve `finally`, aby se tep zastavil i po pádu. Jinak by běh tepal
+      // dál a tvářil se živý, přestože už nikdo neměří.
+      prestanTepat(sessionId);
       browserSlots.release();
     }
   })();
@@ -1111,13 +1253,24 @@ async function schedulerTick() {
           continue;
         }
 
+
         if (!browserSlots.tryAcquire()) {
           console.warn(`[AuraAuraGuard] Monitor ${monitor.name} odložen: vyčerpán limit souběžných prohlížečů.`);
+          // Session je v databázi už jako `running` a další tik založí
+          // NOVOU — tuhle proto musíme dopsat hned, jinak by tvrdila
+          // „běží" navždycky a nikdo by ji neuklidil.
+          await db.saveSession(sessionId, zaznamPrerusenehoBehu(sessionData, 'odlozeno'))
+            .catch((err) => console.warn(`Odloženou session ${sessionId} se nepodařilo dopsat:`, err.message));
           // Rezervaci vrátíme, aby se monitor zkusil znovu v dalším tiku
           // a nečekal celý svůj interval.
           await db.updateMonitor(monitor.id, { lastRunTime: lastRun }).catch(() => {});
           continue;
         }
+
+        // Tep až PO získání slotu. Před ním by odložený monitor tepal
+        // navěky a hlídač by ho nikdy neuklidil, protože by ho vlastní
+        // tep držel „živý".
+        zacniTepat(sessionId);
 
         const llmConfig = {
           // Host prochází allowlistem i tady — do DB se mohl dostat dřív,
@@ -1193,6 +1346,7 @@ async function schedulerTick() {
             const userMonitors = await db.getMonitors(monitor.userId);
             broadcastToUser(monitor.userId, { type: 'monitors_updated', monitors: userMonitors });
           } finally {
+            prestanTepat(sessionId);
             browserSlots.release();
           }
         })();
@@ -1321,16 +1475,94 @@ if (process.env.NODE_ENV !== 'test') {
 // Bez tohohle se `schedulerTimer` jen přiřazoval a nikdy nerušil, takže
 // aplikace neuměla korektně skončit (a v Dockeru navíc npm jako PID 1
 // SIGTERM ani nepředával — viz Dockerfile).
-function gracefulShutdown(signal) {
+let ukoncujeSe = false;
+
+async function gracefulShutdown(signal) {
+  // Opakovaný signál nesmí spustit vypínání podruhé — `shutdownWithError`
+  // takovou pojistku má od začátku, tahle cesta ne.
+  if (ukoncujeSe) return;
+  ukoncujeSe = true;
   console.log(`Přijat ${signal}, ukončuji…`);
+
+  // Pojistka se nastavuje JAKO PRVNÍ.
+  //
+  // Dřív stála až za zápisy, takže dokud běžely, neexistovala horní mez —
+  // Firestore při výpadku retryuje desítky sekund. Docker mezitím po
+  // deseti sekundách pošle SIGKILL a zápisy se ztratí právě v tom
+  // scénáři, kvůli kterému tahle funkce vznikla.
+  const pojistka = setTimeout(() => process.exit(1), 10_000);
+  if (typeof pojistka.unref === 'function') pojistka.unref();
+
   if (schedulerTimer) clearTimeout(schedulerTimer);
   if (anchorTimer) clearTimeout(anchorTimer);
+  if (hlidacTimer) clearInterval(hlidacTimer);
+
+  // Rozdělané běhy dopsat DŘÍV, než proces skončí.
+  //
+  // Bez tohohle zůstal po každém nasazení záznam, který tvrdil „běží"
+  // navždycky — `docker compose up -d --build` posílá SIGTERM a nikdo
+  // těm běhům status nepřepsal. Za jedno odpoledne tak vznikly tři.
+  //
+  // Zapisuje se jen to, co drží TENHLE proces; cizí běhy (jiná instance)
+  // se nechávají být — od toho je hlídač podle tepu.
+  const nase = [...beziciBehy.keys()];
+  for (const sessionId of nase) prestanTepat(sessionId);
+
+  let dopsano = 0;
+  const zapisy = nase.map(async (sessionId) => {
+    const session = await db.getSession(sessionId).catch(() => null);
+    // Mezitím mohl doběhnout — přepsat hotový běh na `failed` by byla
+    // ztráta výsledku.
+    if (session?.status !== 'running') return;
+    // Běh už zapsaný v neměnném záznamu se nepřepisuje, viz
+    // `doucistiZaseknuteBehy`.
+    if (session?.ledger?.recorded === true) return;
+    await db.saveSession(sessionId, zaznamPrerusenehoBehu(session, 'vypnuti'));
+    dopsano++;
+  });
+
+  // Rozpočet na zápisy. Co se nestihne, doučistí hlídač po startu —
+  // lepší než nechat proces viset do SIGKILL.
+  await Promise.race([
+    Promise.allSettled(zapisy),
+    new Promise((r) => { const t = setTimeout(r, 5_000); if (t.unref) t.unref(); }),
+  ]);
+  // Hlásí se počet SKUTEČNÝCH zápisů, ne počet pokusů. Provozní log se
+  // při vyšetřování čte jako důkaz, takže platí totéž pravidlo jako
+  // pro dokument: netvrdit víc, než se stalo.
+  if (dopsano > 0) console.log(`Dopsáno ${dopsano} přerušených běhů.`);
+
   wss.clients.forEach((ws) => ws.close(1001, 'Server se ukončuje'));
   server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 10_000);
+}
+
+/**
+ * Hlídač zaseknutých běhů.
+ *
+ * Kryje smrti, po kterých vypnutí neproběhne: SIGKILL, OOM, výpadek
+ * stroje. Při startu doučistí zombie po předchozím procesu, pak jede
+ * periodicky.
+ */
+let hlidacTimer = null;
+
+function spustHlidac() {
+  // Při startu hned — tím se doučistí i to, co zbylo z minula.
+  doucistiZaseknuteBehy('bez-tepu').catch((err) => {
+    console.warn('Úvodní úklid zaseknutých běhů selhal:', err.message);
+  });
+
+  // Interval je poloviční proti prahu, aby se zombie neválel déle, než
+  // je nutné, a zároveň se databáze nemlátila zbytečně.
+  hlidacTimer = setInterval(() => {
+    doucistiZaseknuteBehy('bez-tepu').catch((err) => {
+      console.warn('Úklid zaseknutých běhů selhal:', err.message);
+    });
+  }, Math.round(HEARTBEAT_STALE_MS / 2));
+  if (typeof hlidacTimer.unref === 'function') hlidacTimer.unref();
 }
 
 if (process.env.NODE_ENV !== 'test') {
+  spustHlidac();
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
   process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
@@ -2346,3 +2578,11 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 export { app };
+
+// Vnitřnosti úklidu zaseknutých běhů se exportují kvůli testům.
+//
+// Kontrolní vlna ukázala, proč: VŠECHNY nálezy P0 ležely v zapojení,
+// které se testovat nedalo, zatímco čistý modul `stale-runs.js` byl
+// v pořádku. Testovat jen to, co se testovat dá, znamená testovat to,
+// kde chyby nejsou.
+export const __test__ = { doucistiZaseknuteBehy, beziciBehy, zacniTepat, prestanTepat };

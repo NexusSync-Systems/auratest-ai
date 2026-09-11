@@ -191,6 +191,38 @@ export async function getSession(sessionId) {
   return { id: doc.id, ...doc.data() };
 }
 
+/**
+ * Všechny běhy ve stavu `running`, napříč uživateli.
+ *
+ * Hlídač zaseknutých běhů nemá kontext přihlášení — běží na pozadí a
+ * uklízí po procesu, ne po člověku. Vrací jen pole, která rozhodnutí
+ * potřebuje; obsah běhů do něj netahá.
+ *
+ * Bez indexu na `status` to Firestore zvládne, dokud je rozdělaných
+ * běhů málo — což je celý smysl věci. Kdyby jich byly tisíce, je to
+ * samo o sobě nález.
+ */
+export async function getRunningSessions() {
+  const snapshot = await firestore.collection('sessions')
+    .where('status', '==', 'running')
+    .get();
+  const list = [];
+  snapshot.forEach((doc) => {
+    const data = doc.data();
+    list.push({
+      id: doc.id,
+      userId: data.userId,
+      url: data.url,
+      status: data.status,
+      timestamp: data.timestamp,
+      heartbeatAt: data.heartbeatAt,
+      runErrors: data.runErrors,
+      instanceId: data.instanceId,
+    });
+  });
+  return list;
+}
+
 export async function saveSession(sessionId, sessionData) {
   await firestore.collection('sessions').doc(sessionId).set(sessionData, { merge: true });
   return true;
