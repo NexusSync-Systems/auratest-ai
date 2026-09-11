@@ -1,5 +1,5 @@
 /**
- * Seznam běhů v postranním panelu.
+ * Seznam běhů v sekci Historie testů.
  *
  * CO BYLO ŠPATNĚ
  * Položka nesla jen doménu, počet chyb a celý dlouhý `goal`. Čtyři běhy
@@ -7,11 +7,20 @@
  * z kdy, který dopadl jak, ani který se vůbec nedokončil. Kliknout se
  * dalo jedině naslepo.
  *
- * TŘI STAVY, NE DVA
- * Počet nálezů sám o sobě nestačí: `0` u dokončeného běhu znamená „nic
- * se nenašlo", u nedokončeného „nikdo se nedíval". Vydávat druhé za
- * první je táž vada, jakou hlídají skenery — jen v menším.
+ * STAV NENÍ POČET NÁLEZŮ
+ * `bugsCount: 0` znamená pokaždé něco jiného podle toho, odkud přišlo:
+ *
+ *   dokončený agentní běh   nic se nenašlo
+ *   selhaný běh             nikdo se nedíval
+ *   předpisový sken         pole se nepoužívá, verdikt je v `checks`
+ *   běh „running" ze včera  nikdo neví, jestli doběhl
+ *
+ * Sloučit je do jednoho zeleného „Bez nálezu" znamená tvrdit o webu
+ * něco, co nikdo nezměřil — táž vada, jakou hlídají skenery, jen
+ * v menším.
  */
+
+import { STALE_AFTER_MS } from './run-status.js';
 
 /** Zkrácený štítek typu testu. */
 const TYPY = [
@@ -50,15 +59,26 @@ export function zkracenyTyp(goal) {
 /**
  * Stav běhu pro odznak v seznamu.
  *
- * @param {{status?: string, bugsCount?: number, kind?: string}} s
- * @returns {{stav: 'nalezy'|'ciste'|'bezi'|'nedokonceno'|'neznamy',
- *            popisek: string, trida: string}}
+ * @param {{status?: string, bugsCount?: number, kind?: string,
+ *          verdict?: boolean|null, timestamp?: string}} s
+ * @param {number} [now]
+ * @returns {{stav: string, popisek: string, trida: string}}
  */
-export function stavBehu(s) {
+export function stavBehu(s, now = Date.now()) {
   const status = s?.status;
   const nalezy = s?.bugsCount;
 
   if (status === 'running') {
+    // „Běží" po dvou hodinách je domněnka, ne měření.
+    //
+    // Běh zůstane ve stavu `running` i tehdy, když proces spadl — nikdo
+    // mu už status nepřepíše. Hlavička aplikace to rozlišuje od začátku
+    // (`run-status.js`), seznam běhů ne, takže tvrdily každý něco jiného
+    // o týchž záznamech: nahoře „3 běhy bez odezvy", dole „Běží".
+    const zacatek = Date.parse(s?.timestamp);
+    if (!Number.isNaN(zacatek) && now - zacatek >= STALE_AFTER_MS) {
+      return { stav: 'bezodezvy', popisek: 'Bez odezvy', trida: 'nedokonceno' };
+    }
     return { stav: 'bezi', popisek: 'Běží', trida: 'bezi' };
   }
   if (status === 'failed') {
@@ -68,6 +88,22 @@ export function stavBehu(s) {
   if (status !== 'completed') {
     return { stav: 'neznamy', popisek: 'Neznámý stav', trida: 'nedokonceno' };
   }
+  // Předpisový sken nese verdikt v `checks`, ne v `bugs`.
+  //
+  // `buildScanSession` mu `bugs: []` nastavuje schválně, takže počítat
+  // u něj nálezy znamenalo tisknout „Bez nálezu" bez ohledu na to, co
+  // sken zjistil. Sken, který našel porušení, tak v seznamu vypadal
+  // úplně stejně jako čistý.
+  if (s?.kind === 'compliance-scan') {
+    if (s.verdict === false) {
+      return { stav: 'nalezy', popisek: 'Porušení', trida: 'nalezy' };
+    }
+    if (s.verdict === true) {
+      return { stav: 'ciste', popisek: 'Bez nálezu', trida: 'ciste' };
+    }
+    return { stav: 'neprukazne', popisek: 'Neprůkazné', trida: 'nedokonceno' };
+  }
+
   if (typeof nalezy !== 'number') {
     // Záznam nenese počet nálezů — z toho se „bez nálezu" vyvodit nedá.
     return { stav: 'neznamy', popisek: 'Bez údaje o nálezech', trida: 'nedokonceno' };

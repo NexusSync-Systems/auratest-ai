@@ -145,3 +145,52 @@ describe('seskupení podle dne', () => {
     expect(seskupPodleDne(undefined, ted)).toEqual([]);
   });
 });
+
+describe('stav se neodvozuje z počtu nálezů, když ten počet nic neznamená', () => {
+  test('předpisový sken s porušením se NEHLÁSÍ jako bez nálezu', () => {
+    // `buildScanSession` nastavuje compliance skenu `bugs: []` schválně
+    // — jeho verdikt je v `checks`. Počítat u něj nálezy znamenalo, že
+    // sken, který našel porušení, vypadal v seznamu stejně jako čistý.
+    const r = stavBehu({
+      status: 'completed', kind: 'compliance-scan', bugsCount: 0, verdict: false,
+    });
+    expect(r.stav).toBe('nalezy');
+    expect(r.popisek).toBe('Porušení');
+  });
+
+  test('předpisový sken bez verdiktu je neprůkazný, ne čistý', () => {
+    const r = stavBehu({
+      status: 'completed', kind: 'compliance-scan', bugsCount: 0, verdict: null,
+    });
+    expect(r.stav).toBe('neprukazne');
+    expect(r.popisek).toBe('Neprůkazné');
+  });
+
+  test('předpisový sken s kladným verdiktem je bez nálezu', () => {
+    const r = stavBehu({
+      status: 'completed', kind: 'compliance-scan', bugsCount: 0, verdict: true,
+    });
+    expect(r.stav).toBe('ciste');
+  });
+
+  test('běh „running" starší než limit se nehlásí jako běžící', () => {
+    // Hlavička aplikace to rozlišuje od začátku (`run-status.js`),
+    // seznam ne — takže o týchž záznamech tvrdily každý něco jiného:
+    // nahoře „3 běhy bez odezvy", dole „Běží".
+    const ted = new Date('2026-09-11T09:11:00').getTime();
+    const r = stavBehu({ status: 'running', timestamp: '2026-09-10T15:29:00' }, ted);
+    expect(r.stav).toBe('bezodezvy');
+    expect(r.popisek).toBe('Bez odezvy');
+  });
+
+  test('čerstvý běh „running" zůstává běžící', () => {
+    const ted = new Date('2026-09-11T09:11:00').getTime();
+    const r = stavBehu({ status: 'running', timestamp: '2026-09-11T09:05:00' }, ted);
+    expect(r.stav).toBe('bezi');
+  });
+
+  test('běh bez čitelného času se neoznačí za mrtvý', () => {
+    // Nečitelné datum neznamená, že běh spadl. Spíš varovat než tvrdit.
+    expect(stavBehu({ status: 'running', timestamp: 'nesmysl' }).stav).toBe('bezi');
+  });
+});

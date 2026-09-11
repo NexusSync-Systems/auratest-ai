@@ -154,6 +154,14 @@ export async function getSessions(userId) {
       status: data.status,
       stepCount: data.steps ? data.steps.length : 0,
       bugsCount: data.bugs ? data.bugs.length : 0,
+      // Předpisový sken nese verdikt v `checks`, ne v `bugs`.
+      //
+      // `buildScanSession` mu `bugs: []` nastavuje schválně (spis to pole
+      // čte u každého běhu), takže seznam v UI u NĚJ hlásil „bez nálezu"
+      // bez ohledu na to, co sken zjistil. Bez `kind` a `verdict` to
+      // frontend nemá jak poznat.
+      kind: data.kind || null,
+      verdict: data.verdict === undefined ? null : data.verdict,
       summary: data.summary,
       timestamp: data.timestamp
     });
