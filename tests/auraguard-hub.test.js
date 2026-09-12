@@ -34,7 +34,19 @@ jest.mock('../db.js', () => {
         monitors[idx] = { ...monitors[idx], ...update };
         return Promise.resolve(monitors[idx]);
       }
-      return Promise.resolve(null);
+      // Jako skutečný Firestore: `update()` na smazaném dokumentu VYHODÍ.
+      // Dřív tu byl `resolve(null)`, což tiše maskovalo celou situaci,
+      // kvůli které padal server.
+      return Promise.reject(Object.assign(
+        new Error('5 NOT_FOUND: no document to update'),
+        { code: 5 }
+      ));
+    }),
+    updateMonitorIfExists: jest.fn(async (id, update) => {
+      const idx = monitors.findIndex(m => m.id === id);
+      if (idx === -1) return null;
+      monitors[idx] = { ...monitors[idx], ...update };
+      return monitors[idx];
     }),
     deleteMonitor: jest.fn((id) => {
       monitors = monitors.filter(m => m.id !== id);

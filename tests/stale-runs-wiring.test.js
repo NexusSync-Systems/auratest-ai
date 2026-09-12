@@ -16,6 +16,17 @@ import { __test__ } from '../server.js';
 
 const mockStore = { sessions: [] };
 
+// Neměnný záznam se mockuje, protože právě z něj teď pojistka čte.
+const mockLedger = { records: [] };
+
+jest.mock('../audit-ledger.js', () => {
+  const skutecny = jest.requireActual('../audit-ledger.js');
+  return {
+    ...skutecny,
+    recordsForSession: jest.fn((sessionId) => mockLedger.records.filter((r) => r.sessionId === sessionId)),
+  };
+});
+
 jest.mock('../auth.js', () => ({
   authenticateToken: (req, res, next) => { req.user = { userId: 'u' }; next(); },
 }));
@@ -45,6 +56,7 @@ const DAVNO = pred(60 * 60 * 1000);
 
 beforeEach(() => {
   mockStore.sessions = [];
+  mockLedger.records = [];
   __test__.beziciBehy.clear();
   jest.clearAllMocks();
 });
@@ -117,6 +129,45 @@ describe('hlídač dopíše, co je opravdu mrtvé', () => {
     expect(await __test__.doucistiZaseknuteBehy()).toBe(0);
     expect(db.saveSession).not.toHaveBeenCalled();
     expect(mockStore.sessions[0].status).toBe('running');
+  });
+
+  test('běh v záznamu se nepřepíše ANI KDYŽ příznak v databázi chybí', async () => {
+    // Tohle je ta vada, kterou našla kontrolní vlna. `ledger.recorded`
+    // zapisuje do databáze právě ten zápis, jehož selhání celou situaci
+    // vytváří — příznak tedy chybí přesně v případě, na který má pojistka
+    // reagovat. Hlídač běh přepsal, otisk přestal souhlasit a spis by
+    // zákazníka obvinil z manipulace se záznamem.
+    mockLedger.records.push({ sessionId: 'jen-v-ledgeru', hash: 'abc' });
+    mockStore.sessions.push({
+      id: 'jen-v-ledgeru', status: 'running', heartbeatAt: DAVNO, timestamp: DAVNO,
+      // ŽÁDNÉ `ledger` pole — zápis do databáze selhal.
+    });
+
+    expect(await __test__.doucistiZaseknuteBehy()).toBe(0);
+    expect(db.saveSession).not.toHaveBeenCalled();
+    expect(mockStore.sessions[0].status).toBe('running');
+  });
+
+  test('nečitelný záznam se bere jako „možná tam je"', async () => {
+    // Přepsat běh, o kterém nevíme, je horší než ho nechat k ručnímu
+    // posouzení.
+    const { recordsForSession } = await import('../audit-ledger.js');
+    recordsForSession.mockImplementationOnce(() => { throw new Error('ledger nečitelný'); });
+    mockStore.sessions.push({
+      id: 'neznamo', status: 'running', heartbeatAt: DAVNO, timestamp: DAVNO,
+    });
+
+    expect(await __test__.doucistiZaseknuteBehy()).toBe(0);
+    expect(db.saveSession).not.toHaveBeenCalled();
+  });
+
+  test('běh, který v záznamu NENÍ, se dopíše', async () => {
+    mockStore.sessions.push({
+      id: 'nikde', status: 'running', heartbeatAt: DAVNO, timestamp: DAVNO,
+    });
+
+    expect(await __test__.doucistiZaseknuteBehy()).toBe(1);
+    expect(mockStore.sessions[0].status).toBe('failed');
   });
 
   test('nedostupná databáze úklid nepoloží', async () => {

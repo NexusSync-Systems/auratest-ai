@@ -3,6 +3,7 @@ import path from 'path';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import { zapisPokudExistuje } from './firestore-errors.js';
 
 const __dirname = path.resolve();
 const credentialsPath = path.join(__dirname, 'firebase-credentials.json');
@@ -95,6 +96,25 @@ export async function updateMonitor(monitorId, updateData) {
   await docRef.update(updateData);
   const updated = await docRef.get();
   return { id: updated.id, ...updated.data() };
+}
+
+/**
+ * Zápis do monitoru, který uživatel mezitím mohl smazat.
+ *
+ * Vrací `null`, když monitor už neexistuje — to je legitimní stav, ne
+ * chyba. `updateMonitor` na smazaném dokumentu vyhodí, a protože se volal
+ * v plovoucím `(async () => {})()` bez `.catch()`, skončilo smazání
+ * monitoru za běhu jako unhandledRejection → `process.exit(1)`. Jeden
+ * uživatel tím zabil rozdělané běhy všech ostatních.
+ *
+ * `set(..., {merge:true})` by nevyhodil, ale smazaný monitor by vzkřísil —
+ * proto se chybějící dokument pozná a NEzapisuje se.
+ *
+ * Skutečné chyby (nedostupná databáze, odepřené oprávnění) se vyhazují
+ * dál. Spolknout je by znamenalo, že zápisy tiše mizí.
+ */
+export async function updateMonitorIfExists(monitorId, updateData) {
+  return zapisPokudExistuje(() => updateMonitor(monitorId, updateData));
 }
 
 export async function deleteMonitor(monitorId) {

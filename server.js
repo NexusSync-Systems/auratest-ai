@@ -18,6 +18,7 @@ import { redactEventData } from './pii-redactor.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, SDK_DIR, FRONTEND_DIST_DIR, ensureDir } from './paths.js';
 import { resolveSpaFallback } from './spa-fallback.js';
 import { popisUkonceni, souhrnneUkonceni } from './finish-policy.js';
+import { zaznamBehu, stavMonitoru } from './run-result.js';
 import {
   appendRecord,
   verifyChain,
@@ -95,6 +96,27 @@ function prestanTepat(sessionId) {
 }
 
 /**
+ * Je tenhle běh už v neměnném záznamu?
+ *
+ * Rychlá cesta je příznak v databázi, ROZHODUJE ale samotný záznam:
+ * příznak se ukládá tím zápisem, jehož selhání jako jediné tuhle
+ * situaci vyrábí, takže spoléhat na něj znamená pojistku, která
+ * nefunguje právě když má.
+ *
+ * Nečitelný záznam se bere jako „možná tam je" — přepsat běh, o kterém
+ * nevíme, je horší než ho nechat k ručnímu posouzení.
+ */
+function jeVZaznamu(sessionData, sessionId) {
+  if (sessionData?.ledger?.recorded === true) return true;
+  try {
+    return recordsForSession(sessionId).length > 0;
+  } catch (err) {
+    console.warn(`Záznam pro běh ${sessionId} se nepodařilo přečíst:`, err.message);
+    return true;
+  }
+}
+
+/**
  * Dopíše zaseknuté běhy.
  *
  * Volá se ze tří míst: při startu (doučistí zombie po předchozím
@@ -152,7 +174,15 @@ async function doucistiZaseknuteBehy(duvod = 'bez-tepu') {
     // i `runErrors` — přepsat je znamená, že spis vytiskne „Otisk
     // souhlasí: Ne". Tedy signál o porušené integritě záznamu, který
     // způsobil náš vlastní úklid, na nejcitlivějším místě dokumentu.
-    if (cerstvy?.ledger?.recorded === true) {
+    //
+    // ČTE SE ZE ZÁZNAMU, ne z příznaku v databázi.
+    //
+    // `cerstvy.ledger.recorded` do databáze zapisuje právě ten zápis,
+    // jehož selhání celou situaci vytvořilo — příznak tedy chybí přesně
+    // v případě, na který má pojistka reagovat. Kontrolní vlna to
+    // ověřila: session zůstala `running` bez `ledger`, hlídač ji přepsal
+    // a spis by zákazníka obvinil z manipulace se záznamem.
+    if (jeVZaznamu(cerstvy, session.id)) {
       console.warn(
         `Běh ${session.id} visí jako running, ale je už v neměnném záznamu. `
         + 'Nepřepisuji — vyžaduje ruční posouzení.'
@@ -977,18 +1007,28 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           }
 
           const vseZmereno = measuredCount === targetUrls.length;
-          sessionData.status = measuredCount > 0 ? 'completed' : 'failed';
-          sessionData.bugs = [...new Set(totalBugs)];
-          sessionData.runErrors = totalRunErrors;
-          sessionData.warnings = totalWarnings;
-          sessionData.modelObservations = [...new Set(totalModelObservations)];
-          sessionData.runNotes = [...new Set(totalRunNotes)];
-          sessionData.nerozhodnutychKroku = nerozhodnutychKroku;
-          sessionData.nezmerenoBlokaci = nezmerenoBlokaci;
+          // `status` nastavuje `zaznamBehu` z `measured` — mrtvé přiřazení
+          // tady zmizelo, aby nevznikly dvě pravdy o tomtéž poli.
+          // Týmž převodem jako ostatní cesty, jen z agregovaných hodnot —
+          // tak je sada uložených polí u všech tří zaručeně stejná.
           // Nejslabší ukončení rozhoduje za celý běh: stačí jedna stránka
           // useknutá limitem a tvrzení „prošli jsme, co bylo" neplatí.
-          sessionData.ukonceni = souhrnneUkonceni(ukonceniStranek, totalRunErrors.length > 0);
-          sessionData.ukonceniPopis = popisUkonceni(sessionData.ukonceni);
+          const souhrnneU = souhrnneUkonceni(ukonceniStranek, totalRunErrors.length > 0);
+          Object.assign(sessionData, zaznamBehu({
+            measured: measuredCount > 0,
+            bugs: [...new Set(totalBugs)],
+            warnings: totalWarnings,
+            runErrors: totalRunErrors,
+            modelObservations: [...new Set(totalModelObservations)],
+            runNotes: [...new Set(totalRunNotes)],
+            ukonceni: souhrnneU,
+            ukonceniPopis: popisUkonceni(souhrnneU),
+            nerozhodnutychKroku,
+            nezmerenoBlokaci,
+            performanceMetrics: lastPerformance,
+            generatedScript: combinedScripts,
+            videoUrl: lastVideoUrl,
+          }));
           sessionData.cookiePrubeh = cookiePrubeh;
           // Souhrn musí uvádět, KOLIK stránek se opravdu změřilo.
           // „Crawler prozkoumal 4 stránek. Nalezeno 0 chyb." u běhu, kde
@@ -1039,32 +1079,17 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           // `completed` znamená ve spisu „výsledek platí". Kdyby sem spadl
           // timeout nebo pád prohlížeče, zapsal by se do neměnného záznamu
           // jako platné zjištění o zákazníkově webu.
-          sessionData.status = result.measured === false ? 'failed' : 'completed';
-          sessionData.bugs = result.bugs;
-          // Chyby měření se ukládají odděleně, aby je nikdo nemohl číst
-          // jako nálezy.
-          sessionData.runErrors = result.runErrors || [];
-          // Výkonnostní varování se dřív nikam nepropsala — agent je odděluje
-          // od bugů, ale žádný konzument je nečetl.
-          sessionData.warnings = result.warnings || [];
+          // Jediný převod výsledku na pole session — sdílený s crawlerem
+          // i plánovačem monitorů. Dřív byl trojmo a každá kopie se
+          // rozešla: crawler neposílal `warnings`, crawler ani monitor
+          // neukládaly `ukonceni`. Pokaždé to znamenalo, že běh vypadal
+          // v reportu líp, než jaký byl.
+          Object.assign(sessionData, zaznamBehu(result));
           // Okolnosti běhu, ne verdikty: co bylo uložené před souhlasem
           // a co se zmáčklo na cookie liště. Do `bugs` to nepatří.
+          // (Jen jednostránkový běh; crawler je sbírá do `cookiePrubeh`.)
           sessionData.preConsent = result.preConsent || null;
           sessionData.cookieBanner = result.cookieBanner || null;
-          // Nepotvrzené postřehy modelu a okolnosti běhu. Odděleně od
-          // `bugs`, protože nic z toho není změřené zjištění o webu.
-          sessionData.modelObservations = result.modelObservations || [];
-          sessionData.runNotes = result.runNotes || [];
-          // Jak běh skončil. Bez toho spis neodliší „stránka sama hlásí
-          // hotovo" od „doběhl limit kroků".
-          sessionData.ukonceni = result.ukonceni || null;
-          sessionData.ukonceniPopis = result.ukonceniPopis || null;
-          sessionData.nerozhodnutychKroku = result.nerozhodnutychKroku ?? null;
-          sessionData.nezmerenoBlokaci = result.nezmerenoBlokaci ?? null;
-          sessionData.summary = result.summary;
-          sessionData.performanceMetrics = result.performanceMetrics;
-          sessionData.generatedScript = result.generatedScript;
-          sessionData.videoUrl = result.videoUrl;
           recordInLedger(sessionData);
           await db.saveSession(sessionId, sessionData);
 
@@ -1210,6 +1235,163 @@ function broadcastToUser(userId, data) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Plánovač monitorů.
 //
+/**
+ * Jeden běh monitoru od začátku do konce.
+ *
+ * Vytažené ze `schedulerTick` schválně: dokud to bylo plovoucí
+ * `(async () => {})()` uvnitř smyčky, nešlo to testovat — a byl v tom P0.
+ *
+ * TŘI ZÁSADY, KTERÉ TU MUSÍ PLATIT
+ *   1. Výsledek měření se ukládá PRVNÍ. Smazaný monitor nesmí zahodit
+ *      zjištění, které už vzniklo.
+ *   2. Žádný zápis do databáze nesmí přerušit ty ostatní. Když padne
+ *      první, běh by jinak zůstal v databázi jako „running" navždycky.
+ *   3. Z téhle funkce nesmí nic vyletět. Volající má ještě `.catch()`,
+ *      ale spoléhat na jedinou síť už se jednou nevyplatilo.
+ *
+ * `deps` je vstřikovatelné pro testy; výchozí hodnoty jsou skutečné.
+ */
+async function provedBehMonitoru({ monitor, sessionId, sessionData, llmConfig }, deps = {}) {
+  const {
+    spustTest = runAutonomousTest,
+    saveSession = db.saveSession,
+    updateMonitorIfExists = db.updateMonitorIfExists,
+    oznam = oznamMonitory,
+    zapisDoZaznamu = recordInLedger,
+    tepStop = prestanTepat,
+    uvolniSlot = () => browserSlots.release(),
+    broadcastKrok = broadcastToSession,
+    pauza = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t.unref) t.unref(); }),
+  } = deps;
+
+  const zapis = async (co, akce) => {
+    try {
+      return await akce();
+    } catch (err) {
+      console.error(`${co} selhalo:`, err.message);
+      return null;
+    }
+  };
+
+  // Dva pokusy s krátkou pauzou. Víc ne: běh drží slot prohlížeče a další
+  // monitory čekají.
+  const zapisSOpakovanim = async (co, akce) => {
+    for (let pokus = 1; pokus <= 2; pokus++) {
+      try {
+        return await akce();
+      } catch (err) {
+        console.error(`${co} selhalo (pokus ${pokus}/2):`, err.message);
+        if (pokus === 1) await pauza(500);
+      }
+    }
+    return null;
+  };
+
+  try {
+    const result = await spustTest(
+      monitor.url,
+      monitor.goal,
+      llmConfig,
+      (progress) => {
+        if (progress.step === 0) return;
+        sessionData.steps.push(progress);
+        // Bez .catch() končilo selhání zápisu jako unhandled rejection.
+        saveSession(sessionId, sessionData)
+          .catch((e) => console.error('Uložení kroku monitoru selhalo:', e.message));
+        broadcastKrok(sessionId, { type: 'step', step: progress });
+      },
+      sessionId
+    );
+
+    // Týž převod jako /api/run-test a crawler — viz `run-result.js`.
+    Object.assign(sessionData, zaznamBehu(result));
+    sessionData.preConsent = result.preConsent || null;
+    sessionData.cookieBanner = result.cookieBanner || null;
+    zapisDoZaznamu(sessionData);
+    // Opakovaný pokus, protože tenhle jeden zápis nese celý výsledek.
+    //
+    // Když selže, zůstane session v databázi jako `running`, zatímco
+    // v neměnném záznamu už je položka o dokončeném běhu — a rozchod mezi
+    // nimi je přesně to, co spis tiskne jako „Otisk souhlasí: Ne".
+    // Přechodná chyba Firestore je nejčastější příčina, a ta druhý pokus
+    // většinou přežije.
+    await zapisSOpakovanim(
+      `Uložení výsledku session ${sessionId}`,
+      () => saveSession(sessionId, sessionData)
+    );
+
+    // `updateMonitorIfExists`, ne `updateMonitor`: uživatel mohl monitor
+    // za běhu smazat a `docRef.update()` na smazaném dokumentu vyhodí.
+    const zapsano = await zapis(
+      `Zápis stavu monitoru ${monitor.id}`,
+      () => updateMonitorIfExists(monitor.id, stavMonitoru(result))
+    );
+    if (zapsano === null) {
+      console.warn(`[AuraGuard] Monitor ${monitor.id} nebyl aktualizován (smazán nebo chyba zápisu); výsledek běhu je uložený u session ${sessionId}.`);
+    }
+  } catch (err) {
+    console.error(`[AuraGuard] Monitor ${monitor.name} selhal:`, err.message);
+    sessionData.status = 'failed';
+    // Do `bugs` NE — chyba plánovače není nález na sledovaném webu.
+    sessionData.runErrors = [
+      ...(sessionData.runErrors || []),
+      `Chyba plánovače při měření: ${err.message}`,
+    ];
+    await zapis(`Dopsání session ${sessionId} po chybě`, () => saveSession(sessionId, sessionData));
+    await zapis(
+      `Zápis chybového stavu monitoru ${monitor.id}`,
+      () => updateMonitorIfExists(monitor.id, { lastRunStatus: 'error' })
+    );
+  } finally {
+    // Každý řádek `finally` má vlastní ochranu.
+    //
+    // Výjimka z `finally` přebije všechno a vyletí z funkce — a hlavně
+    // PŘESKOČÍ zbytek bloku, takže by se neuvolnil slot prohlížeče.
+    // Několik takových běhů monitoring zastaví úplně, a přitom nic
+    // nehlásí. (Tohle našel až test téhle funkce: `oznamMonitory` v ostrém
+    // provozu nevyhazuje, ale invariant nesmí stát na tom, že se volaný
+    // kód chová slušně.)
+    try {
+      await oznam(monitor.userId);
+    } catch (e) {
+      console.error(`Rozeslání monitorů pro ${monitor.userId} selhalo:`, e.message);
+    }
+    try {
+      tepStop(sessionId);
+    } catch (e) {
+      console.error(`Zastavení tepu ${sessionId} selhalo:`, e.message);
+    }
+    // Uvolnění slotu jako POSLEDNÍ a vždy: bez něj se monitoring po
+    // několika bězích zasekne na vyčerpaném limitu prohlížečů.
+    try {
+      uvolniSlot();
+    } catch (e) {
+      console.error('Uvolnění slotu prohlížeče selhalo:', e.message);
+    }
+  }
+}
+
+/**
+ * Rozeslat uživateli aktuální seznam monitorů.
+ *
+ * Vlastní funkce, protože se to dělá na pěti místech a POKAŽDÉ to bylo
+ * `await db.getMonitors(...)` bez ošetření. V obslužné cestě chyby uvnitř
+ * plovoucího async volání znamenala výjimka odtud unhandledRejection,
+ * tedy `shutdownWithError()` — server padl kvůli tomu, že se nepovedlo
+ * poslat aktualizaci seznamu do UI.
+ *
+ * Neúspěch se hlásí do logu a jde se dál: neposlaná aktualizace seznamu
+ * je kosmetická vada, spadlý server ne.
+ */
+async function oznamMonitory(userId) {
+  try {
+    const monitors = await db.getMonitors(userId);
+    broadcastToUser(userId, { type: 'monitors_updated', monitors });
+  } catch (err) {
+    console.error(`Seznam monitorů pro ${userId} se nepodařilo rozeslat:`, err.message);
+  }
+}
+
 // Dřív to byl setInterval s async callbackem: když jeden tik trval déle než
 // 60 s (getAllActiveMonitors + N síťových updateMonitor), spustil se další
 // paralelně. Teď se další tik plánuje až po dokončení předchozího.
@@ -1256,17 +1438,26 @@ async function schedulerTick() {
           console.warn(
             `[AuraGuard] Monitor ${monitor.id} deaktivován — nepřijatelný cíl: ${err.message}`
           );
-          await db.updateMonitor(monitor.id, {
+          // `IfExists`: snímek z `getAllActiveMonitors` může obsahovat
+          // monitor, který uživatel právě smazal. Výjimka odtud padala do
+          // vnějšího `catch` plánovače, takže se PŘESKOČILY všechny
+          // ostatní monitory v tomtéž tiku.
+          await db.updateMonitorIfExists(monitor.id, {
             active: false,
             lastError: `Cíl odmítnut při kontrole: ${err.message}`,
-          });
+          }).catch((e) => console.error(`Deaktivace monitoru ${monitor.id} selhala:`, e.message));
           continue;
         }
 
         // Rezervace slotu. TODO: převést na Firestore transakci (uvnitř znovu
         // přečíst lastRunTime a zapsat jen když je stále starý) — dnešní
         // read-then-write není atomická napříč instancemi.
-        await db.updateMonitor(monitor.id, { lastRunTime: now });
+        // Smazaný monitor se prostě nespustí — a hlavně nezhasne celý tik.
+        const rezervace = await db.updateMonitorIfExists(monitor.id, { lastRunTime: now });
+        if (rezervace === null) {
+          console.warn(`[AuraGuard] Monitor ${monitor.id} byl mezitím smazán, přeskakuji.`);
+          continue;
+        }
 
         // Strop na souběžné běhy: bez něj znamená 50 aktivních monitorů
         // 50 současně spuštěných Chromium procesů.
@@ -1311,7 +1502,7 @@ async function schedulerTick() {
             .catch((err) => console.warn(`Odloženou session ${sessionId} se nepodařilo dopsat:`, err.message));
           // Rezervaci vrátíme, aby se monitor zkusil znovu v dalším tiku
           // a nečekal celý svůj interval.
-          await db.updateMonitor(monitor.id, { lastRunTime: lastRun }).catch(() => {});
+          await db.updateMonitorIfExists(monitor.id, { lastRunTime: lastRun }).catch(() => {});
           continue;
         }
 
@@ -1334,79 +1525,20 @@ async function schedulerTick() {
           slowApiThresholdMs: monitor.slowApiThresholdMs || 1500
         };
 
-        (async () => {
-          try {
-            const result = await runAutonomousTest(
-              monitor.url,
-              monitor.goal,
-              llmConfig,
-              (progress) => {
-                if (progress.step === 0) return;
-                sessionData.steps.push(progress);
-                // Bez .catch() končilo selhání zápisu jako unhandled rejection.
-                db.saveSession(sessionId, sessionData)
-                  .catch((e) => console.error('Uložení kroku monitoru selhalo:', e.message));
-                broadcastToSession(sessionId, { type: 'step', step: progress });
-              },
-              sessionId
-            );
-
-            // Nedokončené měření není `completed` — viz /api/run-test.
-            sessionData.status = result.measured === false ? 'failed' : 'completed';
-            sessionData.bugs = result.bugs;
-            // Výkonnostní varování se dřív nikam nepropsala — agent je odděluje
-            // od bugů, ale žádný konzument je nečetl.
-            sessionData.warnings = result.warnings || [];
-            sessionData.runErrors = result.runErrors || [];
-            // Stejná pole jako u /api/run-test. Bez nich monitor ukládal
-            // běh na limitu kroků jako čistý výsledek: report dal zelený
-            // odznak a spis „Bez nálezu" bez výhrady o pokrytí.
-            sessionData.modelObservations = result.modelObservations || [];
-            sessionData.runNotes = result.runNotes || [];
-            sessionData.ukonceni = result.ukonceni || null;
-            sessionData.ukonceniPopis = result.ukonceniPopis || null;
-            sessionData.nerozhodnutychKroku = result.nerozhodnutychKroku ?? null;
-            sessionData.nezmerenoBlokaci = result.nezmerenoBlokaci ?? null;
-            sessionData.summary = result.summary;
-            sessionData.performanceMetrics = result.performanceMetrics;
-            sessionData.generatedScript = result.generatedScript;
-            sessionData.videoUrl = result.videoUrl;
-            recordInLedger(sessionData);
-            await db.saveSession(sessionId, sessionData);
-
-            await db.updateMonitor(monitor.id, {
-              // Nezměřený běh není ani „v pořádku", ani „nález" — je to chyba
-              // našeho měření a monitor to musí ukázat jako takovou.
-              lastRunStatus:
-                result.measured === false
-                  ? 'error'
-                  : result.bugs.length === 0
-                    ? 'success'
-                    : 'failure',
-              lastRunBugsCount: result.measured === false ? 0 : result.bugs.length
-            });
-
-            const userMonitors = await db.getMonitors(monitor.userId);
-            broadcastToUser(monitor.userId, { type: 'monitors_updated', monitors: userMonitors });
-          } catch (err) {
-            console.error(`[AuraAuraGuard] Monitor ${monitor.name} selhal:`, err.message);
-            sessionData.status = 'failed';
-            // Do `bugs` NE — chyba plánovače není nález na sledovaném webu.
-            sessionData.runErrors = [
-              ...(sessionData.runErrors || []),
-              `Chyba plánovače při měření: ${err.message}`,
-            ];
-            await db.saveSession(sessionId, sessionData);
-
-            await db.updateMonitor(monitor.id, { lastRunStatus: 'error' });
-
-            const userMonitors = await db.getMonitors(monitor.userId);
-            broadcastToUser(monitor.userId, { type: 'monitors_updated', monitors: userMonitors });
-          } finally {
-            prestanTepat(sessionId);
-            browserSlots.release();
-          }
-        })();
+        // Tělo běhu je ve `provedBehMonitoru`, aby šlo testovat.
+        //
+        // Přesně tady byl P0: plovoucí `(async () => {})()` bez `.catch()`,
+        // a v něm `db.updateMonitor()` na monitoru, který uživatel mohl
+        // mezitím smazat. Výjimka doletěla do `unhandledRejection`, ten
+        // volá `shutdownWithError()` a `process.exit(1)` — jeden uživatel
+        // zabil rozdělané běhy všech ostatních. Netestovaná spojovací
+        // vrstva, jako pokaždé.
+        provedBehMonitoru({ monitor, sessionId, sessionData, llmConfig })
+          .catch((err) => {
+            // Poslední záchytná síť. Plánovač na pozadí nesmí mít právo
+            // ukončit server, ať se stane cokoli.
+            console.error(`[AuraGuard] Neočekávaná chyba v běhu monitoru ${monitor.id}:`, err);
+          });
       }
     }
   } catch (err) {
@@ -1572,8 +1704,8 @@ async function gracefulShutdown(signal) {
     // ztráta výsledku.
     if (session?.status !== 'running') return;
     // Běh už zapsaný v neměnném záznamu se nepřepisuje, viz
-    // `doucistiZaseknuteBehy`.
-    if (session?.ledger?.recorded === true) return;
+    // `doucistiZaseknuteBehy`. Rozhoduje záznam, ne příznak v databázi.
+    if (jeVZaznamu(session, sessionId)) return;
     await db.saveSession(sessionId, zaznamPrerusenehoBehu(session, 'vypnuti'));
     dopsano++;
   });
@@ -1724,7 +1856,11 @@ app.patch('/api/monitors/:id', authenticateToken, async (req, res) => {
     if (patch.host) patch.host = resolveLlmHost(patch.host);
     if (patch.maxSteps) patch.maxSteps = Math.min(Math.max(parseInt(patch.maxSteps) || 10, 1), MAX_AGENT_STEPS);
 
-    const updated = await db.updateMonitor(req.params.id, patch);
+    // Mezi `getMonitorById` a zápisem je mezera, ve které monitor může
+    // zmizet. `updateMonitor` by z toho udělal 500 s hrubým textem od
+    // Firestore; správná odpověď je 404, stejná jako o pár řádků výš.
+    const updated = await db.updateMonitorIfExists(req.params.id, patch);
+    if (updated === null) return res.status(404).json({ error: 'Monitor nenalezen.' });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2642,4 +2778,4 @@ export { app };
 // které se testovat nedalo, zatímco čistý modul `stale-runs.js` byl
 // v pořádku. Testovat jen to, co se testovat dá, znamená testovat to,
 // kde chyby nejsou.
-export const __test__ = { doucistiZaseknuteBehy, beziciBehy, zacniTepat, prestanTepat };
+export const __test__ = { doucistiZaseknuteBehy, beziciBehy, zacniTepat, prestanTepat, provedBehMonitoru, oznamMonitory };
