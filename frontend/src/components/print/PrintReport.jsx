@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { IMPACT_TRANSLATIONS, RULE_TRANSLATIONS, TEST_TYPES } from '../../constants/testTypes.js';
-import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel } from '../../lib/compliance.js';
+import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel, odolnostLabel, odolnostBadgeClass } from '../../lib/compliance.js';
 import { execSummary, stavTrida } from '../../lib/exec-summary.js';
 
 /**
@@ -627,10 +627,19 @@ export default function PrintReport({
       {chaosResult && chaosResult.chaos && (
         <div className="print-section">
           <h3>DORA — Chaos Engineering</h3>
-          <div className={`print-badge ${complianceBadgeClass(chaosResult.chaos.isResilient)}`}>
-            {`[${complianceLabel(chaosResult.chaos.isResilient)}] `}
+          {/* Vlastní slovník, ne `complianceLabel`.
+              Ten by u `isResilient === true` vytiskl „[Splněno]" — tedy
+              splnění povinnosti, kterou tenhle experiment neověřuje.
+              `audit-scope.js` mu ze stejného důvodu dává `ok: null`, takže
+              spis o TÉMŽE běhu tvrdil opak než report. */}
+          <div className={`print-badge ${odolnostBadgeClass(chaosResult.chaos.isResilient)}`}>
+            {`[${odolnostLabel(chaosResult.chaos.isResilient)}] `}
             {chaosResult.chaos.rating}
           </div>
+          <p style={{ marginTop: '8px', fontSize: '14px', color: '#475569' }}>
+            Odolnostní experiment není kontrola podle předpisu. Z jeho výsledku
+            neplyne splnění ani porušení povinnosti — ani při kladném výsledku.
+          </p>
           <table className="print-table" style={{ marginTop: '15px' }}>
             <tbody>
               <tr><td>Zahozené požadavky</td><td>{chaosResult.chaos.abortedRequests}</td></tr>
@@ -650,6 +659,12 @@ export default function PrintReport({
                 </>
               )}
               <tr><td>Stránka se zhroutila</td><td>{chaosResult.chaos.pageCrashed ? 'ano' : 'ne'}</td></tr>
+              {/* Chybová odpověď serveru. Bez tohohle řádku by čtenář
+                  nepoznal, že „neprůkazné" znamená chybovou stránku,
+                  ne chybu našeho měření. */}
+              {chaosResult.chaos.httpProblem && (
+                <tr><td>Stav odpovědi serveru</td><td>{chaosResult.chaos.httpProblem}</td></tr>
+              )}
               {/* Bez seedu není běh opakovatelný, a tedy ani doložitelný. */}
               {chaosResult.chaos.seed && (
                 <tr><td>Seed běhu (pro zopakování)</td><td>{chaosResult.chaos.seed}</td></tr>

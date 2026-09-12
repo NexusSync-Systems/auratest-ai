@@ -88,3 +88,34 @@ export function complianceLabel(isCompliant) {
     default: return 'Neprůkazné';
   }
 }
+
+/**
+ * Odolnostní experiment NENÍ předpisová kontrola.
+ *
+ * `complianceLabel(true)` tiskne „Splněno". Chaos test ale žádné pravidlo
+ * neověřuje — `audit-scope.js` mu ze stejného důvodu dává `ok: null`
+ * a do spisu píše, že z něj splnění ani porušení neplyne. Tiskový report
+ * přesto vedle jeho výsledku tiskl zelené „[Splněno]", takže dokument
+ * pro úřad tvrdil splnění povinnosti, kterou nikdo neměřil — a spis
+ * o témže běhu tvrdil opak.
+ *
+ * Slovník je proto vlastní: mluví o chování v experimentu, ne o shodě.
+ */
+export function odolnostLabel(isResilient) {
+  if (isResilient === true) return 'Odolala v experimentu';
+  if (isResilient === false) return 'Neodolala';
+  return 'Neprůkazné';
+}
+
+/**
+ * Barva podle výsledku experimentu, ne podle shody.
+ *
+ * `true` zůstává zelená: aplikace skutečně přežila injektované poruchy,
+ * to je změřený fakt. Text vedle ní ale nesmí říkat „Splněno" a sekce
+ * musí uvést, že z experimentu předpisový závěr neplyne.
+ */
+export function odolnostBadgeClass(isResilient) {
+  if (isResilient === true) return 'success';
+  if (isResilient === false) return 'error';
+  return 'warning';
+}

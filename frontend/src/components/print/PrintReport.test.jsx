@@ -573,3 +573,57 @@ describe('cookie lišta v záznamu běhu', () => {
     expect(sekce(/Výsledek běhu agenta/).getByText(/pod překryvem/)).toBeInTheDocument();
   });
 });
+
+describe('chaos test se nevydává za předpisovou kontrolu', () => {
+  const chaos = (over) => ({
+    chaos: {
+      isResilient: true, rating: 'Aplikace přežila 5 injektovaných poruch bez pádu.',
+      abortedRequests: 2, delayedRequests: 3, consoleErrors: 0, pageCrashed: false,
+      scope: 'Injektáž síťových poruch.', ...over,
+    },
+  });
+
+  test('kladný výsledek NETISKNE „Splněno"', () => {
+    // Ověřená vada: `complianceLabel(true)` tiskl „[Splněno]", tedy splnění
+    // povinnosti, kterou tenhle experiment neověřuje. `audit-scope.js` mu
+    // ze stejného důvodu dává `ok: null`, takže spis o TÉMŽE běhu tvrdil
+    // opak než report.
+    vykresli({ chaosResult: chaos() });
+
+    const b = odznak(/DORA — Chaos Engineering/);
+    expect(b.textContent).not.toMatch(/Splněno/);
+    expect(b.textContent).toMatch(/Odolala v experimentu/);
+  });
+
+  test('řekne nahlas, že z experimentu předpisový závěr neplyne', () => {
+    vykresli({ chaosResult: chaos() });
+    expect(sekce(/DORA — Chaos Engineering/)
+      .getByText(/neplyne splnění ani porušení povinnosti/)).toBeInTheDocument();
+  });
+
+  test('neprůkazný výsledek se netiskne jako nález', () => {
+    vykresli({ chaosResult: chaos({ isResilient: null, rating: 'NEPRŮKAZNÉ: server odpověděl 503.' }) });
+    const b = odznak(/DORA — Chaos Engineering/);
+    expect(b.className).toMatch(/warning/);
+    expect(b.textContent).toMatch(/Neprůkazné/);
+  });
+
+  test('pád pod injektáží je nález a je červený', () => {
+    vykresli({ chaosResult: chaos({ isResilient: false, rating: 'Aplikace se rozpadla.' }) });
+    const b = odznak(/DORA — Chaos Engineering/);
+    expect(b.className).toMatch(/error/);
+    expect(b.textContent).toMatch(/Neodolala/);
+    expect(b.textContent).not.toMatch(/Nesplněno/);
+  });
+
+  test('chybová odpověď serveru je v tabulce vidět', () => {
+    vykresli({
+      chaosResult: chaos({
+        isResilient: null,
+        httpProblem: 'Server odpověděl 503. (v baseline i v hlavním běhu)',
+      }),
+    });
+    expect(sekce(/DORA — Chaos Engineering/).getByText(/Server odpověděl 503/))
+      .toBeInTheDocument();
+  });
+});

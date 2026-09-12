@@ -6,6 +6,8 @@ import AxeBuilder from '@axe-core/playwright';
 import geoip from 'geoip-lite';
 import { assertPublicHttpUrl, resolvePublicHttpTarget, guardNavigation } from './ssrf-guard.js';
 import { vyhodnotFinish, UKONCENI, popisUkonceni } from './finish-policy.js';
+import { popisHttpChyby, popisHttpChybyBehu } from './http-status.js';
+import { vytvorChaosHandler, vyhodnotChaos } from './chaos-run.js';
 import { bezpecnePrvky, zamlcenychPrvku, vytvorZnacku, obalDataZeStranky, obalStavStranky, pokynKDatumZeStranky } from './prompt-safety.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, GENERATED_SCRIPTS_DIR, ensureDir, safeFileToken } from './paths.js';
 import { inspectTls, summarizeTls, PQC_GROUP } from './tls-audit.js';
@@ -3203,9 +3205,7 @@ export async function auditCRA_SBOM(url) {
     const navResponse = await page
       .goto(url, { waitUntil: 'networkidle' })
       .catch(() => null);
-    const httpError = !navResponse
-      ? 'Server neodpověděl.'
-      : (!navResponse.ok() ? `Server odpověděl ${navResponse.status()}.` : null);
+    const httpError = popisHttpChyby(navResponse);
 
     // ── Zdroj 1: obsah stažených skriptů ───────────────────────────────────
     //
@@ -3373,15 +3373,23 @@ export async function runChaosTest(url, options = {}) {
     // Bez referenčního běhu nejde tvrdit, že chyby způsobil chaos. Stránka,
     // která hlásí chyby i za klidu, by jinak dostala „rozpadla se pod
     // injektovanými poruchami" — závěr o kauzalitě, která se neměřila.
-    const baseline = { completed: false, consoleErrors: 0, pageCrashed: false, navigationFailed: false };
+    const baseline = {
+      completed: false, consoleErrors: 0, pageCrashed: false, navigationFailed: false,
+      // Chybová stránka není měřená aplikace. `page.goto()` na server, který
+      // vrací 503, navigaci za selhanou nepovažuje — odpověď PŘIŠLA, jen je
+      // chybová. Bez tohohle pole dostal i takový web verdikt „přežila N
+      // injektovaných poruch bez pádu".
+      httpError: null,
+    };
     try {
       const baseContext = await browser.newContext({ ignoreHTTPSErrors: true });
       await guardNavigation(baseContext);
       const basePage = await baseContext.newPage();
       basePage.on('console', (msg) => { if (msg.type() === 'error') baseline.consoleErrors++; });
       basePage.on('pageerror', () => { baseline.pageCrashed = true; });
-      await basePage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-        .catch(() => { baseline.navigationFailed = true; });
+      const baseResponse = await basePage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+        .catch(() => { baseline.navigationFailed = true; return null; });
+      if (!baseline.navigationFailed) baseline.httpError = popisHttpChyby(baseResponse);
       await basePage.waitForTimeout(CHAOS_OBSERVE_MS).catch(() => {});
       baseline.completed = true;
       await baseContext.close();
@@ -3395,47 +3403,35 @@ export async function runChaosTest(url, options = {}) {
     await guardNavigation(context);
     const page = await context.newPage();
 
-    let abortedRequests = 0;
-    let delayedRequests = 0;
-    // Záznam pro report: co přesně bylo zahozeno nebo zdrženo.
-    const injections = [];
+    // Stav injektáže drží modul `chaos-run.js`, aby se dal testovat bez
+    // Chromia — obslužná rutina byla jedno ze dvou míst, kde byl P0.
+    const chaosStav = {
+      abortedRequests: 0,
+      delayedRequests: 0,
+      // Záznam pro report: co přesně bylo zahozeno nebo zdrženo.
+      injections: [],
+      // URL, které jsme zahodili. Prohlížeč na každou z nich zaloguje
+      // „Failed to load resource: net::ERR_FAILED".
+      abortedUrls: new Set(),
+    };
+    const chaosParametry = {
+      abortProbability: CHAOS_ABORT_PROBABILITY,
+      delayProbability: CHAOS_DELAY_PROBABILITY,
+      delayMs: CHAOS_DELAY_MS,
+      resourceTypes: CHAOS_RESOURCE_TYPES,
+      maxInjections: MAX_CHAOS_INJECTIONS,
+    };
 
-    // Zapnutí request interception
-    await page.route('**/*', async (route) => {
-      const request = route.request();
-      const resourceType = request.resourceType();
-
-      // Simulace výpadků pro skripty, API (fetch/xhr) a obrázky
-      if (CHAOS_RESOURCE_TYPES.includes(resourceType)) {
-        const roll = rollFor(request.url());
-        if (roll < CHAOS_ABORT_PROBABILITY) {
-          abortedRequests++;
-          abortedUrls.add(request.url());
-          if (injections.length < MAX_CHAOS_INJECTIONS) {
-            injections.push({ type: 'abort', resourceType, url: request.url() });
-          }
-          return route.abort('failed');
-        }
-        if (roll < CHAOS_ABORT_PROBABILITY + CHAOS_DELAY_PROBABILITY) {
-          delayedRequests++;
-          if (injections.length < MAX_CHAOS_INJECTIONS) {
-            injections.push({ type: 'delay', resourceType, url: request.url(), ms: CHAOS_DELAY_MS });
-          }
-          await new Promise(r => setTimeout(r, CHAOS_DELAY_MS));
-          return route.continue().catch(() => {}); // stránka se už mohla zavřít
-        }
-      }
-      return route.continue().catch(() => {});
-    });
+    await page.route('**/*', vytvorChaosHandler({
+      rollFor,
+      parametry: chaosParametry,
+      stav: chaosStav,
+    }));
 
     let pageCrashed = false;
     let consoleErrors = 0;
     // Chyby, které zalogoval sám prohlížeč kvůli našemu abortu — ne aplikace.
     let browserNetworkErrors = 0;
-
-    // URL, které jsme zahodili. Prohlížeč na každou z nich zaloguje
-    // „Failed to load resource: net::ERR_FAILED".
-    const abortedUrls = new Set();
 
     page.on('console', (msg) => {
       if (msg.type() !== 'error') return;
@@ -3451,8 +3447,8 @@ export async function runChaosTest(url, options = {}) {
       // Přiřazení ke konkrétnímu zahozenému požadavku: buď sedí `location`,
       // nebo je URL zmíněná v textu hlášky. Bez téhle vazby bychom odečítali
       // i síťové chyby, které s injektáží nesouvisí.
-      const matchesAbortedRequest = abortedUrls.has(location)
-        || [...abortedUrls].some((u) => text.includes(u));
+      const matchesAbortedRequest = chaosStav.abortedUrls.has(location)
+        || [...chaosStav.abortedUrls].some((u) => text.includes(u));
 
       if (looksLikeNetworkError && matchesAbortedRequest) {
         browserNetworkErrors++;
@@ -3467,9 +3463,10 @@ export async function runChaosTest(url, options = {}) {
 
     // Timeout nastavíme delší kvůli simulaci latence
     let navigationFailed = false;
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {
-      navigationFailed = true;
-    });
+    let httpError = null;
+    const navResponse = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      .catch(() => { navigationFailed = true; return null; });
+    if (!navigationFailed) httpError = popisHttpChyby(navResponse);
 
     // Bez tohohle čekání se verdikt počítal DŘÍV, než injektované poruchy
     // stihly zapůsobit: `domcontentloaded` nastane před dokončením fetch/XHR
@@ -3484,34 +3481,26 @@ export async function runChaosTest(url, options = {}) {
     // označila za „rozpadla se pod injektovanými poruchami" — kauzalita se
     // nikdy neměřila. Opačně: práh „< 10" propustil až 9 chyb způsobených
     // právě injektáží jako „přežila bez pádu".
-    const injected = abortedRequests + delayedRequests;
+    const injected = chaosStav.abortedRequests + chaosStav.delayedRequests;
     const newConsoleErrors = Math.max(0, consoleErrors - baseline.consoleErrors);
     // Pád, který nastal už bez injektáže, injektáži připsat nelze.
     const newCrash = pageCrashed && !baseline.pageCrashed;
     const newNavigationFailure = navigationFailed && !baseline.navigationFailed;
 
-    let isResilient;
-    let rating;
-    if (!baseline.completed) {
-      isResilient = null;
-      rating = 'NEPRŮKAZNÉ: baseline běh bez injektáže se nepodařilo provést, takže není proti čemu porovnávat.';
-    } else if (baseline.navigationFailed) {
-      isResilient = null;
-      rating = 'NEPRŮKAZNÉ: stránka se nenačetla ani bez injektáže — problém není v odolnosti.';
-    } else if (injected === 0) {
-      // Když se nic nezahodilo ani nezdrželo, stránka žádnou poruchu nezažila.
-      isResilient = null;
-      rating = 'NEPRŮKAZNÉ: žádná porucha se neinjektovala, odolnost se netestovala.';
-    } else if (newCrash || newNavigationFailure) {
-      isResilient = false;
-      rating = `Aplikace se pod ${injected} injektovanými poruchami rozpadla (oproti baseline běhu bez injektáže).`;
-    } else if (newConsoleErrors > 0) {
-      isResilient = false;
-      rating = `Injektáž ${injected} poruch vyvolala ${newConsoleErrors} nových chyb v konzoli oproti baseline (nepočítaje ${browserNetworkErrors} síťových hlášek prohlížeče). Aplikace výpadky neošetřuje.`;
-    } else {
-      isResilient = true;
-      rating = `Aplikace přežila ${injected} injektovaných poruch bez pádu a bez nových chyb oproti baseline. Síťové hlášky prohlížeče (${browserNetworkErrors}) se nezapočítávají — aplikace je zjevně ošetřila.`;
-    }
+    // Chybový stav serveru. Stačí, aby na něj narazil jeden z obou běhů —
+    // porovnávat dva různé stavy serveru nic neměří.
+    const httpProblem = popisHttpChybyBehu({ baseline: baseline.httpError, hlavni: httpError });
+
+    const { isResilient, rating } = vyhodnotChaos({
+      baselineCompleted: baseline.completed,
+      baselineNavigationFailed: baseline.navigationFailed,
+      httpProblem,
+      injected,
+      newCrash,
+      newNavigationFailure,
+      newConsoleErrors,
+      browserNetworkErrors,
+    });
 
     return {
       success: true,
@@ -3527,8 +3516,13 @@ export async function runChaosTest(url, options = {}) {
           consoleErrors: baseline.consoleErrors,
           pageCrashed: baseline.pageCrashed,
           navigationFailed: baseline.navigationFailed,
+          httpError: baseline.httpError,
         },
         newConsoleErrors,
+        // Stav odpovědi serveru v obou bězích. Bez toho by čtenář nepoznal,
+        // že „neprůkazné" znamená chybovou stránku, ne chybu měření.
+        httpError,
+        httpProblem,
         // Kolik chyb zalogoval prohlížeč kvůli našemu abortu. Nejsou to chyby
         // aplikace, ale v reportu musí být vidět, že se odečetly.
         browserNetworkErrors,
@@ -3539,9 +3533,9 @@ export async function runChaosTest(url, options = {}) {
           delayMs: CHAOS_DELAY_MS,
           resourceTypes: CHAOS_RESOURCE_TYPES,
         },
-        abortedRequests,
-        delayedRequests,
-        injections,
+        abortedRequests: chaosStav.abortedRequests,
+        delayedRequests: chaosStav.delayedRequests,
+        injections: chaosStav.injections,
         consoleErrors,
         pageCrashed,
         isResilient,
