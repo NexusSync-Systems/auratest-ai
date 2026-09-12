@@ -527,3 +527,105 @@ describe('ztráta důkazu (regrese druhé kontrolní vlny)', () => {
     expect(digestOf(auditResultOf(scan(true)))).not.toBe(digestOf(auditResultOf(scan(false))));
   });
 });
+
+describe('verdikt běhu a jeho ukončení', () => {
+  const bezNalezu = (extra) =>
+    build({ sessions: [session({ kind: 'agent-run', summary: null, ...extra })] });
+
+  it('běh na limitu kroků přizná useknuté pokrytí', () => {
+    const cf = bezNalezu({ ukonceni: 'limit-kroku' });
+    expect(cf.runs[0].verdict.value).toBe('no-findings');
+    expect(cf.runs[0].verdict.rationale).toMatch(/limitu kroků/);
+    expect(cf.runs[0].verdict.rationale).toMatch(/neprozkoumaná/);
+  });
+
+  it('běh doložený stránkou si nic nepřidává', () => {
+    const cf = bezNalezu({ ukonceni: 'potvrzeno-strankou' });
+    expect(cf.runs[0].verdict.rationale).not.toMatch(/limitu kroků/);
+  });
+
+  it('starší záznam bez pole ukonceni se nedomýšlí', () => {
+    const cf = bezNalezu({});
+    expect(cf.runs[0].verdict.rationale).not.toMatch(/limitu kroků/);
+  });
+});
+
+describe('výhrady ve verdiktu po druhé kontrolní vlně', () => {
+  const bezNalezu = (extra) =>
+    build({ sessions: [session({ kind: 'agent-run', summary: null, ...extra })] });
+
+  it('tvrzení stránky se ve spisu označí za tvrzení webu', () => {
+    const cf = bezNalezu({ ukonceni: 'potvrzeno-strankou' });
+    expect(cf.runs[0].verdict.rationale).toMatch(/sama auditovaná stránka/);
+    expect(cf.runs[0].verdict.rationale).toMatch(/není nezávislé měření/);
+  });
+
+  it('kroky nerozhodnuté modelem zmenšují pokrytí a je to napsané', () => {
+    const cf = bezNalezu({ ukonceni: 'vycerpano', nerozhodnutychKroku: 3 });
+    expect(cf.runs[0].verdict.rationale).toMatch(/U 3 kroků nerozhodl model/);
+  });
+
+  it('bez nerozhodnutých kroků se nic nepřidává', () => {
+    const cf = bezNalezu({ ukonceni: 'vycerpano', nerozhodnutychKroku: 0 });
+    expect(cf.runs[0].verdict.rationale).not.toMatch(/nerozhodl model/);
+  });
+});
+
+describe('ověření otisku u starších záznamů (regrese druhé vlny)', () => {
+  it('záznam zapsaný předchozím předpisem se neprohlásí za pozměněný', () => {
+    // Bez verzování by každá změna sady klíčů v `auditResultOf` vytiskla
+    // u všech starších běhů červené „uložený výsledek se od zapsaného
+    // otisku liší" — obvinění zákazníka z manipulace kvůli našemu
+    // refaktoringu, na nejcitlivějším místě dokumentu pro úřad.
+    const s = session({ kind: 'agent-run', ukonceni: 'limit-kroku' });
+    const stary = record({
+      sessionId: s.id,
+      schema: 1,
+      resultDigest: digestOf(auditResultOf(s, 1)),
+    });
+
+    const cf = build({ sessions: [s], records: [stary] });
+    expect(cf.runs[0].evidence.digestMatches).toBe(true);
+  });
+
+  it('záznam bez pole schema se čte jako verze 1', () => {
+    const s = session({ kind: 'agent-run', ukonceni: 'limit-kroku' });
+    const bezSchema = record({ sessionId: s.id, resultDigest: digestOf(auditResultOf(s, 1)) });
+    delete bezSchema.schema;
+
+    const cf = build({ sessions: [s], records: [bezSchema] });
+    expect(cf.runs[0].evidence.digestMatches).toBe(true);
+  });
+
+  it('skutečná změna výsledku se pozná i u starého záznamu', () => {
+    const s = session({ kind: 'agent-run' });
+    const stary = record({
+      sessionId: s.id, schema: 1, resultDigest: digestOf(auditResultOf(s, 1)),
+    });
+
+    const cf = build({ sessions: [{ ...s, bugs: ['dopsaný nález'] }], records: [stary] });
+    expect(cf.runs[0].evidence.digestMatches).toBe(false);
+  });
+});
+
+describe('blokace hlídačem jako výhrada o pokrytí, ne nález', () => {
+  it('zablokované navigace se ve verdiktu přiznají', () => {
+    const cf = build({
+      sessions: [session({ kind: 'agent-run', summary: null, ukonceni: 'vycerpano', nezmerenoBlokaci: 2 })],
+    });
+    expect(cf.runs[0].verdict.value).toBe('no-findings');
+    expect(cf.runs[0].verdict.rationale).toMatch(/U 2 navigací zasáhl bezpečnostní hlídač/);
+  });
+
+  it('bez blokací se nic nepřidává', () => {
+    const cf = build({
+      sessions: [session({ kind: 'agent-run', summary: null, ukonceni: 'vycerpano', nezmerenoBlokaci: 0 })],
+    });
+    expect(cf.runs[0].verdict.rationale).not.toMatch(/hlídač/);
+  });
+
+  it('„není co ovládat" nese výhradu, že agent neprovedl nic', () => {
+    const cf = build({ sessions: [session({ kind: 'agent-run', summary: null, ukonceni: 'vycerpano' })] });
+    expect(cf.runs[0].verdict.rationale).toMatch(/neprovedl žádnou akci/);
+  });
+});

@@ -12,6 +12,7 @@ import {
   auditResultOf,
   acquireLock,
   GENESIS_HASH,
+  AKTUALNI_SCHEMA_OTISKU,
 } from '../audit-ledger.js';
 
 /**
@@ -287,8 +288,9 @@ describe('auditResultOf — předpis otisku je zapsaný, ne odvozený', () => {
     // cestami lišila a otisk nešlo reprodukovat.
     expect(Object.keys(auditResultOf({})).sort()).toEqual(
       [
-        'bugs', 'cookieBanner', 'preConsent', 'runErrors', 'status',
-        'steps', 'summary', 'warnings',
+        'bugs', 'cookieBanner', 'modelObservations', 'nerozhodnutychKroku',
+        'nezmerenoBlokaci', 'preConsent', 'runErrors', 'runNotes', 'status',
+        'steps', 'summary', 'ukonceni', 'warnings',
       ]
     );
   });
@@ -353,5 +355,67 @@ describe('zámek nad řetězem (regrese kontrolní vlny)', () => {
     expect(fs.existsSync(lockPath(file))).toBe(true);
     release();
     expect(fs.existsSync(lockPath(file))).toBe(false);
+  });
+});
+
+describe('otisk kryje i důvod ukončení běhu (regrese kontrolní vlny)', () => {
+  test('běh na limitu kroků nemá stejný otisk jako běh doložený stránkou', () => {
+    // Podle `ukonceni` přidává spis výhradu o useknutém pokrytí a report
+    // degraduje zelený odznak. Dokud pole v otisku nebylo, dala se výhrada
+    // z databáze odstranit a spis dál tiskl „Otisk souhlasí: Ano".
+    const zaklad = { status: 'completed', bugs: [], steps: [] };
+    expect(digestOf(auditResultOf({ ...zaklad, ukonceni: 'limit-kroku' })))
+      .not.toBe(digestOf(auditResultOf({ ...zaklad, ukonceni: 'potvrzeno-strankou' })));
+  });
+
+  test('dopsaný postřeh modelu otisk změní', () => {
+    const zaklad = { status: 'completed', bugs: [], steps: [] };
+    expect(digestOf(auditResultOf({ ...zaklad, modelObservations: ['cokoli'] })))
+      .not.toBe(digestOf(auditResultOf(zaklad)));
+  });
+
+  test('počet nerozhodnutých kroků otisk změní', () => {
+    const zaklad = { status: 'completed', bugs: [], steps: [] };
+    expect(digestOf(auditResultOf({ ...zaklad, nerozhodnutychKroku: 7 })))
+      .not.toBe(digestOf(auditResultOf({ ...zaklad, nerozhodnutychKroku: 0 })));
+  });
+});
+
+describe('verzování předpisu otisku (regrese druhé kontrolní vlny)', () => {
+  const zaklad = {
+    status: 'completed', bugs: [], warnings: [], runErrors: [],
+    preConsent: null, cookieBanner: null, summary: 'x', steps: [],
+  };
+
+  test('verze 1 nese původní sadu klíčů, ať je v běhu cokoli', () => {
+    // Bez tohohle by přidání polí prohlásilo otisky VŠECH starších záznamů
+    // za neplatné a spis by u nich vytiskl červené „uložený výsledek se od
+    // zapsaného otisku liší" — obvinění zákazníka z manipulace kvůli
+    // našemu refaktoringu.
+    expect(Object.keys(auditResultOf({ ...zaklad, ukonceni: 'limit-kroku' }, 1)).sort())
+      .toEqual([
+        'bugs', 'cookieBanner', 'preConsent', 'runErrors', 'status',
+        'steps', 'summary', 'warnings',
+      ]);
+  });
+
+  test('otisk podle verze 1 se novými poli nezmění', () => {
+    expect(digestOf(auditResultOf({ ...zaklad, ukonceni: 'limit-kroku', runNotes: ['a'] }, 1)))
+      .toBe(digestOf(auditResultOf(zaklad, 1)));
+  });
+
+  test('otisk podle verze 2 se novými poli změní', () => {
+    expect(digestOf(auditResultOf({ ...zaklad, ukonceni: 'limit-kroku' }, 2)))
+      .not.toBe(digestOf(auditResultOf(zaklad, 2)));
+  });
+
+  test('verze 1 a 2 nedávají totožný otisk, takže se nedají splést', () => {
+    expect(digestOf(auditResultOf(zaklad, 1))).not.toBe(digestOf(auditResultOf(zaklad, 2)));
+  });
+
+  test('výchozí verze je ta aktuální', () => {
+    expect(digestOf(auditResultOf(zaklad)))
+      .toBe(digestOf(auditResultOf(zaklad, AKTUALNI_SCHEMA_OTISKU)));
+    expect(AKTUALNI_SCHEMA_OTISKU).toBe(2);
   });
 });

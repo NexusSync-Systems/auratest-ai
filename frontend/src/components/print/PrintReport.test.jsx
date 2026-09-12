@@ -246,6 +246,125 @@ describe('běh agenta — nálezy a závěr patří do dokumentu', () => {
       .toBeInTheDocument();
   });
 
+  test('ukončení na tvrzení stránky nedostane zelený odznak', () => {
+    // Titulek i URL nastavuje auditovaný web, který je předmětem auditu.
+    // První verze opravy z toho dělala doklad dokončení; kontrolní vlna
+    // ukázala, že se hradba jen přesunula z `detected_bugs` na `<title>`.
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [], ukonceni: 'potvrzeno-strankou',
+        ukonceniPopis: 'Běh ukončen proto, že stránka sama po provedené interakci hlásí dokončení.',
+      },
+    });
+
+    const b = odznak(/Výsledek běhu agenta/);
+    expect(b.className).toMatch(/warning/);
+    expect(b.textContent).toMatch(/hlásila sama stránka/);
+    expect(sekce(/Výsledek běhu agenta/).getByText(/předmětem auditu, ne nezávislé měření/))
+      .toBeInTheDocument();
+  });
+
+  test('kroky nerozhodnuté modelem se nezamlčí', () => {
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [], nerozhodnutychKroku: 4,
+      },
+    });
+
+    const b = odznak(/Výsledek běhu agenta/);
+    expect(b.className).toMatch(/warning/);
+    expect(b.textContent).toMatch(/4 kroků nerozhodl model/);
+  });
+
+  test('chyba měření se v odznaku nevydává za dokončení', () => {
+    vykresli({
+      activeSession: { status: 'completed', bugs: [], ukonceni: 'chyba-mereni' },
+    });
+    expect(odznak(/Výsledek běhu agenta/).className).toMatch(/warning/);
+  });
+
+  test('běh na limitu kroků nedostane zelený odznak', () => {
+    // „Doběhl limit kroků" znamená, že agent část aplikace neprošel.
+    // Zelené „na žádný problém nenarazil" nad takovým během čte
+    // management jako „je to v pořádku".
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [], ukonceni: 'limit-kroku',
+        ukonceniPopis: 'Běh ukončen limitem kroků; agent sám dokončení nedoložil.',
+      },
+    });
+
+    const b = odznak(/Výsledek běhu agenta/);
+    expect(b.className).toMatch(/warning/);
+    expect(b.textContent).toMatch(/vyčerpal limit kroků/);
+    expect(b.textContent).not.toMatch(/nenarazil/);
+    expect(sekce(/Výsledek běhu agenta/).getByText(/Ukončení běhu: .*limitem kroků/))
+      .toBeInTheDocument();
+  });
+
+  test('postřeh modelu se netiskne jako nález', () => {
+    // Ověřená vada: věta o prohlášení o přístupnosti se přes
+    // `detected_bugs` dostala do `bugs`, do reportu i do spisu, přičemž
+    // ji nikdo neměřil. Rozhodovací model přitom píše podle obsahu
+    // auditované stránky — web si tou cestou diktoval vlastní nálezy.
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [],
+        modelObservations: ['Web nemá platné prohlášení o přístupnosti podle EAA.'],
+      },
+    });
+
+    const s = sekce(/Výsledek běhu agenta/);
+    expect(s.queryByText(/Detekované problémy/)).not.toBeInTheDocument();
+    expect(s.getByText(/Nepotvrzené postřehy modelu \(1\)/)).toBeInTheDocument();
+    expect(s.getByText(/NENÍ to měření ani nález/)).toBeInTheDocument();
+    expect(s.getByText(/prohlášení o přístupnosti/)).toBeInTheDocument();
+  });
+
+  test('blokace vlastním hlídačem se netiskne jako vada webu', () => {
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [],
+        runNotes: ['Navigaci na http://169.254.169.254/ zablokoval bezpečnostní hlídač AuraGuard: privátní adresa'],
+      },
+    });
+
+    const s = sekce(/Výsledek běhu agenta/);
+    expect(s.queryByText(/Detekované problémy/)).not.toBeInTheDocument();
+    expect(s.getByText(/Okolnosti běhu \(1\)/)).toBeInTheDocument();
+    expect(s.getByText(/zablokoval bezpečnostní hlídač/)).toBeInTheDocument();
+  });
+
+  test('na stránce nebylo co ovládat není zelený výsledek', () => {
+    // Ověřená vada: `vycerpano` propadalo až na `success`, takže běh, ve
+    // kterém agent neprovedl JEDINOU akci (aplikace v iframu, frameset,
+    // nedorenderovaná SPA), dostal nejsilnější tvrzení nástroje.
+    vykresli({ activeSession: { status: 'completed', bugs: [], ukonceni: 'vycerpano' } });
+    const b = odznak(/Výsledek běhu agenta/);
+    expect(b.className).toMatch(/warning/);
+    expect(b.textContent).toMatch(/nebylo co ovládat/);
+  });
+
+  test('silnější výhrada nezmizí pod slabší', () => {
+    // Dřív bylo pořadí obrácené a u běhu s oběma důvody zmizel z nadpisu
+    // ten podstatnější — že konec hlásila sama auditovaná stránka.
+    vykresli({
+      activeSession: {
+        status: 'completed', bugs: [],
+        ukonceni: 'potvrzeno-strankou', nerozhodnutychKroku: 3,
+      },
+    });
+    expect(odznak(/Výsledek běhu agenta/).textContent).toMatch(/hlásila sama stránka/);
+  });
+
+  test('starší záznam bez důvodu ukončení si ho nedomýšlí', () => {
+    vykresli({ activeSession: { status: 'completed', bugs: [] } });
+    const s = sekce(/Výsledek běhu agenta/);
+    expect(s.queryByText(/Ukončení běhu:/)).not.toBeInTheDocument();
+    // A zelený odznak zůstává — chybějící pole není limit kroků.
+    expect(odznak(/Výsledek běhu agenta/).className).toMatch(/success/);
+  });
+
   test('chybějící seznam nálezů není nula nálezů', () => {
     // `bugs: []` je změřená nepřítomnost nálezu, `bugs: undefined`
     // znamená, že se běh na nálezy nedíval. `?.length ?? 0` z toho

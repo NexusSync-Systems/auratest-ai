@@ -140,6 +140,60 @@ function behAgenta(session, isRunning) {
       poznamka: 'Nálezy jsou vypsané níž tak, jak je agent zaznamenal.',
     };
   }
+  // Jak běh skončil, rozhoduje o síle tvrzení.
+  //
+  // „Doběhl limit kroků" znamená, že agent NEDOPROZKOUMAL, co měl před
+  // sebou. Zelený odznak s větou „na žádný problém nenarazil" nad takovým
+  // během čte management jako „je to v pořádku". Proto se u limitu kroků
+  // odznak degraduje na `warning` a věta se doplní.
+  // Nejsilnější výhrada první, ať ji slabší nezastíní.
+  //
+  // Kontrolní vlna našla obrácené pořadí: `nerozhodnutychKroku` stálo před
+  // `potvrzeno-strankou`, takže u běhu, který skončil na tvrzení
+  // auditované stránky A měl nerozhodnuté kroky, zmizel z nadpisu ten
+  // podstatnější důvod.
+  const DUVODY = [
+    {
+      platí: session.ukonceni === 'chyba-mereni',
+      nadpis: 'Dokončeno bez nálezu — ale měření se nedokončilo',
+      poznamka: 'Běh narazil na chybu měření, takže část aplikace zůstala '
+        + 'neprozkoumaná. Absence nálezu z něj neplyne.',
+    },
+    {
+      platí: session.ukonceni === 'potvrzeno-strankou',
+      nadpis: 'Dokončeno bez nálezu — konec běhu hlásila sama stránka',
+      poznamka: 'Běh skončil proto, že auditovaná stránka podle svého titulku '
+        + 'a adresy hlásila dokončení. To je tvrzení webu, který je předmětem '
+        + 'auditu, ne nezávislé měření.',
+    },
+    {
+      platí: session.ukonceni === 'vycerpano',
+      nadpis: 'Dokončeno bez nálezu — na stránce ale nebylo co ovládat',
+      poznamka: 'Měření nenašlo žádný interaktivní prvek, takže agent '
+        + 'neprovedl žádnou akci. Spustí to i aplikace v iframu, frameset nebo '
+        + 'stránka, která v okamžiku čtení ještě nebyla vyrenderovaná.',
+    },
+    {
+      platí: session.ukonceni === 'limit-kroku',
+      nadpis: 'Dokončeno bez nálezu — ale běh vyčerpal limit kroků',
+      poznamka: 'Agent do konce nedošel: skončil na limitu kroků, takže část '
+        + 'aplikace zůstala neprozkoumaná. Absence nálezu proto nepokrývá ani '
+        + 'ty cesty, na které narazil, ale nestihl je projít.',
+    },
+    {
+      platí: session.nerozhodnutychKroku > 0,
+      nadpis: `Dokončeno bez nálezu — ale ${session.nerozhodnutychKroku} kroků nerozhodl model`,
+      poznamka: 'Část kroků nahradil záchranný průzkumný krok, protože '
+        + 'rozhodovací model neodpověděl. Pokrytí je proto menší, než by '
+        + 'počet kroků naznačoval.',
+    },
+  ];
+
+  const duvod = DUVODY.find((d) => d.platí);
+  if (duvod) {
+    return { trida: 'warning', nadpis: duvod.nadpis, poznamka: duvod.poznamka };
+  }
+
   return {
     trida: 'success',
     nadpis: 'Dokončeno — agent na žádný problém nenarazil',
@@ -268,6 +322,15 @@ export default function PrintReport({
               <p style={{ marginTop: '10px', fontSize: '14px' }}>{activeSession.summary}</p>
             )}
 
+            {/* Čím běh skončil. „Stránka sama hlásí hotovo" a „doběhl limit
+                kroků" nejsou totéž a ve spisu se to nesmí slít. Chybějící
+                pole (starší záznam) se nedomýšlí. */}
+            {activeSession?.ukonceniPopis && (
+              <p style={{ marginTop: '6px', fontSize: '14px', color: '#475569' }}>
+                Ukončení běhu: {activeSession.ukonceniPopis}
+              </p>
+            )}
+
             {/* Co bylo uložené PŘED souhlasem a co se zmáčklo na liště.
                 Pořadí je součástí důkazu: agent lištu odkliká až po
                 zaznamenání stavu před souhlasem, jinak by si vlastní
@@ -383,6 +446,51 @@ export default function PrintReport({
                   {activeSession.runErrors.map((e, i) => (
                     <li key={i} style={{ marginBottom: '6px', fontSize: '14px', color: '#475569' }}>
                       {typeof e === 'string' ? e : (e?.message || JSON.stringify(e))}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {/* Nepotvrzené postřehy modelu.
+                Do `bugs` nepatří: rozhodovací model píše podle obsahu
+                auditované stránky, takže si web tou cestou dokázal
+                diktovat vlastní „nálezy" — ověřeno na větě o prohlášení
+                o přístupnosti, kterou nikdo neměřil. V dokumentu pro úřad
+                proto smí stát jen výslovně jako nepotvrzené. */}
+            {activeSession?.modelObservations?.length > 0 && (
+              <>
+                <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                  Nepotvrzené postřehy modelu ({activeSession.modelObservations.length})
+                </p>
+                <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#475569' }}>
+                  Text, který napsal rozhodovací model. NENÍ to měření ani nález
+                  o aplikaci a do verdiktu se nepočítá; uvádí se pro úplnost
+                  záznamu běhu.
+                </p>
+                <ul style={{ paddingLeft: '20px' }}>
+                  {activeSession.modelObservations.map((n, i) => (
+                    <li key={i} style={{ marginBottom: '6px', fontSize: '14px', color: '#475569' }}>
+                      {n}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {/* Okolnosti běhu: kroky, o kterých model nerozhodl, a adresy
+                zablokované naším vlastním hlídačem. Ani jedno není vada
+                webu — blokace hlídačem se dřív tiskla jako „Selhal síťový
+                požadavek", tedy obvinění webu z našeho vlastního zákazu. */}
+            {activeSession?.runNotes?.length > 0 && (
+              <>
+                <p style={{ marginTop: '15px', marginBottom: '4px', fontWeight: 600 }}>
+                  Okolnosti běhu ({activeSession.runNotes.length})
+                </p>
+                <ul style={{ paddingLeft: '20px' }}>
+                  {activeSession.runNotes.map((n, i) => (
+                    <li key={i} style={{ marginBottom: '6px', fontSize: '14px', color: '#475569' }}>
+                      {n}
                     </li>
                   ))}
                 </ul>

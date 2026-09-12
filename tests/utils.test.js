@@ -315,6 +315,9 @@ describe('Utility Functions Unit Tests', () => {
           currentUrl: 'http://localhost:3000/checkout/success',
           title: 'Objednávka dokončena',
           goal: 'Verify checkout completion',
+          // Titulek nastavuje auditovaný web. Sám o sobě dokončení
+          // nedokládá — musí mu předcházet provedená interakce.
+          steps: [{ step: 1, action: 'click', target: 9 }],
           interactiveElements: [
             { id: 1, tagName: 'A', text: 'Zpět do obchodu', href: '/products' }
           ]
@@ -457,6 +460,7 @@ describe('Utility Functions Unit Tests', () => {
           currentUrl: 'http://localhost:3000/profile/saved',
           title: 'Profil uložen',
           goal: 'Verify profile save flow',
+          steps: [{ step: 1, action: 'type', target: 9, value: 'x' }],
           interactiveElements: [
             { id: 1, tagName: 'A', text: 'Zpět na profil', href: '/profile' },
             { id: 2, tagName: 'A', text: 'Nastavení', href: '/profile/settings' }

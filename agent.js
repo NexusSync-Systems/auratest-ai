@@ -5,6 +5,8 @@ import fs from 'fs';
 import AxeBuilder from '@axe-core/playwright';
 import geoip from 'geoip-lite';
 import { assertPublicHttpUrl, resolvePublicHttpTarget, guardNavigation } from './ssrf-guard.js';
+import { vyhodnotFinish, UKONCENI, popisUkonceni } from './finish-policy.js';
+import { bezpecnePrvky, zamlcenychPrvku, vytvorZnacku, obalDataZeStranky, obalStavStranky, pokynKDatumZeStranky } from './prompt-safety.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, GENERATED_SCRIPTS_DIR, ensureDir, safeFileToken } from './paths.js';
 import { inspectTls, summarizeTls, PQC_GROUP } from './tls-audit.js';
 import { createSeededRandom, generateRunSeed } from './seeded-random.js';
@@ -401,7 +403,15 @@ async function extractInteractiveElements(page) {
     });
   } catch (error) {
     console.error('Failed to extract interactive elements:', error);
-    return [];
+    // `null`, ne `[]`.
+    //
+    // Prázdné pole říká „na stránce není co ovládat" — a to je změřený
+    // fakt, ze kterého `vyhodnotFinish` odvozuje, že běh smí skončit.
+    // Odpojený frame, pád `page.evaluate()` nebo navigace uprostřed čtení
+    // ale znamenají, že nevíme nic. Ověřeno: dokud se vracelo `[]`, běh
+    // po selhání extrakce skončil v prvním kroku jako „vyčerpáno",
+    // `measured: true`, a vytiskl se jako doložený čistý výsledek.
+    return null;
   }
 }
 
@@ -431,13 +441,32 @@ function consoleFinding(text) {
   return `Detekována chyba v konzoli: "${t.length > 300 ? `${t.slice(0, 297)}…` : t}"`;
 }
 
+/**
+ * Je tento záznam z konzole runtime chybou?
+ *
+ * Rozhoduje POUZE `type`, a to přesně tak, jak ho plní jediný zapisovatel
+ * `consoleLogs` — posluchač `page.on('console')`. Dřív se sem počítal
+ * i jakýkoli text obsahující slovo „error", takže
+ * `[analytics] error reporting enabled` — log o tom, že hlášení chyb je
+ * zapnuté — vyrobil nález o chybě webu. Zákazník by dostal obvinění za
+ * vlastní diagnostiku.
+ *
+ * `pageerror` tu schválně NENÍ: posluchač `page.on('pageerror')` zapisuje
+ * přímo do `bugs` vlastním zněním a do `consoleLogs` nic nedává. Přidat
+ * ho sem by znamenalo druhé znění pro tentýž fakt, a `addFinding`
+ * deduplikuje podle celého řetězce — jedna výjimka by se započítala
+ * dvakrát. Počet nálezů v dokumentu pro úřad je tvrzení jako každé jiné.
+ */
+function jeChybovyLog(log) {
+  return String(log?.type || '').toLowerCase() === 'error';
+}
+
 function hasRuntimeSignals(consoleLogs, networkErrors) {
-  const hasConsoleError = (consoleLogs || []).some((log) => log?.type === 'error' || /\berror\b/i.test(log?.text || ''));
-  return hasConsoleError || (networkErrors || []).length > 0;
+  return (consoleLogs || []).some(jeChybovyLog) || (networkErrors || []).length > 0;
 }
 
 function summarizeRuntimeSignal(consoleLogs, networkErrors) {
-  const consoleError = (consoleLogs || []).find((log) => log?.type === 'error' || /\berror\b|ReferenceError|TypeError/i.test(log?.text || ''));
+  const consoleError = (consoleLogs || []).find(jeChybovyLog);
   if (consoleError) {
     // TOTOŽNÉ znění jako v posluchači `page.on('console')`.
     //
@@ -456,23 +485,41 @@ function summarizeRuntimeSignal(consoleLogs, networkErrors) {
   return null;
 }
 
-function cleanDetectedBugs(detectedBugs, reasoning, consoleLogs, networkErrors) {
+/**
+ * Nálezy kroku. VÝHRADNĚ z měření, nikdy z textu modelu.
+ *
+ * PROČ TO TU JE
+ * Dřív se sem propouštěl obsah `detected_bugs` od modelu. Ověřeno: věta
+ * „Web nemá platné prohlášení o přístupnosti podle EAA." se dostala do
+ * `bugs`, do reportu i do spisu — aniž by kdokoli cokoli takového měřil.
+ * Model přitom rozhoduje podle obsahu auditované stránky, takže tou cestou
+ * si web může diktovat vlastní nálezy (v obou směrech).
+ *
+ * Nález o webu proto smí vzniknout jen z naměřeného signálu. Text modelu
+ * se nezahazuje, ale putuje do `model_notes` jako nepotvrzený postřeh —
+ * viditelný v průběhu běhu, nikdy ve verdiktu.
+ */
+function measuredFindings(consoleLogs, networkErrors) {
   if (!hasRuntimeSignals(consoleLogs, networkErrors)) return [];
-  if (!Array.isArray(detectedBugs) || detectedBugs.length === 0) {
-    const summary = summarizeRuntimeSignal(consoleLogs, networkErrors);
-    return summary ? [summary] : [];
-  }
-
-  const normalizedReasoning = String(reasoning || '').trim().replace(/\s+/g, ' ');
-  const cleaned = [...new Set(detectedBugs
-    .filter((bug) => typeof bug === 'string')
-    .map((bug) => bug.trim())
-    .filter(Boolean)
-    .filter((bug) => bug.replace(/\s+/g, ' ') !== normalizedReasoning)
-  )];
-  if (cleaned.length > 0) return cleaned;
   const summary = summarizeRuntimeSignal(consoleLogs, networkErrors);
   return summary ? [summary] : [];
+}
+
+/**
+ * Nepotvrzené postřehy modelu. Zkrácené a bez duplikátů; `reasoning`
+ * přepsané do `detected_bugs` se zahazuje (model si tak jen opakoval
+ * vlastní úvahu a vznikal z ní „nález").
+ */
+export function modelNotes(detectedBugs, reasoning) {
+  if (!Array.isArray(detectedBugs)) return [];
+  const normalizedReasoning = String(reasoning || '').trim().replace(/\s+/g, ' ');
+  return [...new Set(detectedBugs
+    .filter((bug) => typeof bug === 'string')
+    .map((bug) => bug.trim().replace(/\s+/g, ' '))
+    .filter(Boolean)
+    .filter((bug) => bug !== normalizedReasoning)
+    .map((bug) => (bug.length > 300 ? `${bug.slice(0, 297)}…` : bug))
+  )];
 }
 
 function isTextInputElement(el) {
@@ -593,10 +640,48 @@ function shouldPreferRetryForRuntime(selected, interactiveElements) {
   return true;
 }
 
+/**
+ * Kolik kroků bylo skutečnou interakcí se stránkou.
+ *
+ * Tvrzení stránky „hotovo" (URL, titulek) se přijímá jen tehdy, když
+ * agent předtím aspoň jednou klikl nebo vyplnil. Bez téhle podmínky
+ * stačilo webu poslat `<title>Objednávka dokončena</title>` a běh skončil
+ * v prvním kroku bez jediné provedené akce — ověřeno.
+ *
+ * Počítají se PROVEDENÉ kroky z historie, ne návrhy modelu.
+ */
+/**
+ * Hlásí stránka dokončení ZPŮSOBEM, který jde přijmout?
+ *
+ * Sjednocená podmínka pro všechna tři místa, kde se `finish` propouštělo:
+ * fallback, převod `click` → `finish` i vlastní hradba. Dřív měla každá
+ * cesta podmínku vlastní a `chooseFallbackAction` i převod kliknutí se
+ * spokojily s pouhým regexem nad titulkem, tedy s textem, který nastavuje
+ * auditovaný web.
+ */
+function dokonceniDolozeno(context) {
+  return isCompletionContext(context) && pocetInterakci(context?.steps) > 0;
+}
+
+function pocetInterakci(steps) {
+  return (steps || []).filter((step) => {
+    if (step?.action !== 'click' && step?.action !== 'type') return false;
+    // `provedeno === false` znamená, že akce spadla. Chybějící příznak
+    // (starší uložený běh, krok zaznamenaný jinou cestou) se bere jako
+    // provedený — jinak by se změnilo chování u dat, o kterých nic nevíme.
+    return step.provedeno !== false;
+  }).length;
+}
+
 function chooseFallbackAction(interactiveElements, steps, runtimeSignals = false, context = {}) {
-  if (isCompletionContext(context) && !hasRuntimeSignals(context.consoleLogs, context.networkErrors)) {
+  // Selhané čtení prvků nesmí nic dokládat ani tady. Jinak hradba
+  // `vyhodnotFinish` zamítne ukončení a fallback ho hned nato propustí —
+  // s reasoningem, který si sám protiřečí.
+  if (!context.extrakceSelhala
+      && dokonceniDolozeno(context)
+      && !hasRuntimeSignals(context.consoleLogs, context.networkErrors)) {
     return {
-      reasoning: 'Cíl testu je splněný a nejsou vidět chyby, proto test bezpečně ukončím.',
+      reasoning: 'Stránka po provedené interakci hlásí dokončení a nejsou vidět chyby, proto test ukončím.',
       action: 'finish',
       target: null,
       value: null,
@@ -751,13 +836,18 @@ function chooseFallbackAction(interactiveElements, steps, runtimeSignals = false
 function withSanitizedBugs(step, actionResponse, reasoning, consoleLogs, networkErrors) {
   return {
     ...step,
-    detected_bugs: cleanDetectedBugs(actionResponse?.detected_bugs, reasoning || step.reasoning, consoleLogs, networkErrors)
+    detected_bugs: measuredFindings(consoleLogs, networkErrors),
+    model_notes: modelNotes(actionResponse?.detected_bugs, reasoning || step.reasoning),
+    // Fallback vrací `finish` jedině na potvrzovací stránce — jiná cesta
+    // k ukončení v `chooseFallbackAction` není.
+    ukonceni: step.action === 'finish' ? UKONCENI.POTVRZENO : null
   };
 }
 
 export function sanitizeActionResponse(actionResponse, context) {
   const { currentUrl, title, goal, visibleState, suggestedUrl, interactiveElements, consoleLogs, networkErrors, steps } = context;
-  const sanitizerContext = { currentUrl, title, goal, visibleState, suggestedUrl, consoleLogs, networkErrors, steps };
+  const extrakceSelhala = Boolean(context.extrakceSelhala);
+  const sanitizerContext = { currentUrl, title, goal, visibleState, suggestedUrl, consoleLogs, networkErrors, steps, extrakceSelhala };
   const validIds = new Set(interactiveElements.map((el) => el.id));
   const byId = new Map(interactiveElements.map((el) => [el.id, el]));
   let action = actionResponse?.action;
@@ -766,6 +856,9 @@ export function sanitizeActionResponse(actionResponse, context) {
   let reasoning = typeof actionResponse?.reasoning === 'string' && actionResponse.reasoning.trim()
     ? actionResponse.reasoning.trim()
     : 'Model nevrátil použitelnou úvahu, proto volím bezpečný průzkumný krok.';
+  // Proč běh skončil. Zapisuje se do spisu: „ukončeno na návrh modelu"
+  // a „stránka sama hlásí hotovo" nejsou totéž.
+  let ukonceni = null;
 
   if (!AGENT_ACTIONS.has(action)) {
     return withSanitizedBugs(chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext), actionResponse, reasoning, consoleLogs, networkErrors);
@@ -823,6 +916,27 @@ export function sanitizeActionResponse(actionResponse, context) {
     value = action === 'wait' ? String(parseInt(value, 10) || 2000) : null;
   }
 
+  // Ukončení musí mít oporu v naměřeném stavu, ne v tvrzení modelu.
+  // Model rozhoduje podle obsahu auditované stránky, takže bez téhle
+  // podmínky si web dokáže objednat čistý výsledek — ověřeno.
+  if (action === 'finish') {
+    const verdikt = vyhodnotFinish({
+      completionContext: isCompletionContext(sanitizerContext),
+      interakci: pocetInterakci(steps),
+      prvkuNaStrance: Array.isArray(interactiveElements) ? interactiveElements.length : undefined,
+      extrakceSelhala,
+    });
+    if (verdikt.povoleno) {
+      ukonceni = verdikt.duvod;
+    } else {
+      const fallback = chooseFallbackAction(interactiveElements, steps, hasRuntimeSignals(consoleLogs, networkErrors), sanitizerContext);
+      // Kdyby fallback sám navrhl finish, propustí ho `chooseFallbackAction`
+      // jen na potvrzovací stránce — tedy tam, kde by prošel i výše.
+      fallback.reasoning = `(Ukončení bez opory v měření zamítnuto) ${fallback.reasoning}`;
+      return withSanitizedBugs(fallback, actionResponse, reasoning, consoleLogs, networkErrors);
+    }
+  }
+
   let selected = byId.get(target);
   if (action === 'click' && hasRuntimeSignals(consoleLogs, networkErrors) && shouldPreferRetryForRuntime(selected, interactiveElements)) {
     const retryControl = interactiveElements
@@ -844,11 +958,12 @@ export function sanitizeActionResponse(actionResponse, context) {
     reasoning = 'Stránka právě načítá nebo ukládá data, proto nebudu odcházet ani klikat disabled prvek a počkám.';
   }
 
-  if (action === 'click' && isCompletionContext(sanitizerContext) && !hasRuntimeSignals(consoleLogs, networkErrors)) {
+  if (action === 'click' && !extrakceSelhala && dokonceniDolozeno(sanitizerContext) && !hasRuntimeSignals(consoleLogs, networkErrors)) {
     action = 'finish';
     target = null;
     value = null;
-    reasoning = 'Cíl testu je splněný na potvrzovací stránce a nejsou vidět chyby, proto test bezpečně ukončím.';
+    reasoning = 'Stránka po provedené interakci hlásí dokončení a nejsou vidět chyby, proto test ukončím.';
+    ukonceni = UKONCENI.POTVRZENO;
   }
 
   if (action === 'click' && isSubmitLikeElement(selected)) {
@@ -908,7 +1023,9 @@ export function sanitizeActionResponse(actionResponse, context) {
     action,
     target,
     value: value === undefined ? null : value,
-    detected_bugs: cleanDetectedBugs(actionResponse?.detected_bugs, reasoning, consoleLogs, networkErrors)
+    detected_bugs: measuredFindings(consoleLogs, networkErrors),
+    model_notes: modelNotes(actionResponse?.detected_bugs, reasoning),
+    ukonceni: action === 'finish' ? (ukonceni || UKONCENI.VYCERPANO) : null
   };
 }
 
@@ -1078,10 +1195,38 @@ export async function extractInternalLinks(startUrl) {
 }
 
 
-async function determineNextAction(llmConfig, currentUrl, title, interactiveElements, consoleLogs, networkErrors, steps, goal) {
+/**
+ * `query` je vstřikovatelný schválně.
+ *
+ * Bez toho se prompt nedal v testu přečíst a právě ve složení promptu byla
+ * ta nejdražší vada: obsah auditované stránky tam stál vedle našich pokynů
+ * jako rovnocenný text. Kontrolní vlny opakovaně potvrdily, že nejhorší
+ * nálezy leží tam, kam se nikdo nepodíval — tak se tam dá podívat.
+ */
+async function determineNextAction(llmConfig, currentUrl, title, interactiveElements, consoleLogs, networkErrors, steps, goal, { query = queryLLM, extrakceSelhala = false } = {}) {
   let actionResponse;
+  // Krok, o kterém nerozhodlo měření ani model, ale záchranný fallback.
+  // Dřív to spadlo pod stůl: při úplném výpadku jazykového modelu proběhlo
+  // deset „scroll down" a běh skončil jako `completed`, `measured: true`,
+  // tedy „výsledek platí". Neplatil — nikdo nic nerozhodl.
+  let decisionError = null;
   const recentLogs = consoleLogs.slice(-10).map(l => `[${l.type}] ${l.text}`).join('\n');
   const recentNet = networkErrors.slice(-10).map(n => `FAIL: ${n.url} - ${n.error}`).join('\n');
+
+  // Značka bloků s daty z auditované stránky. Nová pro každý krok, aby ji
+  // stránka nemohla uhodnout z předchozí odpovědi.
+  const znacka = vytvorZnacku();
+  // Zkrácená pole a zahozené hodnoty tajných vstupů. Do rozhodovací logiky
+  // (`sanitizeActionResponse`) jdou dál skutečné prvky — ta potřebuje
+  // `value` u běžných polí a `checked` u checkboxů.
+  const prvkyDoPromptu = bezpecnePrvky(interactiveElements);
+  const nevesloSe = zamlcenychPrvku(interactiveElements);
+  const popisPrvku = nevesloSe > 0
+    ? `${JSON.stringify(prvkyDoPromptu, null, 2)}\n[POZNÁMKA MĚŘENÍ: dalších ${nevesloSe} prvků se do seznamu nevešlo.]`
+    : JSON.stringify(prvkyDoPromptu, null, 2);
+  // Adresa a titulek patří do ohraničeného bloku stejně jako prvky —
+  // `document.title` nastavuje auditovaný web, novými řádky včetně.
+  const stavStranky = obalStavStranky(currentUrl, title, znacka);
 
   let credentialsInfo = '';
   if (llmConfig.testLogin || llmConfig.testPassword) {
@@ -1176,23 +1321,24 @@ Rules:
 - 'target' must match a valid data-qa-id from the interactive elements list.
 - Explore as many different pages/elements as possible. If nothing left, use "finish".
 - If you see any bugs, list them in 'detected_bugs'.
-- CRITICAL: All JSON output values ('reasoning', 'detected_bugs') MUST be written in the Czech language (Čeština). Důvod (reasoning) MUSÍ být smysluplná věta popisující tvůj záměr.`;
+- CRITICAL: All JSON output values ('reasoning', 'detected_bugs') MUST be written in the Czech language (Čeština). Důvod (reasoning) MUSÍ být smysluplná věta popisující tvůj záměr.
+
+${pokynKDatumZeStranky(znacka)}`;
 
       prompt = `Test Type: Smart AI Monkey Test
-Current URL: ${currentUrl}
-Page Title: ${title}
+${stavStranky}
 
 Interactive elements on page:
-${JSON.stringify(interactiveElements, null, 2)}
+${obalDataZeStranky('interaktivní prvky auditované stránky', popisPrvku, znacka)}
 
 Recent console logs:
-${recentLogs || 'No console errors.'}
+${obalDataZeStranky('konzole auditované stránky', recentLogs || 'No console errors.', znacka)}
 
 Recent network errors:
-${recentNet || 'No network errors.'}
+${obalDataZeStranky('síťové chyby auditované stránky', recentNet || 'No network errors.', znacka)}
 
 History of previous steps:
-${steps.map(s => `Step ${s.step}: ${s.action} on ${s.target || 'page'} (Reason: ${s.reasoning})`).join('\n') || 'No previous steps.'}
+${obalDataZeStranky('historie kroků', steps.map(s => `Step ${s.step}: ${s.action} on ${s.target || 'page'} (Reason: ${s.reasoning})`).join('\n') || 'No previous steps.', znacka)}
 
 CRITICAL ANTI-LOOP RULE: Review the history of previous steps. You must NOT repeat the exact same action and target as the last step. If you just scrolled down, do NOT scroll down again right away. If you are stuck, choose a different action, click a different element, or output "finish".
 
@@ -1213,23 +1359,24 @@ Rules:
 - 'target' must match a valid data-qa-id from the interactive elements list.
 - If the goal is fully completed or impossible to proceed, use "finish".
 - If you see any bugs, list them in 'detected_bugs'.
-- CRITICAL: All JSON output values ('reasoning', 'detected_bugs') MUST be written in the Czech language (Čeština). Důvod (reasoning) MUSÍ být smysluplná věta popisující tvůj záměr.`;
+- CRITICAL: All JSON output values ('reasoning', 'detected_bugs') MUST be written in the Czech language (Čeština). Důvod (reasoning) MUSÍ být smysluplná věta popisující tvůj záměr.
+
+${pokynKDatumZeStranky(znacka)}`;
 
       prompt = `Test Goal: ${goal}
-Current URL: ${currentUrl}
-Page Title: ${title}
+${stavStranky}
 
 Interactive elements on page:
-${JSON.stringify(interactiveElements, null, 2)}
+${obalDataZeStranky('interaktivní prvky auditované stránky', popisPrvku, znacka)}
 
 Recent console logs:
-${recentLogs || 'No console errors.'}
+${obalDataZeStranky('konzole auditované stránky', recentLogs || 'No console errors.', znacka)}
 
 Recent network errors:
-${recentNet || 'No network errors.'}
+${obalDataZeStranky('síťové chyby auditované stránky', recentNet || 'No network errors.', znacka)}
 
 History of previous steps:
-${steps.map(s => `Step ${s.step}: ${s.action} on ${s.target || 'page'} (Reason: ${s.reasoning})`).join('\n') || 'No previous steps.'}
+${obalDataZeStranky('historie kroků', steps.map(s => `Step ${s.step}: ${s.action} on ${s.target || 'page'} (Reason: ${s.reasoning})`).join('\n') || 'No previous steps.', znacka)}
 
 CRITICAL ANTI-LOOP RULE: Review the history of previous steps. You must NOT repeat the exact same action and target as the last step. If you just scrolled down, do NOT scroll down again right away. If you are stuck, choose a different action, click a different element, or output "finish".
 
@@ -1237,7 +1384,7 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
     }
 
     try {
-      const responseText = await queryLLM(prompt, systemPrompt, llmConfig.provider, llmConfig.model, llmConfig.host);
+      const responseText = await query(prompt, systemPrompt, llmConfig.provider, llmConfig.model, llmConfig.host);
       let cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
 
       try {
@@ -1266,6 +1413,7 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
       // při sloučení s master se ta vada vracela, tak znovu: bez ní se
       // ladí naslepo.
       const extractedReasoning = `(Záchranný krok) AI vygenerovalo nečitelný nebo utržený JSON: ${err.message}. Agent zkouší posunout stránku a pokračovat.`;
+      decisionError = `Krok nerozhodl model: ${err.message}`;
 
       actionResponse = {
         reasoning: extractedReasoning,
@@ -1277,15 +1425,19 @@ Decide your next step to achieve the goal. Reply ONLY with valid JSON.`;
     }
   }
 
-  return sanitizeActionResponse(actionResponse, {
-    currentUrl,
-    title,
-    goal,
-    interactiveElements,
-    consoleLogs,
-    networkErrors,
-    steps
-  });
+  return {
+    ...sanitizeActionResponse(actionResponse, {
+      currentUrl,
+      title,
+      goal,
+      interactiveElements,
+      consoleLogs,
+      networkErrors,
+      steps,
+      extrakceSelhala,
+    }),
+    decisionError,
+  };
 }
 
 /**
@@ -1362,7 +1514,17 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       recordVideo: { dir: videosDir }
     });
 
-    await guardNavigation(context);
+    // Adresy, které jsme zablokovali SAMI. Prohlížeč je pak ohlásí jako
+    // `requestfailed` s net::ERR_BLOCKED_BY_CLIENT a posluchač z nich dělal
+    // nález „Selhal síťový požadavek" — tedy obvinění webu z toho, že mu
+    // náš vlastní hlídač zakázal spojení. Ověřeno.
+    const blokovaneNami = new Set();
+    const blokaceHlidacem = [];
+    await guardNavigation(context, (blokovanaUrl, duvod) => {
+      blokovaneNami.add(blokovanaUrl);
+      const zaznam = `Navigaci na ${blokovanaUrl} zablokoval bezpečnostní hlídač AuraGuard: ${duvod}`;
+      if (!blokaceHlidacem.includes(zaznam)) blokaceHlidacem.push(zaznam);
+    });
     const page = await context.newPage();
 
     const trackExceptions = llmConfig.trackExceptions !== false;
@@ -1416,9 +1578,16 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     // Vědomě oddělené od `bugs`: co se nezměřilo, nesmí se objevit jako
     // zjištění o auditovaném webu.
     const runErrors = [];
+    // Okolnosti běhu, které NEJSOU nálezem o webu ani chybou měření:
+    // nepotvrzené postřehy modelu a kroky, o kterých model nerozhodl.
+    const modelObservations = [];
+    const runNotes = [];
+    let modelDecisions = 0;
+    let decisionFailures = 0;
     let currentStep = 1;
     const maxSteps = llmConfig.maxSteps || 10;
     let isFinished = false;
+    let ukonceniBehu = null;
     let performanceMetrics = null;
 
   // Listen to console messages and errors
@@ -1459,6 +1628,17 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     const errText = request.failure()?.errorText || 'Unknown failure';
     const reqUrl = request.url();
     if (errText === 'net::ERR_ABORTED' && reqUrl.match(/\.(mp4|webm|ogg|avi|mov)(\?.*)?$/i)) {
+      return;
+    }
+    // Vlastní blokace není vada webu ani runtime signál. Nesmí se dostat
+    // ani do `networkErrors` — podle nich se řídí `hasRuntimeSignals`,
+    // takže by naše blokace navíc přepnula výběr další akce na „zkus to
+    // znovu" a v každém dalším kroku vyrobila nález.
+    // Podle MNOŽINY, ne podle textu chyby. `net::ERR_BLOCKED_BY_CLIENT`
+    // hlásí prohlížeč i u blokací, které nejsou naše (rozšíření v profilu,
+    // politika prohlížeče) — plošný filtr na text by je zamlčel, a to jsou
+    // okolnosti běhu, které čtenář reportu vidět má.
+    if (blokovaneNami.has(reqUrl)) {
       return;
     }
     networkErrors.push({ url: reqUrl, error: errText });
@@ -1583,13 +1763,24 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       const screenshotPath = path.join(ensureDir(SCREENSHOTS_DIR), screenshotFileName);
 
       // ⚡ Bolt: Paralelizace CDP Playwright příkazů pro rychlé získání title, stavu a screenshotu
-      const [title, interactiveElements] = await Promise.all([
+      const [title, prvkyNeboNull] = await Promise.all([
         page.title(),
         extractInteractiveElements(page),
         page.screenshot({ path: screenshotPath }).catch(err => {
            console.warn('Nepodařilo se uložit screenshot na disk:', err.message);
         })
       ]);
+
+      // `null` = čtení prvků selhalo. Prázdný seznam by znamenal změřené
+      // „na stránce není co ovládat" a z toho se odvozuje, že běh smí
+      // skončit — takže se to nesmí slít. Ověřeno: dokud se tyhle dva
+      // stavy pletly, běh po selhání extrakce skončil v prvním kroku
+      // s `measured: true` a vytiskl se jako čistý výsledek.
+      const extrakceSelhala = prvkyNeboNull === null;
+      const interactiveElements = prvkyNeboNull || [];
+      if (extrakceSelhala) {
+        runErrors.push(`Krok ${currentStep}: nepodařilo se přečíst interaktivní prvky stránky ${currentUrl}.`);
+      }
 
       // Clean up log snippet to avoid hitting token limits
       // 2. Decide Next Action
@@ -1601,14 +1792,26 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         consoleLogs,
         networkErrors,
         steps,
-        goal
+        goal,
+        { extrakceSelhala }
       );
 
-      // 3. Add any bugs identified by LLM
-      if (actionResponse.detected_bugs && Array.isArray(actionResponse.detected_bugs)) {
-        actionResponse.detected_bugs.forEach(b => {
-          if (!bugs.includes(b)) bugs.push(b);
+      // 3. Nálezy z měření (posluchače konzole a sítě je už zapsaly samy,
+      //    `addFinding` zajistí deduplikaci). Text modelu se sem NEDOSTANE
+      //    — je jen nepotvrzený postřeh.
+      if (Array.isArray(actionResponse.detected_bugs)) {
+        actionResponse.detected_bugs.forEach((b) => addFinding(bugs, b));
+      }
+      if (Array.isArray(actionResponse.model_notes)) {
+        actionResponse.model_notes.forEach((n) => {
+          if (!modelObservations.includes(n)) modelObservations.push(n);
         });
+      }
+      if (actionResponse.decisionError) {
+        decisionFailures++;
+        if (!runNotes.includes(actionResponse.decisionError)) runNotes.push(actionResponse.decisionError);
+      } else {
+        modelDecisions++;
       }
 
       // Record step
@@ -1626,6 +1829,8 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         // navíc celá ukládala do Firestore a posílala po WebSocketu.
         logs: consoleLogs.slice(emittedLogCount),
         bugs: bugs.slice(emittedBugCount),
+        // Odděleně od `bugs`: co model tvrdí, není měření.
+        modelNotes: actionResponse.model_notes || [],
         warnings: warnings.slice(emittedWarningCount),
         timestamp: new Date().toISOString()
       };
@@ -1638,7 +1843,9 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
 
       // 4. Perform Action
       if (actionResponse.action === 'finish') {
+        stepData.provedeno = true;
         isFinished = true;
+        ukonceniBehu = actionResponse.ukonceni || UKONCENI.VYCERPANO;
         break;
       }
 
@@ -1668,6 +1875,14 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         
         // Wait for page to stabilize
         await page.waitForTimeout(1000);
+        // Krok se OPRAVDU provedl.
+        //
+        // `steps.push(stepData)` je nutně před provedením akce (UI má krok
+        // vidět hned), takže historie sama nerozliší návrh od provedení.
+        // `pocetInterakci` přitom rozhoduje, jestli se přijme tvrzení
+        // stránky „hotovo" — bez tohohle příznaku by stačilo, že klik
+        // někdo NAVRHL, i kdyby spadl.
+        stepData.provedeno = true;
       } catch (actionErr) {
         console.error(`Akce '${actionResponse.action}' na prvek [data-qa-id="${actionResponse.target}"] selhala:`, actionErr.message);
 
@@ -1681,6 +1896,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
           actionErr.message
         );
         addFinding(failure.isAppFault ? bugs : warnings, failure.message);
+        stepData.provedeno = false;
       }
 
       currentStep++;
@@ -1741,6 +1957,34 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     const scriptPath = path.join(scriptsDir, `test-${Date.now()}.spec.ts`);
     fs.writeFileSync(scriptPath, generatedScript, 'utf8');
 
+    // Úplný výpadek rozhodování = nic se nerozhodlo. Deset záchranných
+    // „scroll down" není měření a `completed` by znamenalo „výsledek platí".
+    if (decisionFailures > 0 && modelDecisions === 0) {
+      runErrors.push(`Rozhodovací model neodpověděl ani jednou (${decisionFailures}× záchranný krok): ${runNotes[0] || 'bez podrobností'}`);
+    }
+    // Zablokovaná navigace hlavního rámce = stránka, kterou nikdo neviděl.
+    // `guardNavigation` propouští jen navigace hlavního rámce, takže každý
+    // takový záznam znamená neproběhlé měření. Dřív z toho byl falešný
+    // nález na webu; zapsat to jen jako okolnost běhu by ale bylo druhé
+    // přestřelení — verdikt „Bez nálezu" by pokrýval stránku, která se
+    // nezměřila.
+    // Zneplatnit kvůli tomu CELÝ běh by bylo přestřelení do druhé strany:
+    // hlídač zastaví i navigaci na veřejný host na nestandardním portu nebo
+    // odkaz s nepřeložitelným DNS, tedy věci, které se na nezávadném webu
+    // stávají. Dotčené stránky se ale nezměřily, takže verdikt je nesmí
+    // pokrývat — jde to do `runNotes` a zvlášť do počtu, ze kterého spis
+    // i report sestaví výhradu o pokrytí.
+    const nezmerenoBlokaci = blokaceHlidacem.length;
+    // Chyba měření přebíjí všechno ostatní. Bez tohohle zůstalo
+    // `ukonceni: 'potvrzeno-strankou'` i u běhu se zapsanou chybou měření
+    // a report tiskl „stránka sama hlásí dokončení" nad nedokončeným
+    // měřením.
+    if (runErrors.length > 0) {
+      ukonceniBehu = UKONCENI.CHYBA;
+    } else if (!ukonceniBehu) {
+      ukonceniBehu = UKONCENI.LIMIT;
+    }
+
     const measured = runErrors.length === 0;
     return {
       // Výkonnostní varování (long tasks, pomalé API) nejsou chyby funkčnosti
@@ -1756,10 +2000,27 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       // Chyby měření drženy odděleně od nálezů. Report i spis je smí ukázat,
       // ale nikdy jako zjištění o auditovaném webu.
       runErrors: [...new Set(runErrors)],
+      // Nepotvrzené postřehy modelu. Drženy odděleně od `bugs` i od
+      // `runErrors`: nejsou to nálezy o webu ani chyby měření, ale text,
+      // který model napsal. Do verdiktu ani do spisu se nepočítají.
+      modelObservations: [...new Set(modelObservations)],
+      // Okolnosti běhu: kroky bez rozhodnutí modelu a blokace hlídačem.
+      runNotes: [...new Set([...runNotes, ...blokaceHlidacem])],
+      // Kolik kroků NEROZHODL model, ale záchranný fallback. Nenulová
+      // hodnota znamená, že běh prošel méně, než se zdá — proto se to
+      // musí dostat do reportu i do spisu, ne jen do logu.
+      nerozhodnutychKroku: decisionFailures,
+      // Kolik navigací zastavil vlastní bezpečnostní hlídač. Dotčené
+      // stránky se nezměřily; verdikt je proto nesmí pokrývat.
+      nezmerenoBlokaci,
+      // Jak běh skončil. „Ukončeno na návrh modelu" a „stránka sama hlásí
+      // hotovo" nejsou totéž a ve spisu se to nesmí slít.
+      ukonceni: ukonceniBehu,
+      ukonceniPopis: popisUkonceni(ukonceniBehu),
       summary: !measured
         ? `Měření se nedokončilo: ${runErrors[0]}`
         : isFinished
-          ? 'Test úspěšně dokončen.'
+          ? `Test dokončen. ${popisUkonceni(ukonceniBehu)}`
           : 'Test dosáhl limitu maximálního počtu kroků.',
       performanceMetrics,
       generatedScript,
@@ -4137,3 +4398,6 @@ export async function checkForm(target) {
 
   return result;
 }
+
+/** Jen pro testy. */
+export const __test__ = { determineNextAction };

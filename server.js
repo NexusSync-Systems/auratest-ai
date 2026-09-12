@@ -17,6 +17,7 @@ import * as db from './db.js';
 import { redactEventData } from './pii-redactor.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, SDK_DIR, FRONTEND_DIST_DIR, ensureDir } from './paths.js';
 import { resolveSpaFallback } from './spa-fallback.js';
+import { popisUkonceni, souhrnneUkonceni } from './finish-policy.js';
 import {
   appendRecord,
   verifyChain,
@@ -926,6 +927,15 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           let measuredCount = 0;
           const totalRunErrors = [];
           const totalWarnings = [];
+          const totalModelObservations = [];
+          const totalRunNotes = [];
+          // Jak skončila každá stránka. Crawler běží s nízkým `maxSteps`,
+          // takže se na limitu zastaví často — a dokud se to nikam
+          // nepsalo, report dával zelený odznak a spis „Bez nálezu" bez
+          // výhrady o tom, že se z každé stránky prošla jen část.
+          const ukonceniStranek = [];
+          let nerozhodnutychKroku = 0;
+          let nezmerenoBlokaci = 0;
           // Cookie lišta se odklikává na KAŽDÉ stránce. Crawler to
           // dosud neukládal vůbec, takže dokument o crawler běhu
           // zamlčel, že nástroj na stránkách klikal na tlačítka —
@@ -949,6 +959,11 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
             if (result.measured !== false) measuredCount++;
             totalRunErrors.push(...(result.runErrors || []));
             totalWarnings.push(...(result.warnings || []));
+            totalModelObservations.push(...(result.modelObservations || []));
+            totalRunNotes.push(...(result.runNotes || []));
+            ukonceniStranek.push(result.ukonceni || null);
+            nerozhodnutychKroku += result.nerozhodnutychKroku || 0;
+            nezmerenoBlokaci += result.nezmerenoBlokaci || 0;
             cookiePrubeh.push({
               url: targetUrl,
               preConsent: result.preConsent || null,
@@ -966,6 +981,14 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           sessionData.bugs = [...new Set(totalBugs)];
           sessionData.runErrors = totalRunErrors;
           sessionData.warnings = totalWarnings;
+          sessionData.modelObservations = [...new Set(totalModelObservations)];
+          sessionData.runNotes = [...new Set(totalRunNotes)];
+          sessionData.nerozhodnutychKroku = nerozhodnutychKroku;
+          sessionData.nezmerenoBlokaci = nezmerenoBlokaci;
+          // Nejslabší ukončení rozhoduje za celý běh: stačí jedna stránka
+          // useknutá limitem a tvrzení „prošli jsme, co bylo" neplatí.
+          sessionData.ukonceni = souhrnneUkonceni(ukonceniStranek, totalRunErrors.length > 0);
+          sessionData.ukonceniPopis = popisUkonceni(sessionData.ukonceni);
           sessionData.cookiePrubeh = cookiePrubeh;
           // Souhrn musí uvádět, KOLIK stránek se opravdu změřilo.
           // „Crawler prozkoumal 4 stránek. Nalezeno 0 chyb." u běhu, kde
@@ -1028,6 +1051,16 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
           // a co se zmáčklo na cookie liště. Do `bugs` to nepatří.
           sessionData.preConsent = result.preConsent || null;
           sessionData.cookieBanner = result.cookieBanner || null;
+          // Nepotvrzené postřehy modelu a okolnosti běhu. Odděleně od
+          // `bugs`, protože nic z toho není změřené zjištění o webu.
+          sessionData.modelObservations = result.modelObservations || [];
+          sessionData.runNotes = result.runNotes || [];
+          // Jak běh skončil. Bez toho spis neodliší „stránka sama hlásí
+          // hotovo" od „doběhl limit kroků".
+          sessionData.ukonceni = result.ukonceni || null;
+          sessionData.ukonceniPopis = result.ukonceniPopis || null;
+          sessionData.nerozhodnutychKroku = result.nerozhodnutychKroku ?? null;
+          sessionData.nezmerenoBlokaci = result.nezmerenoBlokaci ?? null;
           sessionData.summary = result.summary;
           sessionData.performanceMetrics = result.performanceMetrics;
           sessionData.generatedScript = result.generatedScript;
@@ -1325,6 +1358,15 @@ async function schedulerTick() {
             // od bugů, ale žádný konzument je nečetl.
             sessionData.warnings = result.warnings || [];
             sessionData.runErrors = result.runErrors || [];
+            // Stejná pole jako u /api/run-test. Bez nich monitor ukládal
+            // běh na limitu kroků jako čistý výsledek: report dal zelený
+            // odznak a spis „Bez nálezu" bez výhrady o pokrytí.
+            sessionData.modelObservations = result.modelObservations || [];
+            sessionData.runNotes = result.runNotes || [];
+            sessionData.ukonceni = result.ukonceni || null;
+            sessionData.ukonceniPopis = result.ukonceniPopis || null;
+            sessionData.nerozhodnutychKroku = result.nerozhodnutychKroku ?? null;
+            sessionData.nezmerenoBlokaci = result.nezmerenoBlokaci ?? null;
             sessionData.summary = result.summary;
             sessionData.performanceMetrics = result.performanceMetrics;
             sessionData.generatedScript = result.generatedScript;

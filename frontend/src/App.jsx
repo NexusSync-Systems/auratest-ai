@@ -55,6 +55,20 @@ import {
   TEST_TYPES, IMPACT_COLORS, IMPACT_TRANSLATIONS, RULE_TRANSLATIONS,
 } from './constants/testTypes.js';
 
+/**
+ * Výhrada k pokrytí podle toho, čím běh skončil.
+ *
+ * Prázdno jen tam, kde žádná výhrada není — tedy nikde: průzkumný agentní
+ * běh soulad nedokládá nikdy. Chybějící `ukonceni` (starší záznam) se
+ * nedomýšlí, použije se neutrální věta.
+ */
+const VYHRADA_POKRYTI = {
+  'limit-kroku': 'Bez nálezu, ale běh vyčerpal limit kroků — část aplikace zůstala neprozkoumaná.',
+  'chyba-mereni': 'Bez nálezu, ale měření se nedokončilo — absence nálezu z běhu neplyne.',
+  'potvrzeno-strankou': 'Bez nálezu. Konec běhu hlásila sama auditovaná stránka (titulek a adresa), ne nezávislé měření.',
+  vycerpano: 'Bez nálezu, ale na stránce nebylo co ovládat — agent neprovedl žádnou akci.',
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
   // Tři stavy, ne dva: `null` = Firebase ještě neodpověděl.
@@ -1827,6 +1841,27 @@ export default function App() {
                           </div>
                         )}
 
+                        {/* Nepotvrzené postřehy modelu. Dřív tenhle text
+                            končil v `bugs` a v UI se ukazoval jako nález —
+                            přitom ho nikdo neměřil. Zmizet ale nesmí:
+                            uživatel má vidět, co model napsal, jen ne jako
+                            zjištění o webu. */}
+                        {Array.isArray(activeSession.modelObservations)
+                          && activeSession.modelObservations.length > 0 && (
+                          <div className="model-notes">
+                            <h4>Nepotvrzené postřehy modelu ({activeSession.modelObservations.length})</h4>
+                            <p className="model-notes-hint">
+                              Text rozhodovacího modelu. Není to měření ani nález
+                              o aplikaci a do verdiktu se nepočítá.
+                            </p>
+                            <ul>
+                              {activeSession.modelObservations.map((n, idx) => (
+                                <li key={idx}>{n}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
                         {activeSession.bugs && activeSession.bugs.length > 0 ? (
                           <div className="bugs-container">
                             <h4 className="bugs-title">Detekované problémy ({activeSession.bugs.length})</h4>
@@ -1847,8 +1882,24 @@ export default function App() {
                             </div>
                           </div>
                         ) : (
-                          <div className="success-banner">
-                            🎉 Nebyly nalezeny žádné chyby! Aplikace vypadá stabilně.
+                          /* „Aplikace vypadá stabilně" bylo tvrzení o pokrytí,
+                             které nikdo nezměřil. Tisk už výhradu podle
+                             `ukonceni` degraduje, obrazovka ne — a uživatel
+                             se rozhoduje podle obrazovky. */
+                          <div className={VYHRADA_POKRYTI[activeSession.ukonceni] ? 'warning-banner' : 'success-banner'}>
+                            {VYHRADA_POKRYTI[activeSession.ukonceni]
+                              || 'Bez nálezu. Průzkumný běh není úplný test — soulad tím doložen není.'}
+                            {activeSession.nerozhodnutychKroku > 0 && (
+                              <div className="banner-detail">
+                                {activeSession.nerozhodnutychKroku} kroků nerozhodl model, ale záchranný krok.
+                              </div>
+                            )}
+                            {activeSession.nezmerenoBlokaci > 0 && (
+                              <div className="banner-detail">
+                                {activeSession.nezmerenoBlokaci} navigací zastavil bezpečnostní hlídač;
+                                dotčené stránky se nezměřily.
+                              </div>
+                            )}
                           </div>
                         )}
                         

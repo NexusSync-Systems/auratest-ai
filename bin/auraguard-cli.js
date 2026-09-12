@@ -291,7 +291,22 @@ async function runCLI() {
         hasErrors = true;
         failedAudits.push('*AI Agent*: Test se nepodařilo dokončit');
       } else {
-        console.log('✅ PASS: AI Agent Test (Žádné viditelné chyby na webu)\n');
+        // „Bez nálezu" neznamená „prošli jsme celou aplikaci".
+        //
+        // Průzkumný běh s limitem kroků aplikaci nikdy neprojde celou.
+        // Dokud tu stálo jen „PASS", CLI v pipeline tvrdilo víc, než běh
+        // změřil — a pipeline je přesně místo, kde to nikdo nepřečte
+        // podrobněji.
+        const vyhrada = aiAgentReport.ukonceniPopis
+          ? `   Ukončení běhu: ${aiAgentReport.ukonceniPopis}`
+          : null;
+        const nerozhodnute = aiAgentReport.nerozhodnutychKroku > 0
+          ? `   Pozor: ${aiAgentReport.nerozhodnutychKroku} kroků nerozhodl model, ale záchranný krok.`
+          : null;
+        console.log('✅ PASS: AI Agent Test (žádný nález; není to doklad souladu)');
+        if (vyhrada) console.log(vyhrada);
+        if (nerozhodnute) console.log(nerozhodnute);
+        console.log('');
       }
     }
 

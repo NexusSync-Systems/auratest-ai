@@ -130,8 +130,30 @@ export function canonicalize(value, seen = new WeakSet()) {
  *
  * Artefakty (screenshoty, video) se vynechávají: jejich cesty se mění
  * a otisk by pak nesouhlasil u nezměněného výsledku.
+ *
+ * Druhý parametr je VERZE PŘEDPISU — viz `AKTUALNI_SCHEMA_OTISKU`.
  */
-export function auditResultOf(session) {
+
+/**
+ * Verze předpisu otisku výsledku.
+ *
+ * MUSÍ se zvýšit při KAŽDÉ změně sady klíčů v `auditResultOf`.
+ *
+ * Proč: spis otisk PŘEPOČÍTÁVÁ dnešním předpisem a porovnává s číslem
+ * zapsaným tehdy. Když se předpis změní bez verze, přestanou souhlasit
+ * otisky všech starších záznamů a spis u nich vytiskne červené „uložený
+ * výsledek se od zapsaného otisku liší" — tedy obvinění zákazníka
+ * z manipulace se záznamem, na nejcitlivějším místě dokumentu pro úřad.
+ * Ověřeno: přidání čtyř polí bez verze změnilo otisk téže session
+ * z 48c3e0a6… na 01d1f62b….
+ *
+ * 1 = původní sada (status, bugs, warnings, runErrors, preConsent,
+ *     cookieBanner, summary, steps [, checks/scanner/… u předpisové kontroly])
+ * 2 = přidáno ukonceni, nerozhodnutychKroku, modelObservations, runNotes
+ */
+export const AKTUALNI_SCHEMA_OTISKU = 2;
+
+export function auditResultOf(session, schema = AKTUALNI_SCHEMA_OTISKU) {
   const base = {
     status: session.status ?? null,
     bugs: session.bugs ?? [],
@@ -151,6 +173,24 @@ export function auditResultOf(session) {
       return rest;
     }),
   };
+
+  // Pole zavedená ve verzi 2. U starších záznamů se do otisku NESMÍ
+  // dostat, jinak jim přepočet přestane souhlasit.
+  if (schema >= 2) {
+    // Čím běh skončil a kolik kroků nerozhodl model — dva údaje, které
+    // MĚNÍ VERDIKT: podle `ukonceni === 'limit-kroku'` přidává spis
+    // výhradu o useknutém pokrytí a report degraduje zelený odznak.
+    // Bez nich měly dvě session lišící se jen v `ukonceni` totožný
+    // `resultDigest`, takže se výhrada dala z databáze odstranit
+    // a spis dál tiskl „Otisk souhlasí: Ano".
+    base.ukonceni = session.ukonceni ?? null;
+    base.nerozhodnutychKroku = session.nerozhodnutychKroku ?? null;
+    base.nezmerenoBlokaci = session.nezmerenoBlokaci ?? null;
+    // Nepotvrzené postřehy modelu. Nejsou to nálezy, ale jsou součástí
+    // záznamu běhu a nesmí se dát tiše dopsat ani smazat.
+    base.modelObservations = session.modelObservations ?? [];
+    base.runNotes = session.runNotes ?? [];
+  }
 
   // U předpisové kontroly nesou zjištění `checks`, ne `bugs`.
   //
@@ -403,7 +443,7 @@ function writeRecord(entry, file) {
     // Verze schématu záznamu. Až se formát změní, staré záznamy musí zůstat
     // ověřitelné — bez tohohle pole by se nedalo poznat, podle jakých
     // pravidel se otisk počítal.
-    schema: 1,
+    schema: AKTUALNI_SCHEMA_OTISKU,
     recordedAt: new Date().toISOString(),
     tool: toolVersion(),
     ruleset: rulesetInfo(),

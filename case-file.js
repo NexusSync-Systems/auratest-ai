@@ -30,7 +30,16 @@ import { verifyChain, headHash, digestOf, auditResultOf } from './audit-ledger.j
 function verifyResultDigest(session, record) {
   if (!record?.resultDigest) return null;
   try {
-    return digestOf(auditResultOf(session)) === record.resultDigest;
+    // Předpisem, kterým se otisk POČÍTAL, ne dnešním.
+    //
+    // Bez tohohle by každá změna sady klíčů v `auditResultOf` prohlásila
+    // všechny starší záznamy za pozměněné a spis by u nich vytiskl červené
+    // „uložený výsledek se od zapsaného otisku liší". Obvinit zákazníka
+    // z manipulace kvůli vlastnímu refaktoringu je přesně ten typ tvrzení
+    // bez opory, kterému se nástroj vyhýbá.
+    //
+    // Chybějící `schema` = záznam z doby před verzováním, tedy verze 1.
+    return digestOf(auditResultOf(session, record.schema ?? 1)) === record.resultDigest;
   } catch {
     return null;
   }
@@ -187,12 +196,46 @@ function verdictOf(session) {
     };
   }
 
+  // Čím běh skončil, patří do odůvodnění.
+  //
+  // Průzkumný běh, který doběhl na limitu kroků, prošel jen část toho, co
+  // měl před sebou. „Bez nálezu" nad takovým během čte čtenář spisu jako
+  // prověřený výsledek, ačkoli pokrytí bylo useknuté. Zamlčet to je totéž
+  // jako tvrdit víc, než se změřilo.
+  const VYHRADY_UKONCENI = {
+    'limit-kroku': ' Běh skončil na limitu kroků, takže část aplikace zůstala neprozkoumaná.',
+    'chyba-mereni': ' Běh nedošel do konce kvůli chybě měření, takže část aplikace zůstala neprozkoumaná.',
+    // Tvrzení auditovaného webu, ne naše měření. Web si titulek i adresu
+    // nastavuje sám a je předmětem auditu.
+    'potvrzeno-strankou': ' Běh skončil proto, že sama auditovaná stránka hlásila '
+      + 'dokončení (titulek a adresa); to není nezávislé měření.',
+    // „Není co ovládat" znamená, že agent neprovedl nic. Aplikace v iframu,
+    // frameset, PDF jako cíl nebo nedorenderovaná SPA to spustí i na webu,
+    // který je v pořádku — a bez téhle výhrady z toho spis dělal
+    // „Bez nálezu" bez jediného slova o tom, že se nic nezkusilo.
+    vycerpano: ' Běh skončil proto, že měření nenašlo na stránce žádný '
+      + 'interaktivní prvek; agent tedy neprovedl žádnou akci.',
+  };
+  const pokryti = VYHRADY_UKONCENI[session.ukonceni] || '';
+  // Adresy, které zastavil vlastní bezpečnostní hlídač. Dotčené stránky
+  // se nezměřily. Zneplatnit kvůli jednomu odkazu mimo doménu celý běh by
+  // bylo přestřelení do druhé strany; zamlčet to je ale tvrzení o pokrytí,
+  // které neplatí.
+  const blokace = session.nezmerenoBlokaci > 0
+    ? ` U ${session.nezmerenoBlokaci} navigací zasáhl bezpečnostní hlídač, takže se `
+      + 'dotčené stránky nezměřily a tento verdikt je nepokrývá.'
+    : '';
+  const nerozhodnute = session.nerozhodnutychKroku > 0
+    ? ` U ${session.nerozhodnutychKroku} kroků nerozhodl model, ale záchranný `
+      + 'průzkumný krok, takže pokrytí je menší, než počet kroků naznačuje.'
+    : '';
+
   return {
     value: 'no-findings',
     label: 'Bez nálezu',
     rationale:
       'Kontroly proběhly a nezaznamenaly nález. Absence nálezu není důkazem ' +
-      `shody — viz meze spisu.${detail}`,
+      `shody — viz meze spisu.${pokryti}${nerozhodnute}${blokace}${detail}`,
   };
 }
 
