@@ -7,6 +7,7 @@ import geoip from 'geoip-lite';
 import { assertPublicHttpUrl, resolvePublicHttpTarget, guardNavigation } from './ssrf-guard.js';
 import { vyhodnotFinish, UKONCENI, popisUkonceni } from './finish-policy.js';
 import { popisHttpChyby, popisHttpChybyBehu } from './http-status.js';
+import { jeZruseny, nalezSitoveChyby, poznamkaZruseneho } from './network-findings.js';
 import { vytvorChaosHandler, vyhodnotChaos } from './chaos-run.js';
 import { bezpecnePrvky, zamlcenychPrvku, vytvorZnacku, obalDataZeStranky, obalStavStranky, pokynKDatumZeStranky } from './prompt-safety.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, GENERATED_SCRIPTS_DIR, ensureDir, safeFileToken } from './paths.js';
@@ -1629,7 +1630,22 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
   page.on('requestfailed', (request) => {
     const errText = request.failure()?.errorText || 'Unknown failure';
     const reqUrl = request.url();
-    if (errText === 'net::ERR_ABORTED' && reqUrl.match(/\.(mp4|webm|ogg|avi|mov)(\?.*)?$/i)) {
+
+    // Zrušený požadavek NENÍ vada webu.
+    //
+    // `net::ERR_ABORTED` znamená, že požadavek někdo zrušil: odchod
+    // z stránky, `AbortController` v aplikaci, spekulativní přednačtení,
+    // které prohlížeč zahodil, nebo HEAD ukončený po hlavičkách. Nic
+    // z toho není závada — a odlišit „aplikace si požadavek zrušila
+    // správně" od „aplikace si ho zrušila omylem" zvenčí nejde.
+    //
+    // Dřív se to přeskakovalo jen u videí. Ověřeno ostrým během:
+    // cloudflare.com, web bez závady, dostal nález
+    // „Selhal síťový požadavek: HEAD https://www.cloudflare.com/ -
+    // net::ERR_ABORTED". Zrušený požadavek proto jde mezi varování —
+    // je vidět, ale nepočítá se jako zjištění o webu.
+    if (jeZruseny(errText)) {
+      addFinding(warnings, poznamkaZruseneho(request.method(), reqUrl));
       return;
     }
     // Vlastní blokace není vada webu ani runtime signál. Nesmí se dostat
@@ -1646,7 +1662,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     networkErrors.push({ url: reqUrl, error: errText });
     // Přes addFinding, aby platila stejná deduplikace jako u ostatních
     // nálezů — přímý push ji obcházel. Metoda z requestu, ne natvrdo GET.
-    addFinding(bugs, `Selhal síťový požadavek: ${request.method()} ${reqUrl} - ${errText}`);
+    addFinding(bugs, nalezSitoveChyby(request.method(), reqUrl, errText));
   });
 
   // Měření síťové latence a zachycování HTTP chyb (AuraAuraGuard)
@@ -1798,12 +1814,18 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         { extrakceSelhala }
       );
 
-      // 3. Nálezy z měření (posluchače konzole a sítě je už zapsaly samy,
-      //    `addFinding` zajistí deduplikaci). Text modelu se sem NEDOSTANE
-      //    — je jen nepotvrzený postřeh.
-      if (Array.isArray(actionResponse.detected_bugs)) {
-        actionResponse.detected_bugs.forEach((b) => addFinding(bugs, b));
-      }
+      // 3. Nálezy do `bugs` zapisují VÝHRADNĚ posluchače konzole a sítě.
+      //
+      // `actionResponse.detected_bugs` je odvozený souhrn TÉHOŽ signálu pro
+      // potřeby jednoho kroku a zní jinak: posluchač píše
+      // „Selhal síťový požadavek: HEAD https://… - net::ERR_ABORTED",
+      // souhrn „Selhal síťový požadavek: https://…". `addFinding`
+      // deduplikuje podle celého řetězce, takže PROŠLY OBA a jeden fakt se
+      // započítal dvakrát. Ověřeno ostrým během proti cloudflare.com:
+      // dva nálezy z jedné síťové chyby.
+      //
+      // Text modelu se do `bugs` nedostane vůbec — je jen nepotvrzený
+      // postřeh, viz `model_notes`.
       if (Array.isArray(actionResponse.model_notes)) {
         actionResponse.model_notes.forEach((n) => {
           if (!modelObservations.includes(n)) modelObservations.push(n);
