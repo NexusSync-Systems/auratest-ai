@@ -20,29 +20,27 @@
  */
 
 import { RULES, rulesetInfo } from './rule-registry.js';
-import { verifyChain, headHash, digestOf, auditResultOf } from './audit-ledger.js';
+import { verifyChain, headHash, digestOf, auditResultOf, overOtisk } from './audit-ledger.js';
 
 /**
  * Odpovídá uložený otisk tomu, co je dnes v databázi?
  *
- * @returns {boolean|null} null = nelze ověřit (starý záznam bez otisku)
+ * Trojstav, ne ano/ne. Rozhoduje `overOtisk`, které zkouší VŠECHNY známé
+ * předpisy — `schema` u záznamů z prvních tří týdnů provozu hlásilo `1`
+ * bez ohledu na to, kterým ze tří tehdejších předpisů otisk vznikl.
+ *
+ * `null` znamená „nelze ověřit", ne „nesouhlasí". Rozdíl je zásadní:
+ * „NE" čte kontrolor jako manipulaci se záznamem. Ověřeno na provozních
+ * datech, kde takové obvinění dostalo 45 ze 48 záznamů — a příčinou byly
+ * naše vlastní změny předpisu, ne zásah zákazníka.
+ *
+ * @returns {boolean|null} null = nelze ověřit
  */
 function verifyResultDigest(session, record) {
-  if (!record?.resultDigest) return null;
-  try {
-    // Předpisem, kterým se otisk POČÍTAL, ne dnešním.
-    //
-    // Bez tohohle by každá změna sady klíčů v `auditResultOf` prohlásila
-    // všechny starší záznamy za pozměněné a spis by u nich vytiskl červené
-    // „uložený výsledek se od zapsaného otisku liší". Obvinit zákazníka
-    // z manipulace kvůli vlastnímu refaktoringu je přesně ten typ tvrzení
-    // bez opory, kterému se nástroj vyhýbá.
-    //
-    // Chybějící `schema` = záznam z doby před verzováním, tedy verze 1.
-    return digestOf(auditResultOf(session, record.schema ?? 1)) === record.resultDigest;
-  } catch {
-    return null;
-  }
+  const { stav } = overOtisk(session, record);
+  if (stav === 'ok') return true;
+  if (stav === 'nesouhlasi') return false;
+  return null;
 }
 
 /** Verze formátu spisu. Až se změní, staré spisy musí zůstat čitelné. */
@@ -77,6 +75,11 @@ export const CASE_FILE_LIMITS = [
   'Chyby měření (timeout, pád prohlížeče) se ve spisu drží odděleně od ' +
     'nálezů. Běh, jehož měření se nedokončilo, je vždy neprůkazný — nikdy ' +
     'z něj neplyne nález ani jeho absence.',
+  'U záznamů pořízených dřív, než nástroj začal zaznamenávat verzi předpisu ' +
+    'otisku výsledku, je u otisku uvedeno „nelze ověřit". Předpis se v té ' +
+    'době měnil a záznam o sobě neuvádí, kterým z nich vznikl, takže z ' +
+    'neshody neplyne ani neporušenost, ani zásah. U těchto záznamů dokládá ' +
+    'neporušenost jen řetězení a ukotvení, ne otisk výsledku.',
 ];
 
 /**
@@ -369,6 +372,11 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
               // nálezů, které nikdo nedokáže zkontrolovat — a čtenář si přitom
               // vyvodí, že ty nálezy kryje.
               digestMatches: verifyResultDigest(session, record),
+              // Čím se to podařilo ověřit a proč případně ne. Bez toho
+              // čtenář u „nelze ověřit" netuší, jestli je to naše mez,
+              // nebo něco na jeho straně.
+              digestDetail: record ? overOtisk(session, record).duvod : null,
+              digestPredpis: record ? overOtisk(session, record).predpis : null,
               chainProblem: problemBySession.has(session.id),
               duplicateRecords: duplicated.has(session.id),
             }
@@ -661,10 +669,14 @@ export function renderCaseFileHtml(caseFile) {
               ? `<tr><th>Otisk výsledku</th><td class="mono">${escapeHtml(run.evidence.resultDigest)}</td></tr>
                  <tr><th>Otisk souhlasí</th><td>${
                    run.evidence.digestMatches === true
-                     ? 'Ano — uložený výsledek odpovídá zapsanému otisku.'
+                     ? `Ano — uložený výsledek odpovídá zapsanému otisku.${
+                       run.evidence.digestPredpis
+                         ? ` <span class="dim">(předpis z ${escapeHtml(run.evidence.digestPredpis)})</span>`
+                         : ''
+                     }`
                      : run.evidence.digestMatches === false
                        ? '<span class="warn">NE — uložený výsledek se od zapsaného otisku liší.</span>'
-                       : 'Nelze ověřit (záznam bez otisku výsledku).'
+                       : `Nelze ověřit. ${escapeHtml(run.evidence.digestDetail || 'Záznam nenese otisk výsledku.')}`
                  }</td></tr>
                  <tr><th>Otisk záznamu</th><td class="mono">${escapeHtml(run.evidence.recordHash)}</td></tr>
                  <tr><th>Verze nástroje</th><td>${escapeHtml(run.evidence.toolVersion)}</td></tr>

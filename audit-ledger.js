@@ -120,52 +120,47 @@ export function canonicalize(value, seen = new WeakSet()) {
 }
 
 /**
- * Co z běhu vstupuje do otisku výsledku.
+ * Předpisy otisku výsledku — VŠECHNY, které kdy byly v provozu.
  *
- * Vyexportované schválně: spis tímtéž předpisem otisk PŘEPOČÍTÁ a porovná.
- * Dokud tahle funkce žila jako objektový literál uvnitř server.js, byl otisk
- * ve spisu číslo, které nikdo nedokázal zkontrolovat — přesná struktura
- * nebyla nikde zapsaná a mezi cestami se dokonce lišila (crawler větev
- * neposílala `warnings`).
+ * PROČ TU JSOU I TY STARÉ
+ * Spis otisk PŘEPOČÍTÁVÁ a porovnává s číslem zapsaným tehdy. Když se
+ * předpis změní, staré otisky přestanou souhlasit — a spis u nich vytiskne
+ * „Otisk souhlasí: NE", tedy obvinění zákazníka z manipulace se záznamem,
+ * na nejcitlivějším místě dokumentu pro úřad.
  *
- * Artefakty (screenshoty, video) se vynechávají: jejich cesty se mění
- * a otisk by pak nesouhlasil u nezměněného výsledku.
+ * OVĚŘENO NA PROVOZNÍCH DATECH: 45 ze 48 záznamů nesouhlasilo. Žádná
+ * manipulace se nestala — předpis se mezitím třikrát změnil:
  *
- * Druhý parametr je VERZE PŘEDPISU — viz `AKTUALNI_SCHEMA_OTISKU`.
+ *   25. 8.  původní sada, BEZ větve `checks`. Předpisová kontrola nese
+ *           nálezy právě v `checks`, takže 13 různých skenů mělo naprosto
+ *           stejný otisk. Otisk, který nezávisí na obsahu, není otisk.
+ *   28. 8.  přidána větev `checks` (opravou téhle vady)
+ *   10. 9.  přidán `preConsent` a `cookieBanner`
+ *   17. 9.  přidán `ukonceni`, `nerozhodnutychKroku`, `nezmerenoBlokaci`,
+ *           `modelObservations`, `runNotes`
+ *
+ * Pole `schema` v záznamu přitom celou dobu hlásilo `1`. Byla to
+ * konstanta, která nezaznamenávala nic — teprve poslední změna ho zvedla.
+ * Staré záznamy proto o svém předpisu nevypovídají a ověření je musí
+ * zkusit všechny.
+ *
+ * NOVÝ PŘEDPIS SE PŘIDÁVÁ NA KONEC. Stávající se NIKDY nemění — jsou to
+ * historická fakta o tom, co se tehdy počítalo. Změnit je znamená ztratit
+ * možnost ověřit záznamy z té doby.
+ *
+ * Artefakty (screenshoty, video) se vynechávají ve všech předpisech:
+ * jejich cesty se mění a otisk by pak nesouhlasil u nezměněného výsledku.
  */
 
-/**
- * Verze předpisu otisku výsledku.
- *
- * MUSÍ se zvýšit při KAŽDÉ změně sady klíčů v `auditResultOf`.
- *
- * Proč: spis otisk PŘEPOČÍTÁVÁ dnešním předpisem a porovnává s číslem
- * zapsaným tehdy. Když se předpis změní bez verze, přestanou souhlasit
- * otisky všech starších záznamů a spis u nich vytiskne červené „uložený
- * výsledek se od zapsaného otisku liší" — tedy obvinění zákazníka
- * z manipulace se záznamem, na nejcitlivějším místě dokumentu pro úřad.
- * Ověřeno: přidání čtyř polí bez verze změnilo otisk téže session
- * z 48c3e0a6… na 01d1f62b….
- *
- * 1 = původní sada (status, bugs, warnings, runErrors, preConsent,
- *     cookieBanner, summary, steps [, checks/scanner/… u předpisové kontroly])
- * 2 = přidáno ukonceni, nerozhodnutychKroku, modelObservations, runNotes
- */
-export const AKTUALNI_SCHEMA_OTISKU = 2;
-
-export function auditResultOf(session, schema = AKTUALNI_SCHEMA_OTISKU) {
-  const base = {
+/** Společný podklad do 10. 9. — bez `preConsent` a `cookieBanner`. */
+function zakladBezSouhlasu(session) {
+  return {
     status: session.status ?? null,
     bugs: session.bugs ?? [],
     warnings: session.warnings ?? [],
     // Chyby měření jsou součást zjištění o běhu, takže do otisku patří —
     // jen se nikdy nevydávají za nálezy na auditovaném webu.
     runErrors: session.runErrors ?? [],
-    // Okolnosti běhu, které mění, CO se vlastně měřilo: stav před
-    // souhlasem a to, jestli a jak se odklikla cookie lišta. Bez nich
-    // by šlo obojí ve spisu přepsat a otisk by dál hlásil „souhlasí".
-    preConsent: session.preConsent ?? null,
-    cookieBanner: session.cookieBanner ?? null,
     summary: session.summary ?? null,
     steps: (session.steps ?? []).map((step) => {
       // Cesta ke screenshotu je artefakt, ne zjištění.
@@ -173,53 +168,180 @@ export function auditResultOf(session, schema = AKTUALNI_SCHEMA_OTISKU) {
       return rest;
     }),
   };
+}
 
-  // Pole zavedená ve verzi 2. U starších záznamů se do otisku NESMÍ
-  // dostat, jinak jim přepočet přestane souhlasit.
-  if (schema >= 2) {
-    // Čím běh skončil a kolik kroků nerozhodl model — dva údaje, které
-    // MĚNÍ VERDIKT: podle `ukonceni === 'limit-kroku'` přidává spis
-    // výhradu o useknutém pokrytí a report degraduje zelený odznak.
-    // Bez nich měly dvě session lišící se jen v `ukonceni` totožný
-    // `resultDigest`, takže se výhrada dala z databáze odstranit
-    // a spis dál tiskl „Otisk souhlasí: Ano".
-    base.ukonceni = session.ukonceni ?? null;
-    base.nerozhodnutychKroku = session.nerozhodnutychKroku ?? null;
-    base.nezmerenoBlokaci = session.nezmerenoBlokaci ?? null;
-    // Nepotvrzené postřehy modelu. Nejsou to nálezy, ale jsou součástí
-    // záznamu běhu a nesmí se dát tiše dopsat ani smazat.
-    base.modelObservations = session.modelObservations ?? [];
-    base.runNotes = session.runNotes ?? [];
+/** Společný podklad od 10. 9. */
+function zakladSeSouhlasem(session) {
+  const { summary, steps, ...zbytek } = zakladBezSouhlasu(session);
+  return {
+    ...zbytek,
+    // Okolnosti běhu, které mění, CO se vlastně měřilo: stav před
+    // souhlasem a to, jestli a jak se odklikla cookie lišta. Bez nich
+    // by šlo obojí ve spisu přepsat a otisk by dál hlásil „souhlasí".
+    preConsent: session.preConsent ?? null,
+    cookieBanner: session.cookieBanner ?? null,
+    summary,
+    steps,
+  };
+}
+
+/**
+ * Větev předpisové kontroly.
+ *
+ * U ní nesou zjištění `checks`, ne `bugs`. Bez tohohle šel do otisku jen
+ * společný podklad — status a čtyři prázdná pole — takže KAŽDÝ compliance
+ * sken v systému měl týž otisk bez ohledu na cíl, druh skenu i výsledek.
+ * Kdo uměl zapsat do databáze, přepsal „NESPLNĚNO" na „SPLNĚNO" a ověření
+ * otisku dál hlásilo shodu.
+ */
+function sVetviKontrol(base, session) {
+  if (session.kind !== 'compliance-scan') return base;
+  return {
+    ...base,
+    kind: 'compliance-scan',
+    auditSlug: session.auditSlug ?? null,
+    verdict: session.verdict ?? null,
+    ruleRefs: session.ruleRefs ?? [],
+    // Normalizovaný tvar: do otisku jde klíč, verdikt a odůvodnění.
+    // Popisek je jen zobrazovací text a jeho změna nemá otisk hýbat.
+    checks: (session.checks ?? []).map((c) => ({
+      key: c?.key ?? null,
+      ruleRef: c?.ruleRef ?? null,
+      ok: c?.ok === true || c?.ok === false ? c.ok : null,
+      rationale: c?.rationale ?? '',
+    })),
+  };
+}
+
+export const PREDPISY_OTISKU = [
+  {
+    id: '2026-08-25',
+    schema: 1,
+    popis: 'původní sada; předpisová kontrola se do otisku nepromítala',
+    sestav: (session) => zakladBezSouhlasu(session),
+  },
+  {
+    id: '2026-08-28',
+    schema: 1,
+    popis: 'přidána větev `checks` u předpisové kontroly',
+    sestav: (session) => sVetviKontrol(zakladBezSouhlasu(session), session),
+  },
+  {
+    id: '2026-09-10',
+    schema: 1,
+    popis: 'přidán `preConsent` a `cookieBanner`',
+    sestav: (session) => sVetviKontrol(zakladSeSouhlasem(session), session),
+  },
+  {
+    id: '2026-09-17',
+    schema: 2,
+    popis: 'přidán `ukonceni`, `nerozhodnutychKroku`, `nezmerenoBlokaci`, `modelObservations`, `runNotes`',
+    sestav: (session) => sVetviKontrol({
+      ...zakladSeSouhlasem(session),
+      // Čím běh skončil a kolik kroků nerozhodl model — údaje, které MĚNÍ
+      // VERDIKT: podle nich přidává spis výhradu o useknutém pokrytí
+      // a report degraduje zelený odznak.
+      ukonceni: session.ukonceni ?? null,
+      nerozhodnutychKroku: session.nerozhodnutychKroku ?? null,
+      nezmerenoBlokaci: session.nezmerenoBlokaci ?? null,
+      // Nepotvrzené postřehy modelu. Nejsou to nálezy, ale jsou součástí
+      // záznamu běhu a nesmí se dát tiše dopsat ani smazat.
+      modelObservations: session.modelObservations ?? [],
+      runNotes: session.runNotes ?? [],
+    }, session),
+  },
+];
+
+export const AKTUALNI_PREDPIS = PREDPISY_OTISKU[PREDPISY_OTISKU.length - 1];
+
+/**
+ * Číslo, které se zapisuje do záznamu.
+ *
+ * Nerozlišuje předpisy uvnitř téhož čísla — právě proto se při ověřování
+ * zkoušejí všechny. Nové záznamy jsou na tom líp: od 17. 9. je číslo
+ * pinlé na jeden konkrétní předpis.
+ */
+export const AKTUALNI_SCHEMA_OTISKU = AKTUALNI_PREDPIS.schema;
+
+/**
+ * Co z běhu vstupuje do otisku výsledku.
+ *
+ * `schema` vybírá NEJNOVĚJŠÍ předpis s tím číslem. U čísla 1 jich je víc,
+ * takže tenhle výběr sám o sobě ověření nestačí — od toho je `overOtisk`.
+ */
+export function auditResultOf(session, schema = AKTUALNI_SCHEMA_OTISKU) {
+  const predpisy = PREDPISY_OTISKU.filter((p) => p.schema === schema);
+  const predpis = predpisy[predpisy.length - 1] || AKTUALNI_PREDPIS;
+  return predpis.sestav(session);
+}
+
+/**
+ * Souhlasí otisk v záznamu s dnešními daty session?
+ *
+ * Zkouší VŠECHNY známé předpisy, protože `schema` u starých záznamů
+ * nevypovídá o ničem. Vrací trojstav, ne ano/ne:
+ *
+ *   `ok`           — některý známý předpis otisk reprodukoval
+ *   `neoveritelne` — žádný neodpovídá A záznam je z doby před verzováním.
+ *                    Rozlišit „data se změnila" od „změnil se náš předpis"
+ *                    nelze, takže manipulaci tvrdit nesmíme.
+ *   `nesouhlasi`   — žádný neodpovídá a záznam MÁ pinlý předpis. Teprve
+ *                    tady je tvrzení o rozporu podložené.
+ *
+ * @returns {{stav: 'ok'|'nesouhlasi'|'neoveritelne', predpis: string|null, duvod: string}}
+ */
+export function overOtisk(session, record) {
+  if (!record?.resultDigest) {
+    return { stav: 'neoveritelne', predpis: null, duvod: 'Záznam otisk výsledku nenese.' };
+  }
+  if (!session) {
+    return { stav: 'neoveritelne', predpis: null, duvod: 'Session už v databázi není.' };
   }
 
-  // U předpisové kontroly nesou zjištění `checks`, ne `bugs`.
-  //
-  // Bez tohohle šel do otisku jen společný podklad — status a čtyři prázdná
-  // pole — takže KAŽDÝ compliance sken v systému měl týž `resultDigest`,
-  // bez ohledu na cíl, druh skenu i výsledek. Kdo uměl zapsat do databáze,
-  // přepsal „NESPLNĚNO" na „SPLNĚNO" a ověření otisku dál hlásilo shodu.
-  // Spis to přitom tiskne jako „Otisk souhlasí: Ano" — tedy nepravdivé
-  // tvrzení na nejcitlivějším místě dokumentu.
-  if (session.kind === 'compliance-scan') {
+  const zapsane = record.schema ?? 1;
+  // Pinlý předpis první, pak zbytek od nejnovějšího.
+  const poradi = [
+    ...PREDPISY_OTISKU.filter((p) => p.schema === zapsane).reverse(),
+    ...PREDPISY_OTISKU.filter((p) => p.schema !== zapsane).reverse(),
+  ];
+
+  for (const predpis of poradi) {
+    try {
+      if (digestOf(predpis.sestav(session)) === record.resultDigest) {
+        return {
+          stav: 'ok',
+          predpis: predpis.id,
+          duvod: `Otisk reprodukován předpisem z ${predpis.id}.`,
+        };
+      }
+    } catch {
+      // Předpis na těchhle datech nelze sestavit; zkus další.
+    }
+  }
+
+  // Pinlý předpis existuje jen od chvíle, kdy se číslo začalo opravdu
+  // zvyšovat. Do té doby hlásily všechny záznamy `1` bez ohledu na to,
+  // kterým ze tří předpisů vznikly.
+  const maPinlyPredpis = PREDPISY_OTISKU.filter((p) => p.schema === zapsane).length === 1;
+  if (!maPinlyPredpis) {
     return {
-      ...base,
-      kind: 'compliance-scan',
-      auditSlug: session.auditSlug ?? null,
-      verdict: session.verdict ?? null,
-      ruleRefs: session.ruleRefs ?? [],
-      // Normalizovaný tvar: do otisku jde klíč, verdikt a odůvodnění.
-      // Popisek je jen zobrazovací text a jeho změna nemá otisk hýbat.
-      checks: (session.checks ?? []).map((c) => ({
-        key: c?.key ?? null,
-        ruleRef: c?.ruleRef ?? null,
-        ok: c?.ok === true || c?.ok === false ? c.ok : null,
-        rationale: c?.rationale ?? '',
-      })),
+      stav: 'neoveritelne',
+      predpis: null,
+      duvod: 'Záznam pochází z doby, kdy se verze předpisu otisku nezaznamenávala, '
+        + 'a žádný ze známých předpisů otisk nereprodukoval. Nelze rozlišit změnu '
+        + 'dat od změny předpisu, takže se z toho nedá vyvodit ani neporušenost, '
+        + 'ani zásah.',
     };
   }
 
-  return base;
+  return {
+    stav: 'nesouhlasi',
+    predpis: null,
+    duvod: 'Žádný známý předpis otisk nereprodukoval, přestože záznam nese '
+      + 'jednoznačnou verzi předpisu.',
+  };
 }
+
 
 /** SHA-256 kanonické podoby. */
 export function digestOf(value) {

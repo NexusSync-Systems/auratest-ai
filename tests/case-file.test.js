@@ -303,9 +303,44 @@ describe('spis netvrdí víc, než co dokládá (regrese kontrolní vlny)', () =
     // Bez toho je „Otisk výsledku" 64znakové číslo pod seznamem nálezů,
     // které nikdo nedokáže zkontrolovat — a čtenář si přitom vyvodí,
     // že ty nálezy kryje.
-    const file = build({ sessions: [session()], records: [record()] });
+    //
+    // Záznam nese `schema: 2`, tedy JEDNOZNAČNÝ předpis. Teprve tam je
+    // tvrzení o rozporu podložené; u starších záznamů (`schema: 1`)
+    // nesly totéž číslo tři různé předpisy — viz test níž.
+    const file = build({
+      sessions: [session()],
+      records: [record({ schema: 2, resultDigest: 'b'.repeat(64) })],
+    });
     expect(file.runs[0].evidence.digestMatches).toBe(false);
     expect(renderCaseFileHtml(file)).toMatch(/liší/);
+  });
+
+  test('u záznamu z doby před verzováním se manipulace NETVRDÍ', () => {
+    // OVĚŘENO NA PROVOZNÍCH DATECH: 45 ze 48 záznamů dostalo „Otisk
+    // souhlasí: NE", tedy obvinění z manipulace se záznamem. Příčinou byly
+    // tři změny předpisu otisku na naší straně, ne zásah zákazníka —
+    // a pole `schema` u všech tří hlásilo `1`.
+    //
+    // Rozlišit „data se změnila" od „změnil se náš předpis" nelze, takže
+    // se nesmí tvrdit ani jedno.
+    const file = build({
+      sessions: [session()],
+      records: [record({ schema: 1, resultDigest: 'b'.repeat(64) })],
+    });
+    expect(file.runs[0].evidence.digestMatches).toBe(null);
+
+    const html = renderCaseFileHtml(file);
+    expect(html).toMatch(/Nelze ověřit/);
+    expect(html).not.toMatch(/NE — uložený výsledek se od zapsaného otisku liší/);
+  });
+
+  test('spis přiznává, že u starých záznamů otisk nic nedokládá', () => {
+    // Ztratili jsme schopnost odhalit zásah do těch záznamů. Byla ale
+    // jen zdánlivá — detektor, který se plete ve 45 případech ze 48,
+    // není detektor. Zamlčet tu mez by znamenalo nechat čtenáře myslet
+    // si, že „nelze ověřit" je formalita.
+    const file = build({ sessions: [session()] });
+    expect(file.limits.join(" ")).toMatch(/verzi předpisu otisku/i);
   });
 
   test('problémy řetězu neprozrazují cizí sessionId', () => {
@@ -597,14 +632,30 @@ describe('ověření otisku u starších záznamů (regrese druhé vlny)', () =>
     expect(cf.runs[0].evidence.digestMatches).toBe(true);
   });
 
-  it('skutečná změna výsledku se pozná i u starého záznamu', () => {
+  it('změna výsledku se u starého záznamu NEVYDÁVÁ za prokázanou', () => {
+    // Záměrná změna oproti původnímu znění tohohle testu. `schema: 1`
+    // nesly tři různé předpisy, takže neshoda o zásahu nevypovídá —
+    // ověřeno na provozních datech, kde tudy vzniklo 45 falešných
+    // obvinění. U `schema: 2` se rozpor tvrdí dál, viz test výš.
     const s = session({ kind: 'agent-run' });
     const stary = record({
       sessionId: s.id, schema: 1, resultDigest: digestOf(auditResultOf(s, 1)),
     });
 
     const cf = build({ sessions: [{ ...s, bugs: ['dopsaný nález'] }], records: [stary] });
-    expect(cf.runs[0].evidence.digestMatches).toBe(false);
+    expect(cf.runs[0].evidence.digestMatches).toBe(null);
+    expect(cf.runs[0].evidence.digestDetail).toMatch(/nezaznamenávala/);
+  });
+
+  it('u záznamu s jednoznačným předpisem se změna pozná', () => {
+    const s = session({ kind: 'agent-run' });
+    const novy = record({
+      sessionId: s.id, schema: 2, resultDigest: digestOf(auditResultOf(s, 2)),
+    });
+
+    expect(build({ sessions: [s], records: [novy] }).runs[0].evidence.digestMatches).toBe(true);
+    expect(build({ sessions: [{ ...s, bugs: ['dopsaný'] }], records: [novy] })
+      .runs[0].evidence.digestMatches).toBe(false);
   });
 });
 

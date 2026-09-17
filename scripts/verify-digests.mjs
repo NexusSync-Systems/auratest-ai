@@ -25,7 +25,7 @@
  *
  * Návratový kód: 0 = všechny ověřitelné otisky souhlasí, 1 = nesouhlasí.
  */
-import { readLedger, auditResultOf, digestOf } from '../audit-ledger.js';
+import { readLedger, overOtisk, PREDPISY_OTISKU } from '../audit-ledger.js';
 import * as db from '../db.js';
 
 const GREEN = '\x1b[32m';
@@ -43,9 +43,6 @@ const nesouhlasi = [];
 const neoveritelne = [];
 
 for (const zaznam of zaznamy) {
-  // Chybějící `schema` = záznam z doby před verzováním, tedy verze 1.
-  const schema = zaznam.schema ?? 1;
-
   let session;
   try {
     session = await db.getSession(zaznam.sessionId);
@@ -54,63 +51,57 @@ for (const zaznam of zaznamy) {
     continue;
   }
 
-  if (!session) {
-    // Není to nález o manipulaci: session mohla být smazána, zatímco
-    // záznam je ze své podstaty trvalý. Tvrdit z toho porušení by byl
-    // závěr bez opory.
-    neoveritelne.push({ zaznam, duvod: 'session už v databázi není' });
-    continue;
-  }
-
-  try {
-    const prepocteny = digestOf(auditResultOf(session, schema));
-    if (prepocteny === zaznam.resultDigest) souhlasi.push(zaznam);
-    else nesouhlasi.push({ zaznam, schema, prepocteny });
-  } catch (err) {
-    neoveritelne.push({ zaznam, duvod: `přepočet selhal: ${err.message}` });
-  }
+  // `overOtisk` zkouší VŠECHNY známé předpisy. `schema` u záznamů z doby
+  // před verzováním hlásilo `1` bez ohledu na to, kterým ze tří tehdejších
+  // předpisů otisk vznikl.
+  const vysledek = overOtisk(session, zaznam);
+  if (vysledek.stav === 'ok') souhlasi.push({ zaznam, predpis: vysledek.predpis });
+  else if (vysledek.stav === 'nesouhlasi') nesouhlasi.push({ zaznam, duvod: vysledek.duvod });
+  else neoveritelne.push({ zaznam, duvod: vysledek.duvod });
 }
 
-const podleSchemat = {};
-for (const z of souhlasi) {
-  const s = z.schema ?? 1;
-  podleSchemat[s] = (podleSchemat[s] || 0) + 1;
+const podlePredpisu = {};
+for (const { predpis } of souhlasi) {
+  podlePredpisu[predpis] = (podlePredpisu[predpis] || 0) + 1;
 }
 
 console.log(`  ${GREEN}souhlasí: ${souhlasi.length}${RESET}` +
-  (Object.keys(podleSchemat).length
-    ? ` ${DIM}(podle verze předpisu: ${Object.entries(podleSchemat).map(([s, n]) => `v${s}=${n}`).join(', ')})${RESET}`
+  (Object.keys(podlePredpisu).length
+    ? `\n${DIM}    podle předpisu: ${Object.entries(podlePredpisu).map(([p, n]) => `${p} → ${n}`).join(', ')}${RESET}`
     : ''));
+console.log(`  neověřitelné: ${neoveritelne.length}`);
 console.log(`  nesouhlasí: ${nesouhlasi.length ? RED : ''}${nesouhlasi.length}${RESET}`);
-console.log(`  ${DIM}neověřitelné: ${neoveritelne.length}${RESET}`);
 
 if (neoveritelne.length > 0) {
-  console.log(`\n${DIM}Neověřitelné (není to nález — jen se to nedalo posoudit):${RESET}`);
-  for (const { zaznam, duvod } of neoveritelne.slice(0, 10)) {
-    console.log(`${DIM}  ${zaznam.sessionId}: ${duvod}${RESET}`);
+  console.log(`\n${DIM}Neověřitelné — NENÍ to nález o zásahu:${RESET}`);
+  const duvody = {};
+  for (const { duvod } of neoveritelne) duvody[duvod] = (duvody[duvod] || 0) + 1;
+  for (const [duvod, pocet] of Object.entries(duvody)) {
+    console.log(`${DIM}  ${pocet}× ${duvod}${RESET}`);
   }
-  if (neoveritelne.length > 10) console.log(`${DIM}  … a dalších ${neoveritelne.length - 10}${RESET}`);
 }
 
 if (nesouhlasi.length === 0) {
-  console.log(`\n${GREEN}✔ Všechny ověřitelné otisky souhlasí.${RESET}`);
-  console.log(`${DIM}  Znamená to, že uložený výsledek odpovídá tomu, co se tehdy`);
-  console.log('  změřilo a zapsalo — a že spis u těchhle běhů nebude tvrdit');
-  console.log(`  „Otisk souhlasí: NE".${RESET}\n`);
+  console.log(`\n${GREEN}✔ Žádný záznam neukazuje na zásah.${RESET}`);
+  if (neoveritelne.length > 0) {
+    console.log(`${DIM}  U ${neoveritelne.length} záznamů otisk výsledku nedokládá nic —`);
+    console.log('  pocházejí z doby, kdy nástroj verzi předpisu nezaznamenával.');
+    console.log('  Jejich neporušenost dokládá řetězení a ukotvení, ne otisk.');
+    console.log(`  Spis to u nich uvádí.${RESET}`);
+  }
+  console.log('');
   process.exit(0);
 }
 
-console.log(`\n${RED}✘ ${nesouhlasi.length} otisků nesouhlasí:${RESET}\n`);
-for (const { zaznam, schema, prepocteny } of nesouhlasi.slice(0, 20)) {
-  console.log(`  ${zaznam.sessionId}  ${DIM}(${zaznam.recordedAt}, předpis v${schema})${RESET}`);
-  console.log(`    zapsáno:    ${zaznam.resultDigest}`);
-  console.log(`    přepočteno: ${prepocteny}`);
+console.log(`\n${RED}✘ ${nesouhlasi.length} záznamů ukazuje na rozpor:${RESET}\n`);
+for (const { zaznam, duvod } of nesouhlasi.slice(0, 20)) {
+  console.log(`  ${zaznam.sessionId}  ${DIM}(${zaznam.recordedAt}, schema ${zaznam.schema ?? 1})${RESET}`);
+  console.log(`    zapsáno: ${zaznam.resultDigest}`);
+  console.log(`    ${DIM}${duvod}${RESET}`);
 }
 if (nesouhlasi.length > 20) console.log(`  … a dalších ${nesouhlasi.length - 20}`);
 
-console.log(`\n${RED}Dvě možné příčiny a je potřeba je rozlišit:${RESET}`);
-console.log('  1. Data session se opravdu změnila po zápisu do záznamu.');
-console.log('  2. Změnil se předpis otisku (`auditResultOf`) bez zvýšení');
-console.log('     `AKTUALNI_SCHEMA_OTISKU`. Pak je to NAŠE chyba a spis by');
-console.log('     zákazníka obvinil z manipulace, kterou neudělal.\n');
+console.log(`\n${RED}Tyhle záznamy nesou jednoznačnou verzi předpisu, takže rozpor`);
+console.log('má oporu: data session se od zápisu do záznamu změnila.');
+console.log(`Známé předpisy: ${PREDPISY_OTISKU.map((p) => p.id).join(', ')}${RESET}\n`);
 process.exit(1);
