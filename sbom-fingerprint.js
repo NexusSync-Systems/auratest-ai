@@ -89,6 +89,43 @@ async function readCapped(response, limit = MAX_SOURCE_MAP_BYTES) {
  *
  * `npm` je název balíčku v registru npm, aby šel použít v dotazu do OSV.
  */
+export /**
+ * Vnitřní pole virtuálního uzlu Preactu po minifikaci.
+ *
+ * Preact si vlastní vnitřní vlastnosti přejmenovává přes `mangle.json`
+ * na `__k`, `__b`, `__e` — a ty v bundlu PŘEŽIJÍ, protože to jsou názvy
+ * vlastností, ne lokálních proměnných.
+ *
+ * Změřeno na vzorcích v `tests/fixtures/sbom/`: sedí na všech třech
+ * preactových (aplikace, preact/compat, distribuce z CDN) a na žádném
+ * reactovém — včetně `@preact/signals-react`, což je knihovna PRO React.
+ * Řetězec „preact" se použít NEDÁ: v produkčním bundlu nepřežije
+ * a zároveň sedí na `preact-signals`. Na tom ztroskotal první pokus.
+ */
+const PREACT_VNITRNI = /__k[\s\S]{0,400}?__b[\s\S]{0,400}?__e/;
+
+/**
+ * Selekce z `d3-selection` — modulu, který `d3-scale` neobsahuje.
+ *
+ * `selectAll` i `selectChild` jsou metody na prototypu, takže je
+ * minifikace nepřejmenuje. Změřeno: sedí na kompletním d3 (aplikace
+ * i distribuce) a na žádném vzorku d3-scale.
+ *
+ * `timeFormat` se použít NEDÁ, i když to tak vypadá: `d3-scale` závisí
+ * na `d3-time-format` a volá ho ve `scaleTime`, takže je ve své vlastní
+ * distribuci. Přesně tam první pokus o opravu misfiroval.
+ */
+const D3_SELEKCE = /\bselectAll\b[\s\S]{0,6000}?\bselectChild\b/;
+
+/**
+ * Sentinel `implicit` z `d3-scale` (`scaleOrdinal`).
+ *
+ * Je to řetězcový literál uvnitř `Symbol("implicit")`, takže minifikaci
+ * přežije — na rozdíl od názvů exportů `scaleLinear`/`scaleOrdinal`,
+ * které se v aplikačním bundlu přejmenují a nenajdou.
+ */
+const D3SCALE_IMPLICIT = /Symbol\(\s*["']implicit["']\s*\)/;
+
 export const LIBRARY_SIGNATURES = [
   {
     name: 'jQuery',
@@ -102,9 +139,31 @@ export const LIBRARY_SIGNATURES = [
     presence: [/jQuery\.fn\.init/, /\bjQuery\b[\s\S]{0,40}\bprototype\b/],
   },
   {
+    name: 'Preact',
+    npm: 'preact',
+    type: 'Framework',
+    // Bez verzních vzorů: v distribuci preactu žádný řetězec s verzí není
+    // (změřeno). Vymyslet vzor by znamenalo tvrdit verzi, kterou nikdo
+    // nenaměřil — a ta by se poslala do OSV.
+    version: [],
+    presence: [PREACT_VNITRNI],
+  },
+  {
     name: 'React',
     npm: 'react',
     type: 'Framework',
+    // NEPLATÍ, když je na stránce Preact.
+    //
+    // OVĚŘENÁ VADA: `preact/compat` používá tytéž symboly jako React
+    // (`react.element`), protože jeho účelem je být jeho náhradou. Web na
+    // Preactu tak dostal do soupisu „React" a `cra-vuln-audit` se ptal
+    // OSV na CVE balíčku, který na webu vůbec není.
+    //
+    // Vylučuje se podle vnitřních polí Preactu, NE podle řetězce „preact":
+    // ten v produkčním bundlu nepřežije a zároveň sedí na
+    // `@preact/signals-react`, tedy na knihovně PRO React. Použít ho
+    // znamenalo umlčet skutečný React a vyrobit Preact, který tam není.
+    vylucuje: [PREACT_VNITRNI],
     // POZOR na vzory typu `"react": "^18.2.0"` — to je DEKLAROVANÝ ROZSAH
     // z package.json, ne nasazená verze. `^18.2.0` se běžně resolvuje na
     // 18.3.1, takže dotaz do OSV na 18.2.0 mohl vyrobit FAIL na CVE, které
@@ -204,16 +263,33 @@ export const LIBRARY_SIGNATURES = [
     presence: [/getbootstrap\.com/i, /\bbs-toggle\b/, /\bdata-bs-[a-z]+\b/],
   },
   {
-    name: 'D3',
+    name: 'D3 (kompletní balík)',
     npm: 'd3',
     type: 'Library',
-    // Vzory musí sedět na MINIFIKOVANÝ bundle. `d3.select` minifikace
-    // přejmenuje a řetězec „d3-selection" v distribuci není — původní
-    // signatura proto nesedla ani na neminifikovaný d3.js.
-    // `var version = "7.9.0"` v souboru naopak je, stejně jako charakteristické
-    // názvy exportů, které se jako řetězce zachovají.
-    version: [/\bversion\s*=\s*["'](\d+\.\d+\.\d+)["'][\s\S]{0,200}?\bscaleLinear\b/],
-    presence: [/\bscaleLinear\b[\s\S]{0,400}?\bscaleOrdinal\b/, /\bd3\.(?:select|scaleLinear)\b/],
+    // Vědomě bez verzních vzorů. `version = "7.9.0"` v distribuci sice
+    // je, ale přes půl megabajtu od `scaleLinear` — původní vzor s oknem
+    // 200 znaků na něj nikdy nesedl a komentář u něj tvrdil opak.
+    // Presence-only je poctivý stav: knihovna tu je, verzi neznáme.
+    version: [],
+    presence: [D3_SELEKCE, /\bd3\.(?:select|scaleLinear)\b/],
+  },
+  {
+    // OVĚŘENÁ VADA: `scaleLinear` + `scaleOrdinal` jsou exporty modulu
+    // `d3-scale`, ne důkaz kompletního balíčku. Web, který si bundluje
+    // jen ten modul, se hlásil jako `d3` — jiný balíček s jinou historií
+    // zranitelností.
+    //
+    // Kompletní `d3` modul `d3-scale` obsahuje, takže u něj sedí obě
+    // signatury a v soupisu jsou obě položky. To je pravdivé a pro
+    // kusovník správné: obě komponenty tam doopravdy jsou.
+    name: 'd3-scale',
+    npm: 'd3-scale',
+    type: 'Library',
+    // Číslo v dosahu patří kompletnímu balíčku (7.x); d3-scale je na 4.x.
+    // Dotaz do OSV na d3-scale@7.9.0 by se ptal na něco, co nikdy
+    // neexistovalo.
+    version: [],
+    presence: [D3SCALE_IMPLICIT],
   },
 ];
 
@@ -337,6 +413,14 @@ export function fingerprintScript(content) {
 
   const results = [];
   for (const signature of LIBRARY_SIGNATURES) {
+    // Vylučující důkaz se posuzuje PRVNÍ.
+    //
+    // Některé knihovny jsou navržené tak, aby se jiné podobaly
+    // (`preact/compat`). Sdílená stopa pak dokládá „jedna z těch dvou",
+    // ne konkrétní balíček — a položka v soupisu je tvrzení o konkrétním
+    // balíčku, ze kterého se odvozuje dotaz na jeho zranitelnosti.
+    if ((signature.vylucuje || []).some((pattern) => pattern.test(text))) continue;
+
     let version = null;
     let evidence = null;
 

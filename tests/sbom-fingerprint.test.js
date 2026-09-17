@@ -127,13 +127,16 @@ describe('fingerprintScript — falešné poplachy', () => {
     expect(fingerprintScript(real).find((f) => f.name === 'Lodash')?.version).toBe('4.17.21');
   });
 
-  it('D3 se pozná i v minifikovaném bundlu', () => {
-    // Původní vzory (`d3.select`, `d3-selection`) nesedly ani na
-    // neminifikovaný d3.js — signatura byla mrtvá.
+  it('scaleLinear + scaleOrdinal NENÍ důkaz kompletního d3', () => {
+    // Tenhle test dřív tvrdil opak a cementoval tím ověřenou vadu:
+    // `scaleLinear` a `scaleOrdinal` jsou exporty modulu `d3-scale`,
+    // takže web, který bundluje jen ten modul, dostal do soupisu `d3` —
+    // jiný balíček s jinou historií zranitelností.
+    //
+    // Co který vzorek doopravdy vrací, hlídá `sbom-fixtures.test.js`
+    // proti skutečným bundlům. Tady jde jen o záměr vzoru.
     const bundle = 'var version="7.9.0";function scaleLinear(){}function scaleOrdinal(){}';
-    const hit = fingerprintScript(bundle).find((f) => f.name === 'D3');
-    expect(hit).toBeDefined();
-    expect(hit.version).toBe('7.9.0');
+    expect(fingerprintScript(bundle).find((f) => f.npm === 'd3')).toBeUndefined();
   });
 
   it('běžný aplikační kód nevypadá jako knihovna', () => {

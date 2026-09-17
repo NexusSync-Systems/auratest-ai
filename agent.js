@@ -3274,7 +3274,13 @@ export async function auditCRA_SBOM(url) {
         source: 'runtime-global',
         findings: detectedLibraries.map((lib) => ({
           ...lib,
-          npm: NPM_PACKAGE_NAMES[lib.name] || lib.name.toLowerCase(),
+          // ŽÁDNÉ odvozování souřadnice z názvu pro člověka.
+          //
+          // `lib.name.toLowerCase()` z „React DOM" vyrobilo „react dom",
+          // což není balíček. OSV na takový dotaz nic nevrátí a knihovna
+          // se započítala mezi prověřené — „bez nálezu" z dotazu, který
+          // nemohl nikdy nic najít, vypadá jako provedená kontrola.
+          npm: NPM_PACKAGE_NAMES[lib.name] || null,
           version: normalizeSemver(lib.version),
           confidence: normalizeSemver(lib.version) ? 'version-detected' : 'presence-only',
           evidence: `window.${lib.name}`,
@@ -4145,9 +4151,21 @@ export async function auditCRAVulnerabilities(url) {
 
   for (const lib of queue) {
     // `lib.npm` doplňuje fingerprinting i source mapa; tabulka je fallback
-    // pro nálezy z runtime globálů.
-    const pkgName = lib.npm || NPM_PACKAGE_NAMES[lib.name] || lib.name.toLowerCase();
+    // pro nálezy z runtime globálů. Když souřadnici neznáme, NEODVOZUJEME
+    // ji z názvu — dotaz na vymyšlený balíček vrátí prázdno a to se pak
+    // čte jako „prověřeno, bez nálezu".
+    const pkgName = lib.npm || NPM_PACKAGE_NAMES[lib.name] || null;
     const version = normalizeSemver(lib.version);
+
+    if (!pkgName) {
+      skipped.push({
+        library: lib.name,
+        reason: 'Ke knihovně není známý název balíčku v npm, takže se na CVE zeptat nelze. '
+          + 'Odvodit ho z názvu by znamenalo dotázat se na balíček, který nemusí existovat, '
+          + 'a prázdnou odpověď číst jako „bez nálezu".',
+      });
+      continue;
+    }
 
     // Dřív se filtrovalo jen na přesnou rovnost s 'detekováno', takže React
     // s verzí 'detekováno (přes DevTools)' filtrem prošel a do OSV se poslal
