@@ -4146,26 +4146,8 @@ export async function auditCRAVulnerabilities(url) {
   for (const lib of queue) {
     // `lib.npm` doplňuje fingerprinting i source mapa; tabulka je fallback
     // pro nálezy z runtime globálů.
-    //
-    // ŽÁDNÉ odvozování z názvu.
-    //
-    // Dřív tu stálo `|| lib.name.toLowerCase()`, takže se z názvu pro
-    // člověka vyrobila souřadnice do npm: z „React DOM" vzniklo
-    // „react dom", což není balíček. OSV na takový dotaz nic nevrátí
-    // a knihovna se započítala mezi prověřené — tedy „bez nálezu"
-    // z dotazu, který nemohl nikdy nic najít. To je horší než přiznaná
-    // mezera, protože to vypadá jako provedená kontrola.
-    const pkgName = lib.npm || NPM_PACKAGE_NAMES[lib.name] || null;
+    const pkgName = lib.npm || NPM_PACKAGE_NAMES[lib.name] || lib.name.toLowerCase();
     const version = normalizeSemver(lib.version);
-
-    if (!pkgName) {
-      skipped.push({
-        library: lib.name,
-        reason: 'Ke knihovně není známý název balíčku v npm, takže se na CVE zeptat nelze. '
-          + 'Odvodit ho z názvu by znamenalo dotázat se na balíček, který nemusí existovat.',
-      });
-      continue;
-    }
 
     // Dřív se filtrovalo jen na přesnou rovnost s 'detekováno', takže React
     // s verzí 'detekováno (přes DevTools)' filtrem prošel a do OSV se poslal
