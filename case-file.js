@@ -717,7 +717,13 @@ ${
 <meta charset="utf-8">
 <title>Spis auditů — AuraGuard</title>
 <style>
-  @page { size: A4; margin: 18mm 16mm; }
+  /* Okraje řídí OKRAJE_SPISU v case-file-pdf.js, ne tady. Playwright
+     posílá Chromiu explicitní okraje z page.pdf() a preferCSSPageSize
+     false, takže @page margin by se neuplatnilo — a duplikát by se
+     rozešel při první změně. Velikost stránky tu zůstává kvůli náhledu
+     v prohlížeči. (Pozor: tenhle blok je uvnitř šablonového literálu,
+     takže sem nepatří zpětné apostrofy.) */
+  @page { size: A4; }
   body { font: 10.5pt/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #111; }
   h1 { font-size: 18pt; margin: 0 0 4pt; }
   h2 { font-size: 13pt; margin: 18pt 0 6pt; border-bottom: 1px solid #ddd; padding-bottom: 3pt; }

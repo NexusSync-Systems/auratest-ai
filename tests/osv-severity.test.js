@@ -30,7 +30,17 @@ describe('severityOf', () => {
     expect(severityOf({ database_specific: { severity: 'VELMI ZLÉ' } }).label).toBeNull();
   });
 
-  it('číselné skóre převede podle prahů FIRST', () => {
+  /**
+   * Číselné `score` OSV u typu `CVSS_V3` NEPOSÍLÁ — je tam vždy vektor.
+   * Kontrolní vlna to ověřila proti živému api.osv.dev a potvrdila
+   * mutací, že tahle větev v produkci nikdy neprošla; tenhle test tedy
+   * hlídal moji představu o API.
+   *
+   * Zůstává jako test PRAHŮ (`scoreToLabel`), ne jako tvrzení o tom,
+   * co OSV vrací. Tvar odpovědi OSV testuje případ níž — proti
+   * skutečným vektorům ze skutečných záznamů.
+   */
+  it('prahy FIRST: číslo na stupeň závažnosti', () => {
     const s = (score) => severityOf({ severity: [{ type: 'CVSS_V3', score }] }).label;
     expect(s(9.8)).toBe('CRITICAL');
     expect(s(7.5)).toBe('HIGH');
@@ -48,10 +58,42 @@ describe('severityOf', () => {
     expect(r.source).toMatch(/CVSS/);
   });
 
-  it('samotný vektor CVSS bez skóre závažnost neurčuje', () => {
-    // Vektor by se musel spočítat; přečíst z něj číslo nejde.
+  /**
+   * TOHLE JE TVAR, KTERÝ OSV SKUTEČNĚ POSÍLÁ.
+   *
+   * Vektory jsou z reálných záznamů (`GHSA-35jh-r3h4-6jhm` pro lodash,
+   * `GHSA-gxr4-xjj5-5px2` pro jQuery), ověřených proti živému
+   * api.osv.dev. Dřív se vektor zahodil a rozhodovala slovní hodnota,
+   * takže zranitelnost z jiného zdroje než GHSA neměla závažnost žádnou.
+   */
+  it('vektor ze skutečného záznamu OSV se spočítá', () => {
+    const lodash = severityOf({
+      severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H' }],
+    });
+    expect(lodash.label).toBe('HIGH');
+    expect(lodash.source).toMatch(/CVSS/);
+
+    const jquery = severityOf({
+      severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:L/A:N' }],
+    });
+    expect(jquery.label).toBe('MEDIUM');
+  });
+
+  it('vektor CVSS 2.0 se nepřepočítává, spadne na slovní hodnotu', () => {
+    // Jiná stupnice. Ticho je lepší než přepočet bez opory.
     const r = severityOf({
-      severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' }],
+      severity: [{ type: 'CVSS_V2', score: 'AV:N/AC:M/Au:N/C:C/I:C/A:C' }],
+      database_specific: { severity: 'MODERATE' },
+    });
+    expect(r.label).toBe('MEDIUM');
+    expect(r.source).toBe('databáze zdroje');
+  });
+
+  it('nespočitatelný vektor závažnost neurčuje — ani z čísla verze', () => {
+    // `parseFloat('3.1/AV:N/…')` by dalo 3.1, tedy LOW vycucané
+    // z čísla verze schématu.
+    const r = severityOf({
+      severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L' }],
     });
     expect(r.label).toBeNull();
   });

@@ -1,3 +1,4 @@
+import { zakladniSkore } from './cvss.js';
 /**
  * Čtení závažnosti zranitelnosti z odpovědi OSV.
  *
@@ -43,12 +44,32 @@ function scoreFromSeverityEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
   const raw = entry.score;
   if (typeof raw === 'number') return raw;
-  if (typeof raw === 'string') {
-    // Číselná podoba `"7.5"`. Vektor `"CVSS:3.1/AV:N/..."` číslo nenese.
-    const cislo = Number.parseFloat(raw);
-    if (!Number.isNaN(cislo) && !raw.startsWith('CVSS')) return cislo;
-  }
-  return null;
+  if (typeof raw !== 'string') return null;
+
+  // VEKTOR SE POČÍTÁ, NE ZAHAZUJE.
+  //
+  // Tady dřív stálo `if (!raw.startsWith('CVSS')) return cislo;` — tedy
+  // vektor se přeskočil a rozhodla slovní hodnota z `database_specific`.
+  // Kontrolní vlna ověřila proti živému api.osv.dev, že u typu `CVSS_V3`
+  // je `score` VŽDY vektorový řetězec:
+  //
+  //   GHSA-35jh-r3h4-6jhm → "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H"
+  //   GHSA-gxr4-xjj5-5px2 → "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:L/A:N"
+  //
+  // Tahle větev tedy v produkci NIKDY neprošla a závažnost se brala
+  // výhradně z `database_specific.severity`, což plní prakticky jen GHSA.
+  // Zranitelnost odjinud dostala „závažnost neuvedena", i když vektor
+  // nesla. Test přitom vracel `score: 9.8` jako číslo — moji představu
+  // o API — a v reportu to vypadalo, že CVSS čteme.
+  const zVektoru = zakladniSkore(raw);
+  if (zVektoru !== null) return zVektoru;
+
+  // Číselná podoba `"7.5"`. Vektor, který se spočítat nepodařilo
+  // (CVSS 2.0, chybějící metrika), se NEPŘEVÁDÍ na číslo — `parseFloat`
+  // na `'3.1/AV:N/…'` dá 3.1, tedy skóre vycucané z čísla verze.
+  if (raw.startsWith('CVSS')) return null;
+  const cislo = Number.parseFloat(raw);
+  return Number.isNaN(cislo) ? null : cislo;
 }
 
 const ZNAME_STUPNE = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'MODERATE', 'LOW', 'NONE']);
