@@ -3,9 +3,18 @@
  *
  * PROČ TO DÁVÁ SMYSL MĚŘIT
  * Celkový objem stránky je jedno číslo a provozovatel z něj nepozná, co
- * s tím může udělat. U cloudflare.com bylo 4 z 5 domén cizích. Věta
- * „7,76 MB" a věta „z toho 5,1 MB natáhly cizí domény" vedou k úplně
- * jinému rozhodnutí.
+ * s tím může udělat. „7,76 MB" a „z toho 5 MB natáhly jiné domény" vedou
+ * k jinému rozhodnutí než „7,76 MB, všechno vlastní".
+ *
+ * ZMĚŘENO na www.cloudflare.com (2026-09-17): 7,75 MB na vlastních
+ * doménách (2), 0,01 MB na jiných (3) — tedy 0,1 %. Cloudflare si hostuje
+ * prakticky všechno sám. Je to užitečný protipříklad: rozpad nemá
+ * předpokládat, že cizích domén je hodně.
+ *
+ * (První verze tohohle komentáře tu měla „z toho 5,1 MB natáhly cizí
+ * domény" jako ilustraci a četlo se to jako naměřený údaj. Nebyl.
+ * V souboru, jehož smysl je netvrdit víc, než co se změřilo, je vymyšlené
+ * číslo v komentáři stejná chyba jako v kódu — jen se hůř hledá.)
  *
  * CO TO MĚŘÍ A CO NE — a tohle je ta důležitá část
  * Měří se DOMÉNA, ne VLASTNICTVÍ. Z jednoho skenu nejde zjistit, kdo
