@@ -189,8 +189,13 @@ export const POPIS_MODELU = {
   // Co přesně se sčítá. Bez toho čtenář neví, jestli „1,23 MB" je totéž
   // číslo, jaké mu ukáže panel Network v prohlížeči.
   coSePocita: [
-    'bajty na drátě (komprimované) včetně hlaviček odpovědi — totéž, co '
-      + 'prohlížeč hlásí jako transfer size',
+    'bajty těla odpovědi tak, jak je přijal prohlížeč — tedy '
+      + 'komprimované, je-li odpověď komprimovaná (`responseBodySize` '
+      + 'z Playwrightu)',
+    'u odpovědí, které posílají i `content-length`, bývá toto číslo '
+      + 'o jednotky procent vyšší — zahrnuje režii přenosu; hlavičky '
+      + 'odpovědi se proto nepřičítají zvlášť, aby se režie nezapočetla '
+      + 'dvakrát',
     'bajty požadavku (hlavičky a tělo odesílané k serveru) se nepočítají; '
       + 'stejně je nepočítá ani HTTP Archive, ze kterého je odvozená stupnice',
     'odpověď, u níž prohlížeč velikost neohlásí (mimo jiné trefa do '

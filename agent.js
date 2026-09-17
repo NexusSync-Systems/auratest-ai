@@ -2994,18 +2994,40 @@ export async function auditGreenAndResidency(url) {
       mereni.push((async () => {
         try {
           const sizes = await request.sizes();
-          // `transferSize` počítá Playwright sám jako
-          // `responseHeadersSize + responseBodySize`, případně bere
-          // hodnotu hlášenou Chromiem. Je to totéž, co ukáže DevTools.
-          const prenos = sizes?.transferSize;
-          // Pozor na to, CO znamená nula.
+          // MĚŘÍ SE `responseBodySize`. Nic jiného.
+          //
+          // První verze téhle opravy sahala po `sizes().transferSize`.
+          // To pole ve veřejném API NEEXISTUJE: `types.d.ts:20627-20649`
+          // slibuje čtyři pole a `transferSize` mezi nimi není. Je jen
+          // v interním `_sizes()`, které jich vrací pět, a obal jedno
+          // zahazuje. `!Number.isFinite(undefined)` je pravda, takže
+          // KAŽDÝ požadavek padal mezi nezměřené — ostrý běh proti
+          // cloudflare.com vrátil „změřeno 0, nezměřeno 140".
+          //
+          // Sonda `scripts/probe-sizes.mjs` to změřila na 280 požadavcích
+          // ve dvou průchodech: `transferSize` bylo undefined u všech,
+          // `responseBodySize` kladné u 140/140 s route ochranou.
+          const prenos = sizes?.responseBodySize;
+
+          // `responseHeadersSize` se NEPŘIČÍTÁ.
+          //
+          // Sonda ukázala, že při zapnutém odchytávání požadavků (a to
+          // je náš případ, `guardNavigation` instaluje route na kontextu)
+          // hlásí Playwright `responseHeadersSize: 0` u všech 140
+          // požadavků, zatímco `responseBodySize` u dvou odpovědí
+          // s `content-length` a bez komprese vyšlo nad tu hodnotu
+          // (17 836 → 18 291 a 19 524 → 21 777). Režie je tedy už
+          // v tom čísle započtená a přičítat hlavičky by ji zdvojilo.
+
+          // Pozor na to, CO znamená nula a záporné číslo.
           //
           // `_sizes()` při neznámé velikosti těla nevrací −1 ani NaN —
           // sáhne po `content-length`, a když ani ten není, dosadí 0.
-          // U odpovědi z cache Chromium hlásí `encodedDataLength === 0`,
-          // takže `encodedBodySize` vyjde záporné a `transferSize` s ním.
-          // Obojí je „nevíme", ne „přeneslo se nic", a fail-closed to
-          // patří mezi nezměřené.
+          // Když Chromium ohlásí `encodedDataLength === 0` (trefa do
+          // cache), vyjde `encodedBodySize` záporné; sonda to zachytila
+          // u 4 ze 137 požadavků v průchodu bez ochrany. Obojí znamená
+          // „nevíme", ne „přeneslo se nic", a fail-closed to patří mezi
+          // nezměřené.
           if (!Number.isFinite(prenos) || prenos <= 0) {
             nezmerenychPozadavku += 1;
             return;

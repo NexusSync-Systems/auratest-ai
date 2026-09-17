@@ -222,7 +222,7 @@ describe('měřicí cesta', () => {
       mereni.push((async () => {
         try {
           const sizes = await request.sizes();
-          const prenos = sizes?.transferSize;
+          const prenos = sizes?.responseBodySize;
           if (!Number.isFinite(prenos) || prenos <= 0) { nezmerenych += 1; return; }
           totalBytes += prenos;
           zmerenych += 1;
@@ -236,7 +236,20 @@ describe('měřicí cesta', () => {
     };
   }
 
-  const req = (transferSize) => ({ sizes: async () => ({ transferSize }) });
+  /**
+   * Napodobenina vrací PŘESNĚ ta pole, která má veřejné API
+   * (`types.d.ts:20627-20649`). Kdyby tu bylo `transferSize`, test by
+   * cementoval pole, které Playwright nevrací — a přesně na tom
+   * ostrý běh ztroskotal: „změřeno 0 požadavků, nezměřeno 140".
+   */
+  const req = (responseBodySize) => ({
+    sizes: async () => ({
+      requestBodySize: 0,
+      requestHeadersSize: 400,
+      responseBodySize,
+      responseHeadersSize: 0,
+    }),
+  });
 
   test('bez čekání na sizes() se součet čte podtečený', async () => {
     // Přesně ta chyba: `sizes()` je kolo do prohlížeče, posluchač je async
@@ -252,10 +265,25 @@ describe('měřicí cesta', () => {
     expect(s.vysledek()).toEqual({ totalBytes: 3000, zmerenych: 2, nezmerenych: 0 });
   });
 
-  test('nulový nebo záporný transferSize je NEZMĚŘENO, ne nula', async () => {
+  test('pole, které API nevrací, nesmí shodit celé měření', async () => {
+    // Regrese na chybu, kvůli které ostrý běh nezměřil vůbec nic.
+    // `sizes()` vrací čtyři pole; `transferSize` mezi nimi NENÍ.
+    const ctx = fakeContext();
+    const s = sber(ctx);
+    ctx.emit('requestfinished', req(50_000));
+    await Promise.allSettled(s.mereni);
+    expect(s.vysledek()).toEqual({ totalBytes: 50_000, zmerenych: 1, nezmerenych: 0 });
+
+    const klice = Object.keys(await req(1).sizes());
+    expect(klice).not.toContain('transferSize');
+    expect(klice).toContain('responseBodySize');
+  });
+
+  test('nulový nebo záporný responseBodySize je NEZMĚŘENO, ne nula', async () => {
     // `_sizes()` při neznámé velikosti nevrací −1 ani NaN: sáhne po
     // `content-length` a jinak dosadí 0. U trefy do cache hlásí Chromium
-    // `encodedDataLength === 0`, takže `transferSize` vyjde záporný.
+    // `encodedDataLength === 0`, takže `responseBodySize` vyjde záporný —
+    // sonda to na ostrém webu zachytila u 4 ze 137 požadavků.
     // Obojí znamená „nevíme" a fail-closed to nesmí skončit v součtu.
     const ctx = fakeContext();
     const s = sber(ctx);
