@@ -89,6 +89,15 @@ async function readCapped(response, limit = MAX_SOURCE_MAP_BYTES) {
  *
  * `npm` je název balíčku v registru npm, aby šel použít v dotazu do OSV.
  */
+/**
+ * Exporty z modulů `d3`, které NEJSOU součástí `d3-scale`.
+ *
+ * Rozlišují kompletní balíček od samostatného modulu. Sdílí je obě
+ * signatury, aby se nemohly rozejít — jedna je používá jako důkaz pro,
+ * druhá jako důkaz proti.
+ */
+const D3_JINE_MODULY = /\b(?:selectAll|csvParse|forceSimulation|geoPath|interpolateRgb|timeFormat|scaleBand\b[\s\S]{0,200}?\barc)\b/;
+
 export const LIBRARY_SIGNATURES = [
   {
     name: 'jQuery',
@@ -102,9 +111,34 @@ export const LIBRARY_SIGNATURES = [
     presence: [/jQuery\.fn\.init/, /\bjQuery\b[\s\S]{0,40}\bprototype\b/],
   },
   {
+    // Preact MUSÍ stát před Reactem: `preact/compat` je navržený tak, aby
+    // se Reactu podobal, a část jeho stop je od Reactu k nerozeznání.
+    name: 'Preact',
+    npm: 'preact',
+    type: 'Framework',
+    version: [/\bpreact\b[\s\S]{0,80}?VERSION\s*[:=]\s*["'](\d+\.\d+\.\d+)["']/i],
+    // Stopy, které React nemá: vlastní vnitřní pole virtuálního uzlu
+    // (`__k`, `__b`, `_dirty`) a jmenovka v devtools.
+    presence: [
+      /\bpreact(?:\/compat|\/hooks)?\b/,
+      /__PREACT_DEVTOOLS__/,
+      /\bpreactAttr\b/,
+    ],
+  },
+  {
     name: 'React',
     npm: 'react',
     type: 'Framework',
+    // NEPLATÍ, když je na stránce Preact.
+    //
+    // Ověřená vada: `preact/compat` se hlásí devtools stejně jako React
+    // (`__REACT_DEVTOOLS_GLOBAL_HOOK__`) a používá tytéž symboly
+    // (`react.element`), protože to je jeho účel — být náhradou Reactu.
+    // Web na Preactu tedy dostal do soupisu „React", a `cra-vuln-audit`
+    // se pak ptal OSV na CVE balíčku `react`, který na webu vůbec není.
+    // Nález o zranitelnosti knihovny, kterou zákazník nepoužívá, je
+    // tvrzení bez opory stejně jako zamlčený nález.
+    vylucuje: [/\bpreact\b/i, /__PREACT_DEVTOOLS__/],
     // POZOR na vzory typu `"react": "^18.2.0"` — to je DEKLAROVANÝ ROZSAH
     // z package.json, ne nasazená verze. `^18.2.0` se běžně resolvuje na
     // 18.3.1, takže dotaz do OSV na 18.2.0 mohl vyrobit FAIL na CVE, které
@@ -204,16 +238,38 @@ export const LIBRARY_SIGNATURES = [
     presence: [/getbootstrap\.com/i, /\bbs-toggle\b/, /\bdata-bs-[a-z]+\b/],
   },
   {
-    name: 'D3',
+    name: 'D3 (kompletní balík)',
     npm: 'd3',
     type: 'Library',
-    // Vzory musí sedět na MINIFIKOVANÝ bundle. `d3.select` minifikace
-    // přejmenuje a řetězec „d3-selection" v distribuci není — původní
-    // signatura proto nesedla ani na neminifikovaný d3.js.
-    // `var version = "7.9.0"` v souboru naopak je, stejně jako charakteristické
-    // názvy exportů, které se jako řetězce zachovají.
+    // Kompletní balíček `d3` je sloučenina ~30 modulů. Pozná se podle
+    // exportů z JINÝCH modulů, než je `d3-scale` — jmenný prostor `d3.*`
+    // je v UMD sestavení, `selectAll`/`csvParse`/`forceSimulation` přežijí
+    // i v ESM bundlu.
+    //
+    // Číslo `version = "7.9.0"` je verze KOMPLETNÍHO balíčku, proto smí
+    // stát jen tady. Přiřadit ho modulu `d3-scale` by byla vymyšlená
+    // verze — ten je na 4.x a dotaz do OSV na d3-scale@7.9.0 by se ptal
+    // na něco, co nikdy neexistovalo.
     version: [/\bversion\s*=\s*["'](\d+\.\d+\.\d+)["'][\s\S]{0,200}?\bscaleLinear\b/],
-    presence: [/\bscaleLinear\b[\s\S]{0,400}?\bscaleOrdinal\b/, /\bd3\.(?:select|scaleLinear)\b/],
+    presence: [D3_JINE_MODULY, /\bd3\.(?:select|scaleLinear)\b/],
+  },
+  {
+    // Ověřená vada: `scaleLinear` + `scaleOrdinal` jsou exporty modulu
+    // `d3-scale`. Web, který si bundluje POUZE ten modul, se hlásil jako
+    // `d3` — jiný balíček s jinou historií zranitelností, a
+    // `cra-vuln-audit` se pak ptal OSV na CVE balíčku, který na webu není.
+    //
+    // `vylucuje` zařídí, že kompletní balíček se nehlásí dvakrát: tam
+    // sedí signatura výš a je přesnější.
+    name: 'd3-scale',
+    npm: 'd3-scale',
+    type: 'Library',
+    vylucuje: [D3_JINE_MODULY, /\bd3\.(?:select|scaleLinear)\b/],
+    // Vědomě bez verzních vzorů: jediné číslo v dosahu patří kompletnímu
+    // balíčku. Bez verze se na CVE zeptat nejde a `cra-vuln-audit` to
+    // vypíše mezi neověřenými — což je pravda, ne mezera.
+    version: [],
+    presence: [/\bscaleLinear\b[\s\S]{0,400}?\bscaleOrdinal\b/],
   },
 ];
 
@@ -337,6 +393,14 @@ export function fingerprintScript(content) {
 
   const results = [];
   for (const signature of LIBRARY_SIGNATURES) {
+    // Vylučující důkaz se posuzuje PRVNÍ.
+    //
+    // Některé knihovny jsou navržené tak, aby se jiné podobaly
+    // (`preact/compat`). Sdílená stopa pak dokládá „jedna z těchhle
+    // dvou", ne konkrétní balíček — a položka v soupisu je tvrzení
+    // o konkrétním balíčku, ze kterého se odvozují dotazy na CVE.
+    if ((signature.vylucuje || []).some((pattern) => pattern.test(text))) continue;
+
     let version = null;
     let evidence = null;
 
