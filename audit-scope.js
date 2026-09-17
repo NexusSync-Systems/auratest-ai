@@ -122,6 +122,26 @@ export function verdictsForAudit(slug, result) {
       //
       // Data pro všech dvanáct přitom existovala; jen se do spisu
       // nedostala.
+      // NEPRŮKAZNÉ MĚŘENÍ NESMÍ VYROBIT DVANÁCT VERDIKTŮ.
+      //
+      // Skener nově vrací `navigationError`, když server odpoví chybově.
+      // Bez téhle pojistky by se `nis2: { hsts: null, csp: null, … }`
+      // protáhlo funkcí `hlavicka` a do spisu by se vytisklo dvanáct
+      // řádků, které vypadají jako výsledek kontroly. `null` u každého
+      // z nich je sice pravdivé, ale bez důvodu — čtenář nepozná, že se
+      // neměřilo vůbec nic.
+      if (result.navigationError) {
+        return AUDIT_RULE_SCOPE['analyze-nis2'].map((ruleId) => ({
+          key: ruleId,
+          ruleRef: ruleRef(ruleId),
+          label: ruleId,
+          ok: null,
+          rationale: `Měření neproběhlo: ${result.navigationError} `
+            + 'Hlavičky ani TLS se neposuzovaly; z tohoto skenu neplyne '
+            + 'splnění ani porušení.',
+        }));
+      }
+
       const nis2 = result.nis2 || {};
       const tls = result.tls || {};
 

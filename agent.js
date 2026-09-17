@@ -7,7 +7,7 @@ import geoip from 'geoip-lite';
 import { assertPublicHttpUrl, resolvePublicHttpTarget, guardNavigation } from './ssrf-guard.js';
 import { fetchPripnute } from './safe-fetch.js';
 import { vyhodnotFinish, UKONCENI, popisUkonceni } from './finish-policy.js';
-import { popisHttpChyby, popisHttpChybyBehu } from './http-status.js';
+import { popisHttpChyby, popisHttpChybyBehu, navigujAOver } from './http-status.js';
 import { jeZruseny, nalezSitoveChyby, poznamkaZruseneho } from './network-findings.js';
 import { vytvorChaosHandler, vyhodnotChaos } from './chaos-run.js';
 import { bezpecnePrvky, zamlcenychPrvku, vytvorZnacku, obalDataZeStranky, obalStavStranky, pokynKDatumZeStranky } from './prompt-safety.js';
@@ -2450,18 +2450,7 @@ export async function auditAccessibility(url) {
     // „BEZ NÁLEZU" pro WCAG 2.1 AA o webu, který se vůbec nezobrazil.
     //
     // Konvence existovala už v `auditNIS2AndPQC`, jen se sem nepřevzala.
-    let navigationError = null;
-    const response = await page
-      .goto(url, { waitUntil: 'networkidle', timeout: 30000 })
-      .catch((err) => { navigationError = err.message; return null; });
-
-    if (!navigationError) {
-      if (!response) {
-        navigationError = 'Server neodpověděl.';
-      } else if (!response.ok()) {
-        navigationError = `Server odpověděl ${response.status()}.`;
-      }
-    }
+    const { navigationError } = await navigujAOver(page, url);
 
     if (navigationError) {
       // Vrací se výsledek, ne výjimka: neprůkazné měření je legitimní
@@ -2564,8 +2553,51 @@ export async function auditNIS2AndPQC(url) {
     // nikdy neawaitovala: `pqc.secure` tak bylo vždy true (i na čistém HTTP)
     // a `protocol` undefined → každý web včetně TLS 1.3 dostal hlášku
     // "Zastaralý protokol!".
-    const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    if (!response) throw new Error('Server nevrátil žádnou odpověď.');
+    // CHYBOVÁ STRÁNKA NENÍ MĚŘENÁ APLIKACE.
+    //
+    // Tenhle skener posuzoval jen `!response`, stav odpovědi ne — a jako
+    // jediný z osmi nevracel `navigationError` vůbec. Web za bot-ochranou
+    // vrátí 403 blokovací stránku s hlavičkami CDN, ne zákazníka.
+    // Dvanáct pravidel z `AUDIT_RULE_SCOPE['analyze-nis2']` se pak
+    // vyhodnotilo proti ní a `verdictsForAudit` z toho udělal `ok: false`
+    // řádky do neměnného záznamu. Zákazník, který CSP nastavenou MÁ,
+    // dostal ve spisu prokázané porušení — tedy nález na webu, který je
+    // v pořádku, ne jen neprůkazný výsledek.
+    const { response, navigationError } = await navigujAOver(page, url, {
+      waitUntil: 'domcontentloaded',
+    });
+
+    if (navigationError) {
+      // Vrací se výsledek, ne výjimka: neprůkazné měření je legitimní
+      // zjištění a spis ho musí umět vykázat. Verdikty zůstávají `null`,
+      // ne `false` — o hlavičkách zákazníka nevíme nic.
+      return {
+        success: true,
+        url,
+        navigationError,
+        nis2: {
+          isCompliant: null,
+          hsts: null,
+          csp: null,
+          xContentTypeOptions: null,
+          xFrameOptions: null,
+          referrerPolicy: null,
+          permissionsPolicy: null,
+          missingHeaders: [],
+          weakHeaders: [],
+          tlsFindings: [],
+          scope: `Měření neproběhlo: ${navigationError} Hlavičky ani TLS `
+            + 'se neposuzovaly, výsledek proto o webu neříká nic.',
+        },
+        pqc: {
+          secure: null,
+          protocol: null,
+          subjectName: null,
+          recommendation: `Nelze posoudit: ${navigationError}`,
+        },
+        tls: null,
+      };
+    }
 
     const headers = response.headers();
     const securityDetails = await response.securityDetails();
@@ -3064,7 +3096,21 @@ export async function auditGreenAndResidency(url) {
     const domainToIp = new Map();
     const domainToCdn = new Map();
 
-    page.on('response', async (response) => {
+    // POSLUCHAČ PATŘÍ NA KONTEXT — ze stejného důvodu jako `requestfinished`
+    // o pár řádků výš. Odpověď ze Service Workeru nemá rámec, Playwright
+    // ji proto na `Page` vůbec neemituje (`coreBundle.js`: `page` je v tom
+    // dispatchi `null`). Doména z PWA tak zmizela z `domainToIp`, tedy
+    // i z `locations`, `nonEULocations` a `totalDomains` — a verdikt
+    // o rezidenci pak mohl znít „všech N posouzených serverů je v EU/EHP"
+    // o skenu, který doménu mimo EU vůbec neviděl a nikde to nepřiznal.
+    //
+    // Druhý příznak téhož: `bajtuPodleDomen` (z kontextu) tu doménu má,
+    // `domainToIp` (ze stránky) ne. Dvě měření v jednom výsledku pak
+    // pracovala s různou množinou domén.
+    //
+    // `response.frame()` se v handleru nepoužívá, takže přesun nic dalšího
+    // nemění.
+    context.on('response', async (response) => {
       try {
         const headers = response.headers();
         const urlObj = new URL(response.url());
@@ -3097,15 +3143,7 @@ export async function auditGreenAndResidency(url) {
     // a dostal z nich „Eko třída: A+" a číslo emisí. To je tvrzení
     // o webu odvozené z hlášky o nedostupnosti. Totéž platí pro celou
     // sekci rezidence pod tím: umístily by se servery chybové stránky.
-    let navigationError = null;
-    const navResponse = await page
-      .goto(url, { waitUntil: 'networkidle', timeout: 30000 })
-      .catch((err) => { navigationError = err.message; return null; });
-
-    if (!navigationError) {
-      if (!navResponse) navigationError = 'Server neodpověděl.';
-      else if (!navResponse.ok()) navigationError = `Server odpověděl ${navResponse.status()}.`;
-    }
+    const { navigationError } = await navigujAOver(page, url);
 
     if (navigationError) {
       await Promise.allSettled(mereni);
@@ -4133,11 +4171,16 @@ export async function auditStrictCookies(url) {
     // a `isCompliant` z toho vyrobí `true`. Do neměnného záznamu by se
     // pak zapsalo „SPLNĚNO: trackery před souhlasem" o webu, který se
     // vůbec nepodařilo otevřít.
-    let navigationError = null;
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch((err) => {
-      navigationError = err.message;
-    });
-    
+    // Chytat jen VÝJIMKU nestačí.
+    //
+    // `page.goto()` na server vracející 503 nevyhazuje — odpověď přišla,
+    // jen je chybová. `navigationError` tedy zůstalo `null`, na chybové
+    // stránce nebyly trackery, a `isCompliant` níž vyšlo `true`. Do
+    // neměnného záznamu se zapsalo „BEZ NÁLEZU: před udělením souhlasu
+    // nebyly nalezeny trackery" o webu, který se vůbec neotevřel.
+    // Komentář nad tímhle blokem přitom tvrdil, že to je ošetřené.
+    const { navigationError } = await navigujAOver(page, url);
+
     // Počkáme 5 sekund pro jistotu (často se trackery načítají opožděně)
     await new Promise(r => setTimeout(r, 5000));
     

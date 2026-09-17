@@ -47,3 +47,43 @@ export function popisHttpChybyBehu({ baseline, hlavni } = {}) {
   if (hlavni) return `Hlavní běh: ${hlavni}`;
   return null;
 }
+
+/**
+ * Navigace a posouzení odpovědi v jednom — aby to nikdo nepsal znovu.
+ *
+ * PROČ TAHLE FUNKCE PŘIBYLA
+ * `popisHttpChyby` existovalo, ale volalo ho jen pár skenerů. Ostatní si
+ * psaly vlastní variantu, a kdo ji napsal jen napůl, měřil chybovou
+ * stránku jako by to byl auditovaný web:
+ *
+ *   • cookie skener chytal jen VÝJIMKU z navigace. `page.goto()` na server
+ *     vracející 503 ale nevyhazuje — odpověď přišla, jen je chybová.
+ *     `navigationError` zůstalo `null`, na chybové stránce nebyly trackery,
+ *     a do neměnného záznamu se zapsalo „BEZ NÁLEZU: před udělením souhlasu
+ *     nebyly nalezeny trackery". O webu, který se nepodařilo otevřít.
+ *   • NIS2 skener neposuzoval stav vůbec a jako jediný nevracel
+ *     `navigationError`. Hlavičky blokovací stránky Cloudflare se tak
+ *     vyhodnotily jako hlavičky zákazníka — a dvanáct pravidel z toho
+ *     udělalo PROKÁZANÁ porušení, ne neprůkazné výsledky.
+ *
+ * Komentář v `agent.js` přitom tvrdil, že „skener přístupnosti i cookie
+ * skener tohle mají od úkolu #91". U cookie skeneru to nebyla pravda.
+ * Kopírovaná podmínka se takhle chová vždycky; proto je z ní funkce.
+ *
+ * Vrací VÝSLEDEK, ne výjimku: neprůkazné měření je legitimní zjištění
+ * a spis ho musí umět vykázat.
+ *
+ * @returns {{response: object|null, navigationError: string|null}}
+ */
+export async function navigujAOver(page, url, options = {}) {
+  const { waitUntil = 'networkidle', timeout = 30000 } = options;
+  let navigationError = null;
+  const response = await page
+    .goto(url, { waitUntil, timeout })
+    .catch((err) => { navigationError = err.message; return null; });
+
+  // Výjimka z navigace má přednost: je konkrétnější než „Server neodpověděl."
+  if (!navigationError) navigationError = popisHttpChyby(response);
+
+  return { response, navigationError };
+}

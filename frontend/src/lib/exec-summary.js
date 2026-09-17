@@ -53,13 +53,20 @@ const OBLASTI = [
     klic: 'nis2Result',
     nazev: 'Bezpečnostní hlavičky a TLS (NIS2)',
     nosny: (r) => Boolean(r.nis2),
-    verdikt: (r) => r.nis2?.isCompliant,
+    // Neúspěšná navigace = neprůkazné, ne „nesplněno".
+    //
+    // Tenhle skener `navigationError` dřív nevracel vůbec, takže ho
+    // shrnutí nemělo co číst — jako jediné ze čtyř. Hlavičky blokovací
+    // stránky za bot-ochranou se tak dostaly na první stranu dokumentu
+    // jako výsledek o zákazníkovi.
+    verdikt: (r) => (r.navigationError ? null : r.nis2?.isCompliant),
     // Verdikt se po výpočtu z hlaviček PŘEPISUJE podle TLS: zastaralé
     // verze nebo nálezy v TLS ho stáhnou na `false`, neověřitelná TLS
     // vrstva na `null`. Důvod, který četl jen hlavičky, pak v tabulce
     // stál vedle verdiktu, kterému odporoval: „Vyžaduje nápravu |
     // všechny posuzované hlavičky chrání".
     duvod: (r) => {
+      if (r.navigationError) return 'stránku se nepodařilo načíst';
       const casti = [];
       const m = r.nis2?.missingHeaders?.length ?? 0;
       const w = r.nis2?.weakHeaders?.length ?? 0;
