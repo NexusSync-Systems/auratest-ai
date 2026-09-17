@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { IMPACT_TRANSLATIONS, RULE_TRANSLATIONS, TEST_TYPES } from '../../constants/testTypes.js';
-import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel, odolnostLabel, odolnostBadgeClass, ekoTridaLabel, ekoTridaBadgeClass, ekoHodnoty } from '../../lib/compliance.js';
+import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel, odolnostLabel, odolnostBadgeClass, ekoTridaLabel, ekoTridaBadgeClass, ekoHodnoty, ekoPuvod } from '../../lib/compliance.js';
 import { execSummary, stavTrida } from '../../lib/exec-summary.js';
 
 /**
@@ -595,6 +595,47 @@ export default function PrintReport({
           {!greenResult.green.scope && (
             <div className="print-note" style={{ marginBottom: '20px' }}>
               <p style={{ margin: 0 }}>{ekoHodnoty(greenResult.green).vyhrada}</p>
+            </div>
+          )}
+
+          {/* Kolik z objemu si web dělá sám a kolik mu tam natahaly jiné
+              domény. Celkové číslo samo o sobě neřekne, co s tím jde dělat. */}
+          {ekoPuvod(greenResult.green) && (
+            <div style={{ marginBottom: '12px' }}>
+              <table className="print-table" style={{ marginBottom: '6px' }}>
+                <tbody>
+                  <tr>
+                    <th style={{ width: '30%' }}>Vlastní doména:</th>
+                    <td>
+                      {ekoPuvod(greenResult.green).vlastni}
+                      {` (${ekoPuvod(greenResult.green).vlastnichDomen} domén)`}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Jiné domény:</th>
+                    <td>
+                      {ekoPuvod(greenResult.green).cizi}
+                      {` — ${ekoPuvod(greenResult.green).podil} objemu, `}
+                      {`${ekoPuvod(greenResult.green).cizichDomen} domén`}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              {ekoPuvod(greenResult.green).nejvetsi.length > 0 && (
+                <>
+                  <p style={{ margin: '0 0 4px' }}>Největší z jiných domén:</p>
+                  <ul style={{ margin: '0 0 6px', paddingLeft: '20px' }}>
+                    {ekoPuvod(greenResult.green).nejvetsi.map((c) => (
+                      <li key={c.domena}>
+                        <strong>{c.domena}</strong>{` — ${c.objem}, ${c.pozadavku} požadavků`}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              <p className="print-note" style={{ margin: 0 }}>
+                {ekoPuvod(greenResult.green).pravidlo}
+              </p>
             </div>
           )}
 

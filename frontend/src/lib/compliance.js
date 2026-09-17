@@ -210,3 +210,31 @@ export function ekoHodnoty(green) {
     vyhrada: green.duvod || null,
   };
 }
+
+/**
+ * Rozpad objemu na vlastní a jiné domény — do reportu.
+ *
+ * Vrací `null`, když se rozdělit nedalo. Volající pak nesmí nic tisknout:
+ * „0 % z jiných domén" nad neúspěšným měřením je pochvala, kterou nikdo
+ * nezměřil.
+ */
+export function ekoPuvod(green) {
+  const p = green?.puvod;
+  if (!p || p.rozdeleno !== true) return null;
+  const mb = (b) => `${(b / 1e6).toFixed(2)} MB`;
+  return {
+    vlastni: mb(p.vlastniBajtu),
+    cizi: mb(p.ciziBajtu),
+    podil: `${p.podilCizichProcent} %`,
+    cizichDomen: p.cizichDomen,
+    vlastnichDomen: p.vlastnichDomen,
+    nejvetsi: (p.nejvetsiCizi || []).map((c) => ({
+      domena: c.domena,
+      objem: mb(c.bajtu),
+      pozadavku: c.pozadavku,
+    })),
+    pravidlo: p.pravidlo,
+    // Když bylo měření neúplné, je neúplný i jmenovatel podílu.
+    dolniMez: green.uplne === false,
+  };
+}

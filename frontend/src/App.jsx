@@ -28,7 +28,7 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, on
 import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
-import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel, ekoTridaLabel, ekoTridaColor, ekoHodnoty } from './lib/compliance.js';
+import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel, ekoTridaLabel, ekoTridaColor, ekoHodnoty, ekoPuvod } from './lib/compliance.js';
 import { execSummary } from './lib/exec-summary.js';
 import HistoryList from './components/HistoryList.jsx';
 import VersionBadge from './components/VersionBadge.jsx';
@@ -2232,6 +2232,19 @@ export default function App() {
                          <ul style={{ color: 'var(--text-secondary)', paddingLeft: '20px', marginBottom: '8px' }}>
                            <li>Přenesená data: {ekoHodnoty(greenResult.green).data}</li>
                            <li>Odhad emisí: {ekoHodnoty(greenResult.green).emise} / načtení</li>
+                           {ekoPuvod(greenResult.green) && (
+                             <>
+                               <li>
+                                 {`Vlastní doména: ${ekoPuvod(greenResult.green).vlastni} `}
+                                 {`(${ekoPuvod(greenResult.green).vlastnichDomen} domén)`}
+                               </li>
+                               <li>
+                                 {`Jiné domény: ${ekoPuvod(greenResult.green).cizi} — `}
+                                 {`${ekoPuvod(greenResult.green).podil} objemu, `}
+                                 {`${ekoPuvod(greenResult.green).cizichDomen} domén`}
+                               </li>
+                             </>
+                           )}
                          </ul>
                          {!greenResult.green.scope && (
                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85em', marginTop: 0, marginBottom: '16px' }}>

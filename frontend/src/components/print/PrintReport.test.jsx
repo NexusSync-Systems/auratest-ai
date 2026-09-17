@@ -518,6 +518,43 @@ describe('eko třída', () => {
     expect(odznak(/Green Deal & GDPR/).textContent).toMatch(/Neurčena/);
   });
 
+  /**
+   * Rozpad na vlastní a jiné domény. Číslo samo o sobě provozovateli
+   * neřekne, co s tím může udělat.
+   */
+  test('vypíše se rozpad i největší z jiných domén', () => {
+    vykresli(green({
+      measured: true, uplne: true, rating: 'F', co2Grams: 1.1, totalMb: 7.5, scope: SCOPE,
+      puvod: {
+        rozdeleno: true,
+        originHost: 'www.firma.cz',
+        vlastniBajtu: 2_500_000,
+        ciziBajtu: 5_000_000,
+        podilCizichProcent: 66.7,
+        vlastnichDomen: 1,
+        cizichDomen: 4,
+        nejvetsiCizi: [{ domena: 'googletagmanager.com', bajtu: 3_000_000, pozadavku: 12 }],
+        pravidlo: 'Je to srovnání JMEN, ne vlastnictví.',
+      },
+    }));
+    const s = sekce(/Green Deal & GDPR/);
+    expect(s.getByText(/66\.7 %/)).toBeInTheDocument();
+    expect(s.getByText('googletagmanager.com')).toBeInTheDocument();
+    // Pravidlo musí být vidět, jinak je závěr nepřezkoumatelný.
+    expect(s.getByText(/srovnání JMEN, ne vlastnictví/)).toBeInTheDocument();
+  });
+
+  test('nerozdělený objem se netiskne vůbec', () => {
+    // „0 % z jiných domén" nad neúspěšným měřením je pochvala,
+    // kterou nikdo nezměřil.
+    vykresli(green({
+      measured: true, uplne: true, rating: 'C', co2Grams: 0.148, totalMb: 1, scope: SCOPE,
+      puvod: { rozdeleno: false, duvod: 'Doménu se nepodařilo určit.', pravidlo: 'x' },
+    }));
+    const s = sekce(/Green Deal & GDPR/);
+    expect(s.queryByText(/Jiné domény/)).not.toBeInTheDocument();
+  });
+
   test('nezměřený objem se netiskne jako nula', () => {
     vykresli(green({
       measured: false, uplne: false, rating: null, co2Grams: null, totalMb: null,

@@ -48,6 +48,7 @@ import { assessDisclosurePlacement } from './disclosure-placement.js';
 import { inspectImageBytes, summarizeC2pa } from './c2pa.js';
 import { auditCookieFlags } from './cookie-flags.js';
 import { odhadniEmise } from './green-model.js';
+import { rozdelPodlePuvodu } from './green-origin.js';
 import { auditHsts } from './hsts-audit.js';
 
 // Volby pro Chromium jsou ve vlastním modulu — potřebuje je i generátor PDF
@@ -2971,6 +2972,9 @@ export async function auditGreenAndResidency(url) {
     let totalBytes = 0;
     let zmerenychPozadavku = 0;
     let nezmerenychPozadavku = 0;
+    // Objem po doménách. Rozdělit ho na vlastní a cizí jde až po navigaci,
+    // kdy je známá doména auditovaného webu — proto se to tady jen sbírá.
+    const bajtuPodleDomen = new Map();
 
     // NA POSLUCHAČE SE MUSÍ POČKAT.
     //
@@ -3035,6 +3039,16 @@ export async function auditGreenAndResidency(url) {
           }
           totalBytes += prenos;
           zmerenychPozadavku += 1;
+          try {
+            const domena = new URL(request.url()).hostname;
+            const zaznam = bajtuPodleDomen.get(domena) || { bajtu: 0, pozadavku: 0 };
+            zaznam.bajtu += prenos;
+            zaznam.pozadavku += 1;
+            bajtuPodleDomen.set(domena, zaznam);
+          } catch {
+            // Adresa bez použitelného hostname (blob:, data:) — do součtu
+            // patří, do rozdělení podle domén se zařadit nedá.
+          }
         } catch {
           // `sizes()` vyhodí, když je kontext už zavřený.
           nezmerenychPozadavku += 1;
@@ -3099,7 +3113,12 @@ export async function auditGreenAndResidency(url) {
         success: true,
         url,
         navigationError,
-        green: odhadniEmise(null, { zmerenychPozadavku, nezmerenychPozadavku }),
+        green: {
+          ...odhadniEmise(null, { zmerenychPozadavku, nezmerenychPozadavku }),
+          // Navigace selhala, takže doménu auditovaného webu neznáme
+          // a rozdělit objem nejde. `rozdeleno: false` to řekne nahlas.
+          puvod: rozdelPodlePuvodu(bajtuPodleDomen, null),
+        },
         residency: {
           totalDomains: 0,
           locations: [],
@@ -3256,7 +3275,13 @@ export async function auditGreenAndResidency(url) {
       url,
       // Model, konstanta, předpoklady i pokrytí cestují s číslem — viz
       // `green-model.js`. Číslo samo o sobě je odhad a report to musí říct.
-      green: odhadniEmise(totalBytes, { zmerenychPozadavku, nezmerenychPozadavku }),
+      green: {
+        ...odhadniEmise(totalBytes, { zmerenychPozadavku, nezmerenychPozadavku }),
+        // Kolik z objemu si web dělá sám a kolik mu tam natahaly jiné
+        // domény. Celkové číslo samo o sobě provozovateli neřekne, co
+        // s tím může udělat.
+        puvod: rozdelPodlePuvodu(bajtuPodleDomen, originHost),
+      },
       residency: {
         totalDomains: domainToIp.size,
         locations,

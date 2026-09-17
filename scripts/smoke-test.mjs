@@ -411,6 +411,28 @@ try {
     Boolean(green.green.scope?.model && green.green.scope?.zdroj),
     green.green.scope?.model || 'scope chybí'
   );
+  const puvod = green.green.puvod;
+  info(puvod?.rozdeleno
+    ? `vlastní ${(puvod.vlastniBajtu / 1e6).toFixed(2)} MB (${puvod.vlastnichDomen} domén), `
+      + `jiné ${(puvod.ciziBajtu / 1e6).toFixed(2)} MB (${puvod.cizichDomen} domén, `
+      + `${puvod.podilCizichProcent} %)`
+      + (puvod.nejvetsiCizi?.length
+        ? ` — největší: ${puvod.nejvetsiCizi.map((c) => `${c.domena} ${(c.bajtu / 1e6).toFixed(2)} MB`).join(', ')}`
+        : '')
+    : `rozpad podle domén: ${puvod?.duvod || 'chybí'}`);
+  check(
+    'rozpad podle domén sedí s celkovým objemem',
+    !puvod?.rozdeleno
+      || Math.abs((puvod.vlastniBajtu + puvod.ciziBajtu) - green.green.totalBytes) < 1,
+    puvod?.rozdeleno
+      ? `${puvod.vlastniBajtu} + ${puvod.ciziBajtu} vs ${green.green.totalBytes}`
+      : 'nerozděleno'
+  );
+  check(
+    'rozpad nese pravidlo, podle kterého vznikl',
+    Boolean(puvod?.pravidlo),
+    puvod?.pravidlo ? 'ano' : 'chybí'
+  );
   check(
     'z neúplného měření se netiskne známka',
     green.green.nezmerenychPozadavku === 0 || green.green.rating === null,
