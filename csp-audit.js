@@ -1,3 +1,5 @@
+import { ODDELOVACE_HODNOT } from './header-values.js';
+
 /**
  * Posouzení obsahu Content-Security-Policy, ne jen její přítomnosti.
  *
@@ -59,8 +61,13 @@ const FALLBACK_CHAIN = {
  * jednoznačné.
  */
 export function splitPolicies(header) {
+  // Dělí se čárkou I novým řádkem — viz `ODDELOVACE_HODNOT`
+  // v `header-values.js`. `response.headers()` slučuje dvě hlavičky
+  // `Content-Security-Policy` novým řádkem, ne čárkou; bez tohohle
+  // by se obě politiky slily do jedné a uplatnilo by se „první výskyt
+  // vyhrává", zatímco prohlížeč vynucuje obě naráz (průnik).
   return String(header || '')
-    .split(',')
+    .split(ODDELOVACE_HODNOT)
     .map((p) => p.trim())
     .filter(Boolean);
 }

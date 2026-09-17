@@ -32,7 +32,18 @@ jest.mock('../auth.js', () => ({
 jest.mock('../db.js', () => ({
   auth: { verifyIdToken: jest.fn() },
 
-  getProjects: jest.fn(async () => mockStore.projects.filter((p) => p.userId === mockCurrentUserId)),
+  // FILTRUJE SE PODLE PŘEDANÉHO `userId`, NE PODLE OKOLNÍ PROMĚNNÉ.
+  //
+  // Dřív tu stálo `async () => …filter(p => p.userId === mockCurrentUserId)`
+  // — mock svůj argument ZAHODIL a izolaci vynucoval sám. Skutečný
+  // `db.js` (`.where('userId','==',userId)`) v testu neběží, `jest.mock`
+  // ho nahrazuje celý. Celá sada 32 testů pojmenovaná po nejcitlivější
+  // vlastnosti systému tedy netestovala server, ale sebe.
+  //
+  // Kontrolní vlna to potvrdila mutací: po záměně volání v `server.js`
+  // na `db.getProjects('kdokoli-jiny')` prošlo všech 32 testů, přestože
+  // endpoint vracel projekty cizího uživatele.
+  getProjects: jest.fn(async (userId) => mockStore.projects.filter((p) => p.userId === userId)),
   getProjectByKey: jest.fn(async (id) => mockStore.projects.find((p) => p.id === id) || null),
   createProject: jest.fn(async (userId, name, allowedOrigins) => {
     const p = { id: `proj_${mockStore.projects.length}`, userId, name, allowedOrigins, active: true };
@@ -44,7 +55,7 @@ jest.mock('../db.js', () => ({
     return true;
   }),
 
-  getMonitors: jest.fn(async () => mockStore.monitors.filter((m) => m.userId === mockCurrentUserId)),
+  getMonitors: jest.fn(async (userId) => mockStore.monitors.filter((m) => m.userId === userId)),
   getAllActiveMonitors: jest.fn(async () => mockStore.monitors.filter((m) => m.active)),
   createMonitor: jest.fn(async (userId, data) => {
     const m = { id: `mon_${mockStore.monitors.length}`, userId, ...data, active: true };
@@ -63,7 +74,7 @@ jest.mock('../db.js', () => ({
     return true;
   }),
 
-  getSessions: jest.fn(async () => mockStore.sessions.filter((s) => s.userId === mockCurrentUserId)),
+  getSessions: jest.fn(async (userId) => mockStore.sessions.filter((s) => s.userId === userId)),
   // Hlídač zaseknutých běhů čte napříč uživateli — nemá kontext přihlášení.
   getRunningSessions: jest.fn(async () => mockStore.sessions.filter((s) => s.status === 'running')),
   getSession: jest.fn(async (id) => mockStore.sessions.find((s) => s.id === id) || null),
@@ -74,7 +85,7 @@ jest.mock('../db.js', () => ({
     return true;
   }),
 
-  getAuraGuardEvents: jest.fn(async () => mockStore.events.filter((e) => e.userId === mockCurrentUserId)),
+  getAuraGuardEvents: jest.fn(async (userId) => mockStore.events.filter((e) => e.userId === userId)),
   createAuraGuardEvent: jest.fn(async (data) => {
     const e = { id: `evt_${mockStore.events.length}`, ...data };
     mockStore.events.push(e);
@@ -150,6 +161,51 @@ describe('Multi-tenant izolace', () => {
     const resA = await request(app).get('/api/monitors');
     expect(resA.body).toHaveLength(1);
     expect(resA.body[0].name).toBe('A');
+  });
+
+  /**
+   * TŘI CHYBĚJÍCÍ TESTY.
+   *
+   * `monitors` výpis test měl, `projects`, `sessions` ani
+   * `auraguard_events` ne. Kontrolní vlna to odhalila mutací: záměna
+   * `db.getProjects(req.user.userId)` za `db.getProjects('kdokoli-jiny')`
+   * prošla všemi 32 testy, protože GET výpis projektů netestoval nikdo.
+   *
+   * Každý z nich tvrdí OBOJÍ — že cizí záznam chybí a že vlastní tam je.
+   * Kdyby se tvrdila jen nepřítomnost cizího, prošel by i endpoint,
+   * který nevrací nic.
+   */
+  it('GET /api/projects vrátí jen projekty přihlášeného uživatele', async () => {
+    await request(app).post('/api/projects').send({ name: 'Projekt A' });
+
+    mockCurrentUserId = 'user-b';
+    await request(app).post('/api/projects').send({ name: 'Projekt B' });
+
+    const resB = await request(app).get('/api/projects');
+    expect(resB.body).toHaveLength(1);
+    expect(resB.body[0].name).toBe('Projekt B');
+
+    mockCurrentUserId = 'user-a';
+    const resA = await request(app).get('/api/projects');
+    expect(resA.body).toHaveLength(1);
+    expect(resA.body[0].name).toBe('Projekt A');
+  });
+
+  it('GET /api/sessions vrátí jen relace přihlášeného uživatele', async () => {
+    mockStore.sessions.push(
+      { id: 'session_a', userId: 'user-a', url: 'https://a.example.com' },
+      { id: 'session_b', userId: 'user-b', url: 'https://b.example.com' },
+    );
+
+    mockCurrentUserId = 'user-a';
+    const resA = await request(app).get('/api/sessions');
+    expect(resA.body).toHaveLength(1);
+    expect(resA.body[0].id).toBe('session_a');
+
+    mockCurrentUserId = 'user-b';
+    const resB = await request(app).get('/api/sessions');
+    expect(resB.body).toHaveLength(1);
+    expect(resB.body[0].id).toBe('session_b');
   });
 
   it('PATCH cizího monitoru vrátí 403', async () => {

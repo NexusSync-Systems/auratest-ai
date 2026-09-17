@@ -1,3 +1,4 @@
+import { ODDELOVACE_HODNOT } from './header-values.js';
 /**
  * Obsah hlavičky Strict-Transport-Security, ne jen její přítomnost.
  *
@@ -48,7 +49,9 @@ export function parseHsts(header) {
   // Jakmile ale za čárkou stálo něco jiného, rozešlo se to s prohlížečem —
   // `max-age=31536000; includeSubDomains, max-age=1` dalo
   // `includeSubDomains: false` a nález na webu, který subdomény kryje.
-  const prvni = header.split(',')[0];
+  // Dělí se čárkou I novým řádkem — `response.headers()` slučuje
+  // duplicitní hlavičku `\n`, ne čárkou. Viz `ODDELOVACE_HODNOT`.
+  const prvni = header.split(ODDELOVACE_HODNOT)[0];
 
   // Direktivy odděluje středník, velikost písmen nerozhoduje.
   const parts = prvni.split(';').map((p) => p.trim());

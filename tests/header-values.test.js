@@ -11,6 +11,46 @@ import {
  * testovaly se až hodnoty ručně dosazené o dvě patra výš.
  */
 
+/**
+ * SLUČOVACÍ ZNAK NENÍ JEN ČÁRKA.
+ *
+ * Testy níž původně používaly `'nosniff, nosniff'` a komentář u nich
+ * tvrdil, že „hlavičku nastavenou víckrát dostane příjemce sloučenou
+ * čárkou". To platí pro `Response.allHeaders()`, kde `RawHeaders.get()`
+ * spojuje `", "`. `agent.js` ale čte `response.headers()`, a ta jde
+ * jinou cestou: `coreBundle.js:35080` volá `headersObjectToArray`
+ * BEZ separátoru, takže zůstane to, co poskládalo CDP — a to duplicity
+ * spojuje `\n`. Že je to `\n`, dokazuje sám Playwright o dvě stě řádků
+ * níž (`:35327`, `:35333`), kde ten separátor předává výslovně.
+ *
+ * Napodobenina tedy zakódovala moji představu o API a test potvrdil ji.
+ * Web s hlavičkou nastavenou na proxy I v aplikaci — přesně scénář,
+ * kvůli kterému modul vznikl — dostal nález „chybí".
+ */
+describe('sloučení novým řádkem, ne jen čárkou', () => {
+  test('X-Content-Type-Options přežije obojí sloučení', () => {
+    expect(hasNosniff('nosniff')).toBe(true);
+    expect(hasNosniff('nosniff, nosniff')).toBe(true);
+    expect(hasNosniff('nosniff\nnosniff')).toBe(true);
+  });
+
+  test('Referrer-Policy přežije obojí sloučení', () => {
+    expect(referrerProtected('strict-origin, strict-origin')).toBe(true);
+    expect(referrerProtected('strict-origin\nstrict-origin')).toBe(true);
+  });
+
+  test('první hodnota rozhoduje i u newline', () => {
+    // Prohlížeč bere první hodnotu. Když je slabá, ochrana neplatí —
+    // a to musí platit bez ohledu na to, čím byly hodnoty slepené.
+    expect(hasNosniff('neco-jineho\nnosniff')).toBe(false);
+    expect(hasNosniff('neco-jineho, nosniff')).toBe(false);
+  });
+
+  test('CRLF se taky rozdělí — některé proxy posílají \\r\\n', () => {
+    expect(hasNosniff('nosniff\r\nnosniff')).toBe(true);
+  });
+});
+
 describe('hlavička nastavená víckrát dorazí sloučená čárkou', () => {
   it('nosniff, nosniff je platná ochrana', () => {
     // Typicky když hlavičku nastaví proxy i aplikace. Fetch Standard

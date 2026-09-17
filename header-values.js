@@ -16,15 +16,34 @@
  */
 
 /**
- * První hodnota hlavičky sloučené čárkou, malými písmeny.
+ * ČÁRKA NESTAČÍ — PLAYWRIGHT SLUČUJE NOVÝM ŘÁDKEM.
  *
- * Hlavičku nastavenou víckrát (typicky proxy plus aplikace) dostane
- * příjemce sloučenou čárkou: `nosniff, nosniff`. Fetch Standard
- * („determine nosniff") ji rozdělí a posuzuje první hodnotu, takže
- * ochrana funguje. Porovnání celého řetězce z toho dělalo nález.
+ * Tenhle modul vznikl kvůli hlavičce nastavené víckrát (typicky proxy
+ * plus aplikace) a předpokládal, že ji příjemce dostane sloučenou
+ * čárkou: `nosniff, nosniff`. To platí pro `Response.allHeaders()`,
+ * kde `RawHeaders.get()` spojuje hodnoty `", "`.
+ *
+ * `agent.js` ale čte `response.headers()`, a to je jiná cesta:
+ * `coreBundle.js:35080` volá `headersObjectToArray(responsePayload.headers)`
+ * BEZ separátoru, takže hodnota zůstane tak, jak ji poskládalo CDP —
+ * a to duplicity spojuje `\n`. Že je to `\n`, dokazuje sám Playwright
+ * o dvě stě řádků níž (`:35327`, `:35333`), kde separátor předává
+ * výslovně.
+ *
+ * Do `hasNosniff` tedy chodí `nosniff\nnosniff`, dělení čárkou nic
+ * nerozdělí, porovnání celého řetězce selže — a web, který má hlavičku
+ * nastavenou na proxy I v aplikaci, dostane do dokumentu pro úřad nález
+ * „chybí". Tedy přesně ta chyba, kvůli které modul vznikl, jen o krok
+ * dál. Test to nechytil, protože napodobenina používala čárku.
+ *
+ * Dělí se proto na OBOJE. Poznat, kterou cestou hodnota přišla, zvenčí
+ * nejde a obě jsou legitimní.
  */
+export const ODDELOVACE_HODNOT = /[,\n]/;
+
+/** První hodnota hlavičky sloučené čárkou nebo novým řádkem, malými písmeny. */
 export function firstHeaderValue(raw) {
-  return String(raw || '').split(',')[0].trim().toLowerCase();
+  return String(raw || '').split(ODDELOVACE_HODNOT)[0].trim().toLowerCase();
 }
 
 /** Chrání X-Content-Type-Options proti hádání typu obsahu? */
@@ -86,7 +105,7 @@ const CHRANICI_REFERRER = new Set([
  */
 export function referrerProtected(raw) {
   const hodnoty = String(raw || '')
-    .split(',')
+    .split(ODDELOVACE_HODNOT)
     .map((v) => v.trim().toLowerCase())
     .filter((v) => ZNAME_REFERRER.has(v));
   if (hodnoty.length === 0) return false;
