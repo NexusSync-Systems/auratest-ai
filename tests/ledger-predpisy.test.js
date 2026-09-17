@@ -165,3 +165,48 @@ describe('overOtisk — manipulaci tvrdíme jen tam, kde je podložená', () => 
     expect(overOtisk(bezneBehy.kontrola, r).stav).toBe('neoveritelne');
   });
 });
+
+describe('slabé ověření se nevydává za plné', () => {
+  const kontrola = {
+    status: 'completed', kind: 'compliance-scan',
+    bugs: [], warnings: [], runErrors: [],
+    auditSlug: 'analyze-nis2', verdict: 'findings', ruleRefs: [],
+    checks: [{ key: 'k', ruleRef: 'r', ok: false, rationale: 'porušeno' }],
+    summary: 's', steps: [],
+  };
+
+  it('u nejstaršího předpisu se řekne, co otisk nekryl', () => {
+    // Otisk z 25. 8. nezávisel na `checks`, takže „souhlasí" u něj tvrdí
+    // podstatně míň než u novějších. Nechat to bez poznámky by znamenalo
+    // vydávat slabé ověření za plné.
+    const v = overOtisk(kontrola, {
+      sessionId: 's', schema: 1,
+      resultDigest: digestOf(PREDPISY_OTISKU[0].sestav(kontrola)),
+    });
+
+    expect(v.stav).toBe('ok');
+    expect(v.nekryje).toContain('verdikt předpisové kontroly');
+    expect(v.duvod).toMatch(/nevypovídá/);
+  });
+
+  it('u novějších předpisů se nic nedodává', () => {
+    for (const p of PREDPISY_OTISKU.slice(1)) {
+      const v = overOtisk(kontrola, {
+        sessionId: 's', schema: p.schema,
+        resultDigest: digestOf(p.sestav(kontrola)),
+      });
+      expect(v.stav).toBe('ok');
+      expect(v.nekryje).toEqual([]);
+    }
+  });
+
+  it('u agentního běhu se výhrada o `checks` neuvádí — netýká se ho', () => {
+    const agentni = { status: 'completed', bugs: ['n'], warnings: [], runErrors: [], summary: '', steps: [] };
+    const v = overOtisk(agentni, {
+      sessionId: 's', schema: 1,
+      resultDigest: digestOf(PREDPISY_OTISKU[0].sestav(agentni)),
+    });
+    expect(v.stav).toBe('ok');
+    expect(v.nekryje).toEqual([]);
+  });
+});

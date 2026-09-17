@@ -218,6 +218,16 @@ export const PREDPISY_OTISKU = [
     id: '2026-08-25',
     schema: 1,
     popis: 'původní sada; předpisová kontrola se do otisku nepromítala',
+    // POZOR: tenhle předpis NEKRYJE verdikt předpisové kontroly.
+    //
+    // `checks` do něj nevstupovaly, takže otisk záznamu z té doby
+    // nedokládá, jaký byl výsledek jednotlivých kontrol — pokrývá jen
+    // status, prázdné `bugs` a kroky. „Otisk souhlasí: Ano" u takového
+    // záznamu je pravda, ale tvrdí podstatně míň než u novějších.
+    //
+    // Zamlčet to by znamenalo vydávat slabé ověření za plné. Spis proto
+    // u těchhle záznamů uvádí, co otisk nekryje.
+    nekryje: ['výsledky jednotlivých kontrol (`checks`)', 'verdikt předpisové kontroly'],
     sestav: (session) => zakladBezSouhlasu(session),
   },
   {
@@ -308,10 +318,17 @@ export function overOtisk(session, record) {
   for (const predpis of poradi) {
     try {
       if (digestOf(predpis.sestav(session)) === record.resultDigest) {
+        // U předpisové kontroly hlásíme i to, co tehdejší předpis
+        // nepokrýval. Jinak by slabé ověření vypadalo jako plné.
+        const nekryje = session.kind === 'compliance-scan' ? (predpis.nekryje || []) : [];
         return {
           stav: 'ok',
           predpis: predpis.id,
-          duvod: `Otisk reprodukován předpisem z ${predpis.id}.`,
+          nekryje,
+          duvod: `Otisk reprodukován předpisem z ${predpis.id}.`
+            + (nekryje.length
+              ? ` Tenhle předpis ale nekryl: ${nekryje.join(', ')} — otisk tedy o výsledku kontrol nevypovídá.`
+              : ''),
         };
       }
     } catch {

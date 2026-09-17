@@ -377,6 +377,8 @@ export function buildCaseFile({ sessions, records, from, to, subject, chain, hea
               // nebo něco na jeho straně.
               digestDetail: record ? overOtisk(session, record).duvod : null,
               digestPredpis: record ? overOtisk(session, record).predpis : null,
+              // Co tehdejší předpis nekryl. Prázdné u všech novějších.
+              digestNekryje: record ? (overOtisk(session, record).nekryje || []) : [],
               chainProblem: problemBySession.has(session.id),
               duplicateRecords: duplicated.has(session.id),
             }
@@ -672,6 +674,12 @@ export function renderCaseFileHtml(caseFile) {
                      ? `Ano — uložený výsledek odpovídá zapsanému otisku.${
                        run.evidence.digestPredpis
                          ? ` <span class="dim">(předpis z ${escapeHtml(run.evidence.digestPredpis)})</span>`
+                         : ''
+                     }${
+                       run.evidence.digestNekryje?.length
+                         ? `<br><span class="warn">Tehdejší předpis otisku nekryl: ${
+                           escapeHtml(run.evidence.digestNekryje.join(', '))
+                         }. Shoda otisku proto o výsledku kontrol nevypovídá.</span>`
                          : ''
                      }`
                      : run.evidence.digestMatches === false
