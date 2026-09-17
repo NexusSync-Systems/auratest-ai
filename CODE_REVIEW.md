@@ -339,7 +339,11 @@ agent/runner.js        runAutonomousTest, determineNextAction           (812-130
 codegen/playwright.js  generatePlaywrightScript                         (753-775)
 audits/{a11y,nis2,gdpr-cookies,cra-sbom,ai-act,green,chaos}.js          (1609-2141)
 monitoring/http.js     checkPage, checkForm                             (2147-2249)
-config/constants.js    magic numbers (0.81 g CO2/MB, 100ms, 1500ms, ...)
+config/constants.js    magic numbers (100ms, 1500ms, ...)
+                       — `0.81 g CO2/MB` už není: bylo to `0.81 kWh/GB`
+                         ze SWDM v3 použité jako emisní faktor na megabajt.
+                         Vyřešeno v `green-model.js` (SWDM v4, 148.2 gCO2e/GB,
+                         s uvedeným zdrojem a předpoklady).
 ```
 
 **`server.js` → `routes/`**

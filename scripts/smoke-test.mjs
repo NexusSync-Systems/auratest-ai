@@ -395,7 +395,27 @@ try {
     !allOnCdn || green.residency.isEUCompliant === null,
     `${cdn.length}/${green.residency.locations.length} domén na CDN, isEUCompliant=${green.residency.isEUCompliant}`
   );
-  info(`${green.green.totalMb} MB, ${green.green.co2Grams} g CO2, hodnocení ${green.green.rating}`);
+  info(`${green.green.totalMb} MB, ${green.green.co2Grams} g CO2e, eko třída ${green.green.rating ?? 'neurčena'}`
+    + ` (změřeno ${green.green.zmerenychPozadavku} požadavků, nezměřeno ${green.green.nezmerenychPozadavku})`);
+  // Regrese na jednotkovou chybu. Emise musí vycházet z faktoru
+  // 148.2 gCO2e/GB, ne z `MB × 0.81`. Kdyby se konstanta vrátila,
+  // vyjde číslo zhruba 5,5× vyšší a tenhle test to chytí na ostrém webu.
+  check(
+    'emise odpovídají modelu, ne staré konstantě 0.81',
+    green.green.co2Grams === null
+      || Math.abs(green.green.co2Grams - (green.green.totalMb / 1000) * 148.2) < 0.002,
+    `${green.green.co2Grams} g při ${green.green.totalMb} MB`
+  );
+  check(
+    'uhlíková stopa nese popis modelu (scope)',
+    Boolean(green.green.scope?.model && green.green.scope?.zdroj),
+    green.green.scope?.model || 'scope chybí'
+  );
+  check(
+    'z neúplného měření se netiskne známka',
+    green.green.nezmerenychPozadavku === 0 || green.green.rating === null,
+    `nezměřeno ${green.green.nezmerenychPozadavku}, rating ${green.green.rating}`
+  );
   if (green.residency.isEUCompliant === false) {
     finding('fail', 'GDPR rezidence', `${green.residency.nonEULocations.length} serverů mimo EU/EHP`);
   } else if (green.residency.isEUCompliant === null) {

@@ -119,3 +119,94 @@ export function odolnostBadgeClass(isResilient) {
   if (isResilient === false) return 'error';
   return 'warning';
 }
+
+/**
+ * Uhlíková stopa NENÍ předpisová kontrola.
+ *
+ * Stupnice A+ až F pochází ze Sustainable Web Design a porovnává objem
+ * přenesených dat s percentily HTTP Archive. Žádný z předpisů, které
+ * nástroj kontroluje, velikost stránky neupravuje — „F" tedy znamená
+ * „nadprůměrně objemná stránka", ne závadu.
+ *
+ * ODZNAK JE PROTO VŽDY NEUTRÁLNÍ.
+ * První verze téhle funkce vracela `error` pro E a F a `success` pro
+ * A+/A/B — tedy přesně to, co komentář nad ní zakazoval. V tiskovém
+ * reportu pak stál červený odznak „Eko třída: F" dva odznaky nad
+ * červeným „GDPR Rezidence [Nesplněno]", se stejnou třídou a stejnou
+ * barvou. Čtenář-úředník čte dva nálezy, ačkoli jeden z nich je
+ * srovnání velikosti stránky s percentilem.
+ *
+ * Rozlišuje tedy písmeno a věta `ratingNote` vedle něj, ne barva.
+ * Platí to i pro tři různé „bez známky" stavy (neúplné měření,
+ * nezměřeno, starý záznam) — každý má vlastní text.
+ */
+
+/**
+ * Běh uložený před opravou modelu se pozná podle chybějícího `scope`.
+ *
+ * Takový záznam nese známku z vymyšlené stupnice („A (Zelený)",
+ * „F (Znečišťující)") a číslo spočítané s jednotkovou chybou. Přebarvit
+ * ji podle nové stupnice by znamenalo vydávat staré číslo za nové —
+ * stejná chyba jako u otisků, kde starý záznam ověřený novým předpisem
+ * vycházel jako zmanipulovaný.
+ *
+ * Starou známku proto neukazujeme vůbec a řekneme proč.
+ */
+export function jeStaryEkoZaznam(green) {
+  return Boolean(green) && !green.scope;
+}
+
+export const EKO_STARY_ZAZNAM =
+  'Běh je z doby před opravou výpočtu uhlíkové stopy. Tehdejší číslo '
+  + 'i známka vznikly z nesprávně použité konstanty, takže se neuvádějí. '
+  + 'Nový sken je vrátí.';
+
+export function ekoTridaLabel(rating, green) {
+  if (green !== undefined && jeStaryEkoZaznam(green)) return 'Neuvádí se';
+  return rating || 'Neurčena';
+}
+
+/** Vždy `neutral` — viz komentář výš. Argumenty zůstávají kvůli volajícím. */
+export function ekoTridaBadgeClass() {
+  return 'neutral';
+}
+
+/** Barva k neutrálnímu odznaku. Ani zelená, ani červená. */
+export function ekoTridaColor() {
+  return '#64748b';
+}
+
+/**
+ * Jak vypsat samotné číslo.
+ *
+ * Čtyři stavy, ne jeden: starý záznam, nezměřeno, změřeno částečně
+ * (dolní mez) a změřeno celé. Dřív se všechny tiskly stejně —
+ * nezměřený objem vyšel jako „0 MB, 0 g CO2", což je tvrzení o webu,
+ * ne o měření.
+ */
+export function ekoHodnoty(green) {
+  if (jeStaryEkoZaznam(green)) {
+    return {
+      data: 'Neuvádí se',
+      emise: 'Neuvádí se',
+      dolniMez: false,
+      vyhrada: EKO_STARY_ZAZNAM,
+    };
+  }
+  if (!green || green.measured === false) {
+    return {
+      data: 'Nezměřeno',
+      emise: 'Nezměřeno',
+      dolniMez: false,
+      vyhrada: green?.duvod || 'Objem přenesených dat se nepodařilo změřit.',
+    };
+  }
+  const dolniMez = green.uplne === false;
+  const predpona = dolniMez ? 'nejméně ' : '';
+  return {
+    data: `${predpona}${green.totalMb} MB`,
+    emise: `${predpona}${green.co2Grams} g CO₂e`,
+    dolniMez,
+    vyhrada: green.duvod || null,
+  };
+}

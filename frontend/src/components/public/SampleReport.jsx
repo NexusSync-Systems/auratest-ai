@@ -7,6 +7,8 @@ import {
   obligationLabel,
   pqcColor,
   pqcLabel,
+  ekoTridaLabel,
+  ekoHodnoty,
 } from '../../lib/compliance.js';
 
 /**
@@ -189,10 +191,11 @@ function Green({ data }) {
     >
       <dl className="sample-facts">
         <dt>Přenesená data</dt>
-        <dd>{green.totalMb} MB</dd>
+        <dd>{ekoHodnoty(green).data}</dd>
         <dt>Odhad emisí</dt>
         <dd>
-          {green.co2Grams} g CO₂ <span className="sample-dim">({green.rating})</span>
+          {ekoHodnoty(green).emise}{' '}
+          <span className="sample-dim">(eko třída {ekoTridaLabel(green.rating, green)})</span>
         </dd>
         <dt>Servery mimo EU/EHP</dt>
         <dd>
@@ -200,6 +203,17 @@ function Green({ data }) {
         </dd>
       </dl>
       <Note>{residency.warning}</Note>
+      {/* Veřejná ukázka je místo, kde se číslo čte nejpovrchněji. Bez téhle
+          věty vypadá odhad z modelu jako změřená spotřeba. */}
+      {!green.scope && <Note>{ekoHodnoty(green).vyhrada}</Note>}
+      {green.scope && (
+        <Note>
+          {`Emise jsou ODHAD podle modelu ${green.scope.model}: změřen je objem `}
+          {'přenesených dat, spotřeba energie se z něj odvozuje. Eko třída '}
+          {'porovnává velikost stránky s daty HTTP Archive — není to posouzení '}
+          {'shody s předpisem.'}
+        </Note>
+      )}
     </Card>
   );
 }

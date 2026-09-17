@@ -46,6 +46,7 @@ import { auditCsp } from './csp-audit.js';
 import { assessDisclosurePlacement } from './disclosure-placement.js';
 import { inspectImageBytes, summarizeC2pa } from './c2pa.js';
 import { auditCookieFlags } from './cookie-flags.js';
+import { odhadniEmise } from './green-model.js';
 import { auditHsts } from './hsts-audit.js';
 
 // Volby pro Chromium jsou ve vlastním modulu — potřebuje je i generátor PDF
@@ -2950,7 +2951,78 @@ export async function auditGreenAndResidency(url) {
     await guardNavigation(context);
     const page = await context.newPage();
     
+    // Objem se měří na DRÁTĚ, ne po dekompresi.
+    //
+    // Dřív se sčítalo `content-length`, a kde chybělo, tak
+    // `(await response.body()).length`. To je ale velikost PO rozbalení —
+    // `content-length` je před ním. Součet tedy míchal dvě různé veličiny
+    // a každá odpověď bez `content-length` (chunked přenos, HTTP/2, kde
+    // se hlavička běžně neposílá) vstupovala nafouknutá.
+    //
+    // `request.sizes()` vrací `responseBodySize` výslovně dokumentovaný
+    // jako „(encoded)", tedy bajty na drátě, a k tomu velikost hlaviček.
+    // Hlavičky se počítají taky — přenesly se.
+    //
+    // Co se změřit nepodařilo, se NEPŘIČTE JAKO NULA. Původní kód
+    // u nedostupného těla tiše nechal `size = 0` a výsledek se pak tiskl
+    // jako změřený objem. Místo toho se takové požadavky počítají zvlášť
+    // a výsledek se označí za dolní mez.
     let totalBytes = 0;
+    let zmerenychPozadavku = 0;
+    let nezmerenychPozadavku = 0;
+
+    // NA POSLUCHAČE SE MUSÍ POČKAT.
+    //
+    // Playwright vrácený Promise z posluchače zahazuje — neawaituje ho.
+    // `request.sizes()` je přitom kolo do prohlížeče a zpět. Bez tohohle
+    // pole by se `totalBytes` četlo dřív, než se rozdělaná měření
+    // doresolvují, a co nestihlo, by se ani nezapočítalo, ani nezvýšilo
+    // `nezmerenychPozadavku`. Výsledek by byl podtečený a přitom
+    // označený jako ÚPLNÝ — tedy známka lepší, než jaká patří.
+    // `browser.close()` ve `finally` ty Promisy navíc odstřelí.
+    const mereni = [];
+
+    // POSLUCHAČ PATŘÍ NA KONTEXT, NE NA STRÁNKU.
+    //
+    // Požadavky vzniklé v Service Workeru Playwright dispatchuje na
+    // `ServiceWorker`, ne na `Page` (`coreBundle.js`, `reportRequestFinished`
+    // volané přes `this._page?.frameManager || this._serviceWorker`).
+    // `page.on` je proto na každém PWA nevidí — a protože událost vůbec
+    // nedorazí, nezvýší se ani počet nezměřených a výsledek se tváří
+    // jako úplný. Podrámce (iframe) `page.on` chytá, ty problém nebyly.
+    context.on('requestfinished', (request) => {
+      mereni.push((async () => {
+        try {
+          const sizes = await request.sizes();
+          // `transferSize` počítá Playwright sám jako
+          // `responseHeadersSize + responseBodySize`, případně bere
+          // hodnotu hlášenou Chromiem. Je to totéž, co ukáže DevTools.
+          const prenos = sizes?.transferSize;
+          // Pozor na to, CO znamená nula.
+          //
+          // `_sizes()` při neznámé velikosti těla nevrací −1 ani NaN —
+          // sáhne po `content-length`, a když ani ten není, dosadí 0.
+          // U odpovědi z cache Chromium hlásí `encodedDataLength === 0`,
+          // takže `encodedBodySize` vyjde záporné a `transferSize` s ním.
+          // Obojí je „nevíme", ne „přeneslo se nic", a fail-closed to
+          // patří mezi nezměřené.
+          if (!Number.isFinite(prenos) || prenos <= 0) {
+            nezmerenychPozadavku += 1;
+            return;
+          }
+          totalBytes += prenos;
+          zmerenychPozadavku += 1;
+        } catch {
+          // `sizes()` vyhodí, když je kontext už zavřený.
+          nezmerenychPozadavku += 1;
+        }
+      })());
+    });
+
+    // Selhaný požadavek se taky částečně přenesl, ale kolik, nevíme.
+    // Patří sem i zrušené prefetche a požadavky odmítnuté SSRF ochranou.
+    context.on('requestfailed', () => { nezmerenychPozadavku += 1; });
+
     const ipAddresses = new Set();
     const domainToIp = new Map();
     const domainToCdn = new Map();
@@ -2959,19 +3031,9 @@ export async function auditGreenAndResidency(url) {
       try {
         const headers = response.headers();
         const urlObj = new URL(response.url());
-        
-        let size = 0;
-        if (headers['content-length']) {
-          size = parseInt(headers['content-length'], 10);
-        } else {
-          try {
-            const body = await response.body();
-            size = body.length;
-          } catch {
-            // tělo odpovědi není dostupné (např. CORS) — velikost neznámá
-          }
-        }
-        totalBytes += size;
+
+        // Objem dat se tady NEPOČÍTÁ — dělá to `requestfinished` výš,
+        // z `request.sizes()`. Tenhle posluchač zjišťuje CDN a IP.
 
         // CDN se poznává z hlaviček TÉHLE odpovědi. Podle jména to nešlo:
         // proxovaná doména si svoje jméno nechává, takže se nepoznala.
@@ -2990,7 +3052,45 @@ export async function auditGreenAndResidency(url) {
       }
     });
 
-    await page.goto(url, { waitUntil: 'networkidle' });
+    // Chybová stránka není měřitelný web.
+    //
+    // Skener přístupnosti i cookie skener tohle mají od úkolu #91;
+    // `green` byl jediný, kdo návratovou hodnotu `goto` zahazoval. Web,
+    // který vrátí 404 nebo 503, načte pár kilobajtů chybové stránky —
+    // a dostal z nich „Eko třída: A+" a číslo emisí. To je tvrzení
+    // o webu odvozené z hlášky o nedostupnosti. Totéž platí pro celou
+    // sekci rezidence pod tím: umístily by se servery chybové stránky.
+    let navigationError = null;
+    const navResponse = await page
+      .goto(url, { waitUntil: 'networkidle', timeout: 30000 })
+      .catch((err) => { navigationError = err.message; return null; });
+
+    if (!navigationError) {
+      if (!navResponse) navigationError = 'Server neodpověděl.';
+      else if (!navResponse.ok()) navigationError = `Server odpověděl ${navResponse.status()}.`;
+    }
+
+    if (navigationError) {
+      await Promise.allSettled(mereni);
+      return {
+        success: true,
+        url,
+        navigationError,
+        green: odhadniEmise(null, { zmerenychPozadavku, nezmerenychPozadavku }),
+        residency: {
+          totalDomains: 0,
+          locations: [],
+          nonEULocations: [],
+          usesUSServers: false,
+          isEUCompliant: null,
+          warning: `Rezidenci dat nelze posoudit: ${navigationError}`,
+          cdnDomains: [],
+          unlocatedDomains: [],
+          measuredDomains: 0,
+          geoipDatabaseDate: geoipDatabaseDate(),
+        },
+      };
+    }
 
     const locations = [];
     const nonEULocations = [];
@@ -3125,17 +3225,15 @@ export async function auditGreenAndResidency(url) {
       }
     }
 
-    const mbTransferred = totalBytes / (1024 * 1024);
-    const co2Grams = mbTransferred * 0.81;
+    // Teprve teď je součet úplný — viz komentář u `mereni`.
+    await Promise.allSettled(mereni);
 
     return {
       success: true,
       url,
-      green: {
-        totalMb: parseFloat(mbTransferred.toFixed(2)),
-        co2Grams: parseFloat(co2Grams.toFixed(3)),
-        rating: co2Grams < 1 ? 'A (Zelený)' : (co2Grams < 3 ? 'C (Průměr)' : 'F (Znečišťující)')
-      },
+      // Model, konstanta, předpoklady i pokrytí cestují s číslem — viz
+      // `green-model.js`. Číslo samo o sobě je odhad a report to musí říct.
+      green: odhadniEmise(totalBytes, { zmerenychPozadavku, nezmerenychPozadavku }),
       residency: {
         totalDomains: domainToIp.size,
         locations,

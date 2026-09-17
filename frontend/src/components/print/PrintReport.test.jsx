@@ -421,24 +421,111 @@ describe('běh agenta — nálezy a závěr patří do dokumentu', () => {
   });
 });
 
-describe('eko třída se neurčuje podle podřetězce', () => {
-  const green = (rating) => ({
+describe('eko třída', () => {
+  const SCOPE = {
+    model: 'Sustainable Web Design Model, verze 4',
+    zdroj: 'https://sustainablewebdesign.org/estimating-digital-emissions/',
+    stupniceZdroj: 'https://sustainablewebdesign.org/digital-carbon-ratings/',
+    emisniFaktorGNaGb: 148.2,
+    jeOdhad: true,
+    predpoklady: ['Model je atribuční a shora dolů.'],
+    nepokryva: ['shodu s jakýmkoli předpisem'],
+  };
+  const green = (g) => ({
     greenResult: {
-      green: { rating, co2Grams: 0.5, totalMb: 0.6 },
+      green: g,
       residency: { isEUCompliant: true, warning: 'EU', locations: [] },
     },
   });
 
-  test('neznámé hodnocení nezezelená ani nezčervená', () => {
-    vykresli(green(undefined));
+  /**
+   * Běh uložený před opravou výpočtu nese známku z vymyšlené stupnice
+   * a číslo spočítané jednotkově chybně. Přebarvit ho podle nové stupnice
+   * by znamenalo vydávat staré číslo za nové.
+   */
+  test('starý běh bez scope známku ani číslo netiskne', () => {
+    vykresli(green({ rating: 'A (Zelený)', co2Grams: 0.5, totalMb: 0.6 }));
     const b = odznak(/Green Deal & GDPR/);
-    expect(b.className).toMatch(/warning/);
-    expect(b.textContent).toMatch(/neurčena/);
+    expect(b.className).toMatch(/neutral/);
+    expect(b.textContent).toMatch(/Neuvádí se/);
+    expect(b.textContent).not.toMatch(/Zelený/);
+    const s = sekce(/Green Deal & GDPR/);
+    expect(s.getByText(/před opravou výpočtu uhlíkové stopy/)).toBeInTheDocument();
+    expect(s.queryByText(/0\.5/)).not.toBeInTheDocument();
   });
 
-  test('rozhoduje první znak, ne výskyt písmene v popisu', () => {
-    vykresli(green('F (Znečišťující A-třídou to není)'));
-    expect(odznak(/Green Deal & GDPR/).className).toMatch(/error/);
+  test('známka z publikované stupnice se obarví podle ní', () => {
+    vykresli(green({
+      measured: true, uplne: true, rating: 'C', co2Grams: 0.148, totalMb: 1,
+      ratingNote: 'Objem odpovídá nejlehčím 30 % stránek.', scope: SCOPE,
+    }));
+    const b = odznak(/Green Deal & GDPR/);
+    expect(b.className).toMatch(/neutral/);
+    expect(b.textContent).toMatch(/Eko třída: C/);
+  });
+
+  /**
+   * Barva eko třídy NESMÍ být barva předpisového verdiktu.
+   *
+   * První verze téhle opravy dávala A+ zelenou `success` a F červenou
+   * `error` — tedy tytéž třídy, jaké o dva odznaky níž nese „GDPR
+   * Rezidence [Nesplněno]". Čtenář-úředník pak v dokumentu vidí dva
+   * červené nálezy, ačkoli jeden z nich je srovnání velikosti stránky
+   * s percentilem HTTP Archive. Známku nese písmeno, ne barva.
+   */
+  test('A+ nedostane zelenou „splněno"', () => {
+    vykresli(green({ measured: true, uplne: true, rating: 'A+', co2Grams: 0.03, totalMb: 0.2, scope: SCOPE }));
+    const b = odznak(/Green Deal & GDPR/);
+    expect(b.className).toMatch(/neutral/);
+    expect(b.className).not.toMatch(/success/);
+    expect(b.textContent).toMatch(/Eko třída: A\+/);
+  });
+
+  test('F nedostane červenou „nesplněno"', () => {
+    vykresli(green({ measured: true, uplne: true, rating: 'F', co2Grams: 0.9, totalMb: 6, scope: SCOPE }));
+    const b = odznak(/Green Deal & GDPR/);
+    expect(b.className).toMatch(/neutral/);
+    expect(b.className).not.toMatch(/error/);
+    expect(b.textContent).toMatch(/Eko třída: F/);
+  });
+
+  /**
+   * Číslo z modelu se v dokumentu pro úřad nesmí dát zaměnit za měření.
+   * `green` byl jediný skener bez popisu rozsahu.
+   */
+  test('u čísla stojí, že je to odhad, čím se počítá a co nepokrývá', () => {
+    vykresli(green({
+      measured: true, uplne: true, rating: 'C', co2Grams: 0.148, totalMb: 1, scope: SCOPE,
+    }));
+    const s = sekce(/Green Deal & GDPR/);
+    expect(s.getByText(/Odhad, nikoli měření/)).toBeInTheDocument();
+    expect(s.getByText(/Sustainable Web Design Model, verze 4/)).toBeInTheDocument();
+    expect(s.getByText(/148\.2 gCO2e\/GB/)).toBeInTheDocument();
+    expect(s.getByText(/shodu s jakýmkoli předpisem/)).toBeInTheDocument();
+  });
+
+  test('neúplné měření se tiskne jako dolní mez a bez známky', () => {
+    vykresli(green({
+      measured: true, uplne: false, rating: null, co2Grams: 0.148, totalMb: 1,
+      nezmerenychPozadavku: 4,
+      duvod: 'U 4 požadavků se velikost zjistit nepodařilo, uvedený objem '
+        + 'i odhad emisí jsou proto dolní mez. Známka se z neúplného měření neuvádí.',
+      scope: SCOPE,
+    }));
+    const s = sekce(/Green Deal & GDPR/);
+    expect(s.getByText(/nejméně 1 MB/)).toBeInTheDocument();
+    expect(s.getByText(/dolní mez/)).toBeInTheDocument();
+    expect(odznak(/Green Deal & GDPR/).textContent).toMatch(/Neurčena/);
+  });
+
+  test('nezměřený objem se netiskne jako nula', () => {
+    vykresli(green({
+      measured: false, uplne: false, rating: null, co2Grams: null, totalMb: null,
+      duvod: 'Objem přenesených dat se nepodařilo změřit.', scope: SCOPE,
+    }));
+    const s = sekce(/Green Deal & GDPR/);
+    expect(s.getAllByText(/Nezměřeno/).length).toBeGreaterThan(0);
+    expect(s.queryByText(/^0 MB$/)).not.toBeInTheDocument();
   });
 });
 

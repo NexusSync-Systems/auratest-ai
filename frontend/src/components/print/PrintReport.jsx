@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { IMPACT_TRANSLATIONS, RULE_TRANSLATIONS, TEST_TYPES } from '../../constants/testTypes.js';
-import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel, odolnostLabel, odolnostBadgeClass } from '../../lib/compliance.js';
+import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel, odolnostLabel, odolnostBadgeClass, ekoTridaLabel, ekoTridaBadgeClass, ekoHodnoty } from '../../lib/compliance.js';
 import { execSummary, stavTrida } from '../../lib/exec-summary.js';
 
 /**
@@ -40,15 +40,6 @@ function headerStateLabel(ok, label, nis2) {
   return 'Nesplněno';
 }
 
-/**
- * Eko třída na barvu odznaku.
- *
- * Dřív se hledal podřetězec `'A'` a `'C'` v celém řetězci hodnocení.
- * Fungovalo to jen náhodou — stačilo přidat další stupeň, jehož text
- * obsahuje písmeno A (třeba „B (Nadprůměr)" s poznámkou), a odznak by
- * zezelenal. Rozhoduje první znak, ostatní je popis.
- */
-const EKO_ODZNAK = { A: 'success', B: 'success', C: 'warning', D: 'warning', E: 'error', F: 'error' };
 
 /**
  * Průzkumný běh agenta je jediná část dokumentu, kde „nic jsme nenašli"
@@ -585,15 +576,62 @@ export default function PrintReport({
       {greenResult && (
         <div className="print-section">
           <h3>Green Deal & GDPR</h3>
-          <div className={`print-badge ${EKO_ODZNAK[String(greenResult.green.rating || '').trim().charAt(0).toUpperCase()] || 'warning'}`}>
-            Eko Třída: {greenResult.green.rating || 'neurčena'}
+          <div className={`print-badge ${ekoTridaBadgeClass(greenResult.green.rating, greenResult.green)}`}>
+            Eko třída: {ekoTridaLabel(greenResult.green.rating, greenResult.green)}
           </div>
-          <table className="print-table" style={{ marginBottom: '20px' }}>
+          <table className="print-table" style={{ marginBottom: '8px' }}>
             <tbody>
-              <tr><th style={{ width: '30%' }}>Uhlíková stopa:</th><td>{greenResult.green.co2Grams} g CO2 / načtení</td></tr>
-              <tr><th>Přenesená data:</th><td>{greenResult.green.totalMb} MB</td></tr>
+              <tr><th style={{ width: '30%' }}>Přenesená data:</th><td>{ekoHodnoty(greenResult.green).data}</td></tr>
+              <tr><th>Odhad emisí:</th><td>{ekoHodnoty(greenResult.green).emise} / načtení</td></tr>
             </tbody>
           </table>
+
+          {/* Bez tohohle odstavce je číslo v dokumentu pro úřad k nerozeznání
+              od měření. Modelem odhadnutá hodnota se musí umět předložit
+              i s tím, co ji tvoří a co nepokrývá — jinak je nepřezkoumatelná.
+              `green` byl jediný skener, který popis rozsahu neměl. */}
+          {/* Běh z doby před opravou modelu. Jeho číslo do dokumentu pro
+              úřad nepatří, ale mlčet o něm taky nejde. */}
+          {!greenResult.green.scope && (
+            <div className="print-note" style={{ marginBottom: '20px' }}>
+              <p style={{ margin: 0 }}>{ekoHodnoty(greenResult.green).vyhrada}</p>
+            </div>
+          )}
+
+          {greenResult.green.scope && (
+            <div className="print-note" style={{ marginBottom: '20px' }}>
+              <p style={{ margin: '0 0 6px' }}>
+                <strong>Odhad, nikoli měření.</strong>{' '}
+                Emise počítá {greenResult.green.scope.model}{' '}
+                ({Number(greenResult.green.scope.emisniFaktorGNaGb || 0).toFixed(1)} gCO2e/GB
+                přenesených dat). Změřen je objem dat na síti; spotřeba energie
+                se z něj odvozuje modelem.
+              </p>
+              {greenResult.green.ratingNote && (
+                <p style={{ margin: '0 0 6px' }}>{greenResult.green.ratingNote}</p>
+              )}
+              {greenResult.green.duvod && (
+                <p style={{ margin: '0 0 6px' }}>{greenResult.green.duvod}</p>
+              )}
+              {greenResult.green.scope.coSePocita && (
+                <>
+                  <p style={{ margin: '0 0 4px' }}>Do objemu se počítá:</p>
+                  <ul style={{ margin: '0 0 6px', paddingLeft: '20px' }}>
+                    {greenResult.green.scope.coSePocita.map((p, i) => <li key={i}>{p}</li>)}
+                  </ul>
+                </>
+              )}
+              <p style={{ margin: '0 0 4px' }}>Předpoklady modelu:</p>
+              <ul style={{ margin: '0 0 6px', paddingLeft: '20px' }}>
+                {greenResult.green.scope.predpoklady.map((p, i) => <li key={i}>{p}</li>)}
+              </ul>
+              <p style={{ margin: 0 }}>
+                Nepokrývá: {greenResult.green.scope.nepokryva.join('; ')}.{' '}
+                Zdroj modelu: {greenResult.green.scope.zdroj},
+                stupnice: {greenResult.green.scope.stupniceZdroj}
+              </p>
+            </div>
+          )}
 
           <div className={`print-badge ${complianceBadgeClass(greenResult.residency.isEUCompliant)}`}>
             {`GDPR Rezidence [${complianceLabel(greenResult.residency.isEUCompliant)}]: `}

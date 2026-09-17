@@ -28,7 +28,7 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, on
 import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
-import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel } from './lib/compliance.js';
+import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel, ekoTridaLabel, ekoTridaColor, ekoHodnoty } from './lib/compliance.js';
 import { execSummary } from './lib/exec-summary.js';
 import HistoryList from './components/HistoryList.jsx';
 import VersionBadge from './components/VersionBadge.jsx';
@@ -2216,18 +2216,39 @@ export default function App() {
                      )}
 
                      {/* Green Deal & GDPR */}
-                     {greenResult && (
+                     {greenResult?.green && greenResult?.residency && (
                        <div>
                          <h3 style={{ color: 'var(--accent)', marginTop: 0 }}>Green Deal & GDPR (Hostování a Uhlík)</h3>
-                         <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', borderLeft: `4px solid ${greenResult.green.rating.includes('A') ? '#10b981' : greenResult.green.rating.includes('C') ? '#f59e0b' : '#ef4444'}`, marginBottom: '16px' }}>
-                           <strong style={{ color: greenResult.green.rating.includes('A') ? '#10b981' : greenResult.green.rating.includes('C') ? '#f59e0b' : '#ef4444' }}>
-                             Eko Třída: {greenResult.green.rating}
+                         {/* Dřív tu bylo `rating.includes('A')`. Kromě toho, že
+                             to je křehké, tu barva svítila zeleně u známky,
+                             která vznikla z vymyšlené stupnice. Známka i barva
+                             teď chodí z `lib/compliance.js`, stejně jako
+                             u ostatních skenerů. */}
+                         <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', borderLeft: `4px solid ${ekoTridaColor(greenResult.green.rating, greenResult.green)}`, marginBottom: '16px' }}>
+                           <strong style={{ color: ekoTridaColor(greenResult.green.rating, greenResult.green) }}>
+                             Eko třída: {ekoTridaLabel(greenResult.green.rating, greenResult.green)}
                            </strong>
                          </div>
-                         <ul style={{ color: 'var(--text-secondary)', paddingLeft: '20px', marginBottom: '16px' }}>
-                           <li>Uhlíková stopa: {greenResult.green.co2Grams} g CO2 / načtení</li>
-                           <li>Přenesená data: {greenResult.green.totalMb} MB</li>
+                         <ul style={{ color: 'var(--text-secondary)', paddingLeft: '20px', marginBottom: '8px' }}>
+                           <li>Přenesená data: {ekoHodnoty(greenResult.green).data}</li>
+                           <li>Odhad emisí: {ekoHodnoty(greenResult.green).emise} / načtení</li>
                          </ul>
+                         {!greenResult.green.scope && (
+                           <p style={{ color: 'var(--text-secondary)', fontSize: '0.85em', marginTop: 0, marginBottom: '16px' }}>
+                             {ekoHodnoty(greenResult.green).vyhrada}
+                           </p>
+                         )}
+                         {greenResult.green.scope && (
+                           <p style={{ color: 'var(--text-secondary)', fontSize: '0.85em', marginTop: 0, marginBottom: '16px' }}>
+                             Odhad podle modelu {greenResult.green.scope.model} —
+                             změřen je objem dat, spotřeba energie se z něj odvozuje.
+                             Stupnice porovnává velikost stránky, není to posouzení
+                             shody s předpisem.
+                             {greenResult.green.duvod ? ` ${greenResult.green.duvod}` : ''}
+                             {' '}
+                             <a href={greenResult.green.scope.zdroj} target="_blank" rel="noreferrer noopener">Metodika</a>
+                           </p>
+                         )}
                          <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', borderLeft: `4px solid ${complianceColor(greenResult.residency.isEUCompliant)}`, marginBottom: '16px' }}>
                            <strong style={{ color: complianceColor(greenResult.residency.isEUCompliant) }}>
                              {`GDPR Rezidence [${complianceLabel(greenResult.residency.isEUCompliant)}]: `}

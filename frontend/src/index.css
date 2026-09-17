@@ -1370,6 +1370,18 @@ textarea {
     color: #b45309 !important;
   }
 
+  /* Srovnávací metrika, ne předpisový verdikt.
+     Eko třída porovnává velikost stránky s percentily HTTP Archive —
+     žádný z kontrolovaných předpisů velikost stránky neupravuje.
+     Kdyby „F" dostalo `.error`, měl by v tištěném reportu stejnou
+     červenou jako nesplněná rezidence GDPR o dva odznaky níž a čtenář
+     by ho přečetl jako nález. Známku nese text, ne barva. */
+  .print-badge.neutral {
+    background: #f8fafc !important;
+    border-left: 5px solid #64748b;
+    color: #334155 !important;
+  }
+
   /* Stav ve shrnutí pro vedení.
      Barva je jen doplněk — samotný stav nese vždy text v buňce
      („Bez nálezu" / „Vyžaduje nápravu" / „Neprůkazné"), aby ho přečetl
