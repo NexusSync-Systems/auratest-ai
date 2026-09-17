@@ -273,20 +273,76 @@ export async function guardNavigation(context, onBlocked) {
     return;
   }
   await context.route('**/*', async (route, request) => {
-    // Jen navigace hlavního rámce: `parentFrame() === null` ho odliší
-    // od iframu, jehož obsah se do reportu nedostane.
-    if (!request.isNavigationRequest() || request.frame().parentFrame() !== null) {
-      return route.continue();
-    }
+    // VÝJIMKA ODSUD NESMÍ UTÉCT.
+    //
+    // Handler je async, takže cokoli, co v něm vyhodí, skončí jako
+    // neodchycené odmítnutí Promise — a Node na to proces shodí. Stalo se
+    // to naostro: `request.frame()` vyhodilo „Frame for this navigation
+    // request is not available, because the request was issued before the
+    // frame is created" a smoke test spadl uprostřed prvního skeneru.
+    // Hlídač, který při chybě položí celý běh, je horší než žádný.
+    let jeNavigace = false;
     try {
+      jeNavigace = request.isNavigationRequest();
+      if (!jeNavigace) return await pokracuj(route);
+
+      // Rámec se nemusí podařit zjistit.
+      //
+      // Playwright `frame()` dokumentuje jako vyhazující u požadavků, které
+      // vznikly dřív než rámec, a u požadavků ze Service Workeru. Původní
+      // kód ho volal rovnou, takže na takovém požadavku spadl.
+      //
+      // Když rámec neznáme, adresu PROVĚŘÍME. Opačná volba — pustit dál,
+      // co neumíme zařadit — by z téhle cesty udělala obchvat hlídače.
+      // Kontrola navíc stojí jeden překlad DNS a týká se jen navigací.
+      let rodic;
+      let rameczname = true;
+      try {
+        rodic = request.frame().parentFrame();
+      } catch {
+        rameczname = false;
+      }
+
+      // Navigace uvnitř iframu se nefiltruje — její obsah se do reportu
+      // nedostane. To platí jen tehdy, když rámec SKUTEČNĚ známe.
+      if (rameczname && rodic !== null) return await pokracuj(route);
+
       await assertPublicHttpUrl(request.url());
-      return route.continue();
+      return await pokracuj(route);
     } catch (err) {
       // `abort` je záměr: prohlížeč dostane síťovou chybu, sken pokračuje
       // s tím, co má, a do reportu se nedostane nic z vnitřní sítě.
+      //
+      // Sem spadne i neočekávaná chyba uvnitř hlídače. U navigace je
+      // správná odpověď zablokovat: hlídač nedokázal adresu prověřit,
+      // takže o ní nic nevíme. U podřízeného zdroje se pokračuje, ať
+      // se kvůli chybě v hlídači nerozsype celý sken.
       if (onBlocked) onBlocked(request.url(), err.message);
       else console.warn(`[SSRF] Navigace zablokována: ${request.url()} — ${err.message}`);
-      return route.abort('blockedbyclient');
+      if (!jeNavigace) return pokracuj(route);
+      return zahod(route.abort('blockedbyclient'));
     }
   });
+}
+
+/**
+ * `route.continue()` sám umí vyhodit — když je stránka mezitím zavřená
+ * nebo route obsloužil někdo jiný. Bez tohohle obalu by taková chyba
+ * proletěla ven a shodila proces stejně jako ta z `frame()`.
+ */
+function pokracuj(route) {
+  return zahod(route.continue());
+}
+
+/**
+ * Obalí návratovou hodnotu `route.*`, ať už vrátí Promise, nebo ne.
+ *
+ * `Promise.resolve(x).catch(…)` nestačí: kdyby `route.continue()` vyhodilo
+ * synchronně, výjimka by proletěla ven dřív, než se k obalu dostaneme —
+ * a proto je volání uvnitř try/catch handleru. Tohle řeší jen ten případ,
+ * kdy vrátí odmítnutý Promise nebo obyčejnou hodnotu (napodobeniny
+ * v testech vracejí číslo z `push`).
+ */
+function zahod(vysledek) {
+  return Promise.resolve(vysledek).then(() => {}, () => {});
 }

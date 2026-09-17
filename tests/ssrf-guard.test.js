@@ -118,10 +118,25 @@ describe('guardNavigation — hlídá i přesměrování (regrese kontrolní vln
     return ctx;
   };
 
-  const request = (url, { navigation = true, topLevel = true } = {}) => ({
+  /**
+   * `frameThrows` napodobuje skutečné chování Playwrightu.
+   *
+   * `Request.frame()` vyhazuje u požadavků, které vznikly dřív než rámec,
+   * a u požadavků ze Service Workeru. Původní napodobenina to neuměla —
+   * `frame()` vracela vždycky objekt — takže test potvrzoval moji
+   * představu, ne skutečnost. Naostro to shodilo celý smoke test:
+   * „Frame for this navigation request is not available".
+   */
+  const request = (url, { navigation = true, topLevel = true, frameThrows = false } = {}) => ({
     url: () => url,
     isNavigationRequest: () => navigation,
-    frame: () => ({ parentFrame: () => (topLevel ? null : {}) }),
+    frame: () => {
+      if (frameThrows) {
+        throw new Error('Frame for this navigation request is not available, '
+          + 'because the request was issued before the frame is created.');
+      }
+      return { parentFrame: () => (topLevel ? null : {}) };
+    },
   });
 
   const run = async (url, options) => {
@@ -165,6 +180,54 @@ describe('guardNavigation — hlídá i přesměrování (regrese kontrolní vln
 
   test('kontext bez route() hlídač nezapne, ale nespadne', async () => {
     await expect(guardNavigation({})).resolves.toBeUndefined();
+  });
+
+  /**
+   * Hlídač, který při chybě položí běh, je horší než žádný.
+   *
+   * Handler je async, takže výjimka z něj je neodchycené odmítnutí Promise
+   * a Node na to shodí proces. Naostro se to stalo: `frame()` vyhodilo
+   * a smoke test spadl uprostřed prvního skeneru.
+   */
+  test('nedostupný rámec hlídač nepoloží', async () => {
+    await expect(
+      run('https://93.184.216.34/', { frameThrows: true })
+    ).resolves.toBeDefined();
+  });
+
+  test('u nedostupného rámce se adresa PROVĚŘÍ, ne propustí', async () => {
+    // Opačná volba by z požadavků bez rámce (Service Worker, navigace
+    // vzniklá dřív než rámec) udělala obchvat hlídače.
+    expect(await run('http://169.254.169.254/latest/meta-data/', { frameThrows: true }))
+      .toBe('abort');
+    expect(await run('https://93.184.216.34/', { frameThrows: true })).toBe('continue');
+  });
+
+  test('chyba u podřízeného zdroje sken nerozsype', async () => {
+    // U neNavigačního požadavku se pokračuje — chyba uvnitř hlídače
+    // nesmí zabít načítání obrázků a skriptů.
+    const ctx = fakeContext();
+    await guardNavigation(ctx, () => {});
+    const calls = [];
+    await ctx.handler(
+      { continue: () => calls.push('continue'), abort: () => calls.push('abort') },
+      { url: () => 'https://example.com/a.png',
+        isNavigationRequest: () => false,
+        frame: () => { throw new Error('nedostupný'); } }
+    );
+    expect(calls[0]).toBe('continue');
+  });
+
+  test('výjimka z route.continue() neuteče ven', async () => {
+    // Stránka se mezitím zavřela. Bez obalu by tohle shodilo proces
+    // stejně jako chyba z `frame()`.
+    const ctx = fakeContext();
+    await guardNavigation(ctx, () => {});
+    await expect(ctx.handler(
+      { continue: () => { throw new Error('Target page closed'); },
+        abort: async () => {} },
+      request('https://93.184.216.34/')
+    )).resolves.not.toThrow();
   });
 });
 
