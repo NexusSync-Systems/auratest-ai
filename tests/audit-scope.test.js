@@ -113,8 +113,32 @@ describe('čtení verdiktů z výsledků skenerů', () => {
   });
 
   test('NIS2: neprůkazné hlavičky se nepovyšují na splněno', () => {
-    const v = verdictsForAudit('analyze-nis2', { nis2: { isCompliant: null } });
-    expect(v.find((x) => x.key === 'nis2.headers-tls').ok).toBeNull();
+    // Každá hlavička má vlastní řádek, takže se posuzuje po jedné.
+    // Dřív byl jeden slitý řádek „Bezpečnostní hlavičky a TLS" a čtenář
+    // spisu nepoznal, KTERÁ hlavička je neprůkazná.
+    const v = verdictsForAudit('analyze-nis2', { nis2: { hsts: null, csp: null } });
+    expect(v.find((x) => x.key === 'nis2.headers.hsts').ok).toBeNull();
+    expect(v.find((x) => x.key === 'nis2.headers.csp').ok).toBeNull();
+  });
+
+  test('NIS2: spis nese řádek pro KAŽDÉ pravidlo v rozsahu', () => {
+    // Ověřená vada: rozsah uváděl dvanáct pravidel a verdiktů bylo pět.
+    // Spis tiskl znění dvanácti pravidel a výsledek u pěti — u dvou
+    // (`tls.protocols.deprecated`, `tls.certificate.validity`) nebyl
+    // řádek vůbec, přestože se data pro ně měřila.
+    const vRozsahu = rulesForAudit('analyze-nis2').map((r) => r.replace(/\.v\d+$/, ''));
+    const vVerdiktech = verdictsForAudit('analyze-nis2', {}).map((x) => x.key);
+
+    expect(vVerdiktech.sort()).toEqual([...vRozsahu].sort());
+  });
+
+  test('NIS2: každý verdikt odkazuje na pravidlo i s verzí', () => {
+    // Bez `ruleRef` nemá čtenář spisu jak spárovat řádek s výsledkem
+    // se zněním pravidla, které se o pár stran výš tiskne.
+    for (const c of verdictsForAudit('analyze-nis2', {})) {
+      expect(c.ruleRef).toMatch(/\.v\d+$/);
+      expect(c.ruleRef.replace(/\.v\d+$/, '')).toBe(c.key);
+    }
   });
 
   test('NIS2: nepodporované PQC je pozorování, ne nález ani neprůkazné', () => {
@@ -124,15 +148,21 @@ describe('čtení verdiktů z výsledků skenerů', () => {
     // následky — spis tvrdil „nepodařilo se posoudit" o měření, které
     // proběhlo, a NIS2 sken nemohl NIKDY vyjít bez nálezu.
     const v = verdictsForAudit('analyze-nis2', {
-      nis2: { isCompliant: true, scope: 's' },
+      nis2: {
+        hsts: true, csp: true, xFrameOptions: true, xContentTypeOptions: true,
+        referrerPolicy: true, permissionsPolicy: true,
+        isCompliant: true, scope: 's',
+      },
       tls: {
+        protocols: { ok: true, issues: [], notes: [] },
+        certificate: { ok: true, issues: [], notes: [] },
         pqc: { supported: false, rationale: 'Nenabízí.' },
         ciphers: { ok: true, rationale: 'Slabé sady odmítnuty.' },
         chain: { ok: true, rationale: 'Řetěz ověřen.' },
         ocsp: { ok: false, rationale: 'Nepřikládá.' },
       },
     });
-    const pqc = v.find((x) => x.key === 'tls.pqc');
+    const pqc = v.find((x) => x.key === 'tls.pqc.x25519mlkem768');
     expect(pqc.ok).toBe(false);
     expect(pqc.advisory).toBe(true);
     // A hlavně: celek tím nespadne.
@@ -218,7 +248,21 @@ describe('čtení verdiktů z výsledků skenerů', () => {
 
 
 describe('TLS do hloubky (S1)', () => {
-  const nis2 = (tls) => verdictsForAudit('analyze-nis2', { nis2: { isCompliant: true, scope: 's' }, tls });
+  // Hlavičky i TLS v pořádku. Od chvíle, kdy má KAŽDÉ pravidlo v rozsahu
+  // vlastní řádek, musí fixture pokrýt všech dvanáct — jinak vyjde celkový
+  // verdikt neprůkazně a test měří něco jiného, než si myslí.
+  const HLAVICKY_OK = {
+    hsts: true, csp: true, xFrameOptions: true, xContentTypeOptions: true,
+    referrerPolicy: true, permissionsPolicy: true,
+  };
+  const TLS_OK = {
+    protocols: { ok: true, issues: [], notes: [] },
+    certificate: { ok: true, issues: [], notes: [] },
+  };
+  const nis2 = (tls) => verdictsForAudit('analyze-nis2', {
+    nis2: { ...HLAVICKY_OK, isCompliant: true, scope: 's' },
+    tls: { ...TLS_OK, ...tls },
+  });
 
   test('slabé sady šifer shodí verdikt', () => {
     const v = nis2({
@@ -227,7 +271,7 @@ describe('TLS do hloubky (S1)', () => {
       ocsp: { ok: true, rationale: 'x' },
       pqc: { supported: true, rationale: 'x' },
     });
-    expect(v.find((x) => x.key === 'tls.ciphers').ok).toBe(false);
+    expect(v.find((x) => x.key === 'tls.ciphers.weak').ok).toBe(false);
     expect(overallVerdict(v)).toBe(false);
   });
 
@@ -249,7 +293,7 @@ describe('TLS do hloubky (S1)', () => {
       ocsp: { ok: false, rationale: 'Nepřikládá.' },
       pqc: { supported: true, rationale: 'x' },
     });
-    expect(v.find((x) => x.key === 'tls.ocsp').advisory).toBe(true);
+    expect(v.find((x) => x.key === 'tls.ocsp.stapling').advisory).toBe(true);
     expect(overallVerdict(v)).toBe(true);
   });
 

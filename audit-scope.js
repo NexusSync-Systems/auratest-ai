@@ -110,44 +110,127 @@ export function verdictsForAudit(slug, result) {
   if (!result || typeof result !== 'object') return [];
 
   switch (slug) {
-    case 'analyze-nis2':
+    case 'analyze-nis2': {
+      // JEDEN ŘÁDEK NA JEDNO PRAVIDLO V ROZSAHU.
+      //
+      // Dřív jich bylo pět, přestože `AUDIT_RULE_SCOPE` uvádí dvanáct:
+      // šest hlaviček bylo slitých do jediného řádku „Bezpečnostní
+      // hlavičky a TLS" a `tls.protocols.deprecated` s
+      // `tls.certificate.validity` neměly řádek vůbec. Spis tedy tiskl
+      // znění dvanácti pravidel a výsledek u pěti — čtenář nepoznal,
+      // KTERÁ hlavička chybí, a u dvou pravidel nevěděl nic.
+      //
+      // Data pro všech dvanáct přitom existovala; jen se do spisu
+      // nedostala.
+      const nis2 = result.nis2 || {};
+      const tls = result.tls || {};
+
+      /** Hlavička: `true` chrání, `false` chybí nebo nechrání, `null` nelze posoudit. */
+      const hlavicka = (ruleId, stav, popisek, duvodOk, duvodNe) => ({
+        key: ruleId,
+        ruleRef: ruleRef(ruleId),
+        label: popisek,
+        ok: tri(stav),
+        rationale: stav === true
+          ? duvodOk
+          : (stav === null
+            ? 'Hlavičku se nepodařilo posoudit; z toho neplyne splnění ani porušení.'
+            : duvodNe),
+      });
+
       return [
+        hlavicka(
+          'nis2.headers.hsts',
+          nis2.hsts,
+          'Strict-Transport-Security',
+          nis2.hstsDetail?.rationale || 'Hlavička je nastavená a poskytuje ochranu.',
+          nis2.hstsDetail?.rationale || 'Hlavička chybí nebo neposkytuje ochranu.'
+        ),
+        hlavicka(
+          'nis2.headers.csp',
+          nis2.csp,
+          'Content-Security-Policy',
+          'Politika je nastavená a omezuje zdroje skriptů.',
+          (nis2.cspDetail?.findings || []).map((f) => f.message || f).join(' ')
+            || 'Politika chybí nebo neomezuje zdroje skriptů.'
+        ),
+        hlavicka(
+          'nis2.headers.frame-options',
+          nis2.xFrameOptions,
+          'Ochrana proti vkládání do rámu',
+          'Vkládání do cizího rámu je zakázané (X-Frame-Options nebo frame-ancestors).',
+          'Stránku lze vložit do cizího rámu — chybí X-Frame-Options i frame-ancestors, '
+            + 'nebo hodnota nic nezakazuje.'
+        ),
+        hlavicka(
+          'nis2.headers.content-type-options',
+          nis2.xContentTypeOptions,
+          'X-Content-Type-Options: nosniff',
+          'Prohlížeč nebude hádat typ obsahu.',
+          'Chybí `nosniff`, takže prohlížeč smí typ obsahu odhadovat.'
+        ),
+        hlavicka(
+          'nis2.headers.referrer-policy',
+          nis2.referrerPolicy,
+          'Referrer-Policy',
+          'Politika omezuje, co se odesílá v hlavičce Referer.',
+          'Chybí nebo odesílá plnou adresu i na cizí původ.'
+        ),
+        hlavicka(
+          'nis2.headers.permissions-policy',
+          nis2.permissionsPolicy,
+          'Permissions-Policy',
+          'Politika je nastavená a něco omezuje.',
+          'Chybí nebo je prázdná, takže neomezuje žádné rozhraní prohlížeče.'
+        ),
         {
-          key: 'nis2.headers-tls',
-          label: 'Bezpečnostní hlavičky a TLS',
-          ok: tri(result.nis2?.isCompliant),
-          rationale:
-            result.nis2?.scope ||
-            'Kontrola hlaviček a TLS vrstvy. Nejde o posouzení shody s NIS2 jako celkem.',
+          key: 'tls.protocols.deprecated',
+          ruleRef: ruleRef('tls.protocols.deprecated'),
+          label: 'Zastaralé verze protokolu (TLS 1.0, 1.1)',
+          // Dřív bez řádku, přestože je pravidlo v rozsahu skenu a data
+          // pro něj měříme.
+          ok: tri(tls.protocols?.ok),
+          rationale: [
+            ...(tls.protocols?.issues || []),
+            ...(tls.protocols?.notes || []),
+          ].join(' ') || 'Verze protokolu se nepodařilo prozkoumat.',
         },
         {
-          key: 'tls.ciphers',
+          key: 'tls.certificate.validity',
+          ruleRef: ruleRef('tls.certificate.validity'),
+          label: 'Platnost a síla certifikátu',
+          ok: tri(tls.certificate?.ok),
+          rationale: [
+            ...(tls.certificate?.issues || []),
+            ...(tls.certificate?.notes || []),
+          ].join(' ') || 'Certifikát se nepodařilo prozkoumat.',
+        },
+        {
+          key: 'tls.ciphers.weak',
+          ruleRef: ruleRef('tls.ciphers.weak'),
           label: 'Sady šifer',
-          ok: tri(result.tls?.ciphers?.ok),
-          rationale:
-            result.tls?.ciphers?.rationale ||
-            'Sady šifer se nepodařilo prozkoumat.',
+          ok: tri(tls.ciphers?.ok),
+          rationale: tls.ciphers?.rationale || 'Sady šifer se nepodařilo prozkoumat.',
         },
         {
-          key: 'tls.chain',
+          key: 'tls.certificate.chain',
+          ruleRef: ruleRef('tls.certificate.chain'),
           label: 'Ověření řetězu certifikátů',
-          ok: tri(result.tls?.chain?.ok),
-          rationale:
-            result.tls?.chain?.rationale ||
-            'Řetěz certifikátů se nepodařilo ověřit.',
+          ok: tri(tls.chain?.ok),
+          rationale: tls.chain?.rationale || 'Řetěz certifikátů se nepodařilo ověřit.',
         },
         {
-          key: 'tls.ocsp',
+          key: 'tls.ocsp.stapling',
+          ruleRef: ruleRef('tls.ocsp.stapling'),
           label: 'Přikládání OCSP odpovědi',
-          // POZOROVÁNÍ jako PQC: stapling žádný předpis nevyžaduje.
+          // POZOROVÁNÍ: stapling žádný předpis nevyžaduje.
           advisory: true,
-          ok: tri(result.tls?.ocsp?.ok),
-          rationale:
-            result.tls?.ocsp?.rationale ||
-            'Přiložení OCSP odpovědi se nepodařilo ověřit.',
+          ok: tri(tls.ocsp?.ok),
+          rationale: tls.ocsp?.rationale || 'Přiložení OCSP odpovědi se nepodařilo ověřit.',
         },
         {
-          key: 'tls.pqc',
+          key: 'tls.pqc.x25519mlkem768',
+          ruleRef: ruleRef('tls.pqc.x25519mlkem768'),
           label: 'Hybridní post-kvantová výměna klíčů',
           // POZOROVÁNÍ, ne kontrola. Post-kvantovou výměnu dnes žádný
           // předpis nevyžaduje, takže „nepodporuje" není porušení.
@@ -159,14 +242,14 @@ export function verdictsForAudit(slug, result) {
           //
           // `advisory` říká, že se výsledek do celkového verdiktu nepočítá.
           advisory: true,
-          ok: tri(result.tls?.pqc?.supported),
+          ok: tri(tls.pqc?.supported),
           rationale:
-            (result.tls?.pqc?.rationale ||
-              'Podporu se nepodařilo ověřit.') +
-            ' Absence hybridní post-kvantové výměny klíčů dnes není porušením ' +
-            'předpisu — jde o pozorování, ne o nález.',
+            (tls.pqc?.rationale || 'Podporu se nepodařilo ověřit.')
+            + ' Absence hybridní post-kvantové výměny klíčů dnes není porušením '
+            + 'předpisu — jde o pozorování, ne o nález.',
         },
       ];
+    }
 
     case 'ai-act-audit':
       return (result.aiAct?.obligations || []).map((o) => ({
