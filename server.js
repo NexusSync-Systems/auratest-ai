@@ -10,6 +10,7 @@ import { fetchTranslations } from './db-connector.js';
 import { authenticateToken } from './auth.js';
 import { auth } from './db.js';
 import { assertPublicHttpUrl, resolvePublicHttpTarget } from './ssrf-guard.js';
+import { MAX_AGENT_STEPS, omezKroky, vynutHeadless } from './agent-limits.js';
 import { fetchPripnute } from './safe-fetch.js';
 import { isEmailAllowed, accessConfig } from './access-control.js';
 import { verifySlackRequest, parseSlackPayload } from './slack-verify.js';
@@ -431,7 +432,6 @@ app.get('/api/videos/:file', authenticateToken, serveArtifact(videosDir));
 app.use('/sdk', express.static(ensureDir(SDK_DIR)));
 
 const PORT = process.env.PORT || 3001;
-const MAX_AGENT_STEPS = parseInt(process.env.MAX_AGENT_STEPS, 10) || 50;
 // Veřejná adresa serveru. Dřív se do generovaného SDK reflektovala hlavička
 // Host z requestu — útočník s kontrolou nad Host (nebo přes cache poisoning)
 // tak mohl přesměrovat telemetrii zákazníků na vlastní server.
@@ -447,10 +447,29 @@ const MAX_ANALYZED_EVENTS = 200;
 // ─────────────────────────────────────────────────────────────────────────────
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS, 10) || 3;
 // Strop, po kterém se slot uvolní i bez dokončené odpovědi (zamrzlý handler).
-const BROWSER_SLOT_MAX_HOLD_MS = parseInt(process.env.BROWSER_SLOT_MAX_HOLD_MS, 10) || 10 * 60_000;
+//
+// POZOR NA VZTAH K `MAX_AGENT_STEPS`.
+// Deset minut na padesát kroků je asi dvanáct sekund na krok. Krok přitom
+// zahrnuje čekání na prvek (5 s timeout u kliknutí), načtení stránky,
+// snímek obrazovky i extrakci prvků, takže dlouhý ZDRAVÝ běh tenhle strop
+// běžně překročí. Pojistka na zamrzlý handler pak vystřelí na běhu, který
+// jen trvá — uvolní slot, zatímco Chromium žije dál, a `MAX_CONCURRENT_BROWSERS`
+// přestane platit.
+//
+// Číslo níž NENÍ změřená horní mez běhu; je to velkorysá rezerva, aby
+// pojistka nestřílela na zdravé běhy. Kdy opravdu vystřelí, se pozná
+// z `/api/version` — viz `uvolnenoPojistkou`. Kdyby to číslo rostlo,
+// je to buď zaseklý handler, nebo je rezerva pořád malá; hádat, co
+// z toho, nemá smysl, proto se to počítá a vykazuje.
+const BROWSER_SLOT_MAX_HOLD_MS = parseInt(process.env.BROWSER_SLOT_MAX_HOLD_MS, 10)
+  || Math.max(30 * 60_000, MAX_AGENT_STEPS * 30_000);
 
 const browserSlots = {
   inUse: 0,
+  // Kolikrát slot uvolnila pojistka místo dokončené odpovědi. Každé takové
+  // uvolnění znamená, že jsme SI NEJSPÍŠ PŮJČILI kapacitu navíc: Chromium
+  // z toho běhu mohlo pořád běžet.
+  uvolnenoPojistkou: 0,
   tryAcquire() {
     if (this.inUse >= MAX_CONCURRENT_BROWSERS) return false;
     this.inUse += 1;
@@ -458,6 +477,14 @@ const browserSlots = {
   },
   release() {
     this.inUse = Math.max(0, this.inUse - 1);
+  },
+  stav() {
+    return {
+      inUse: this.inUse,
+      max: MAX_CONCURRENT_BROWSERS,
+      maxHoldMs: BROWSER_SLOT_MAX_HOLD_MS,
+      uvolnenoPojistkou: this.uvolnenoPojistkou,
+    };
   },
 };
 
@@ -480,7 +507,23 @@ function browserSlotGuard(req, res, next) {
   };
   res.on('finish', release);
   // Pojistka pro případ, že se odpověď nikdy neodešle (např. zamrzlý handler).
-  const safetyTimer = setTimeout(release, BROWSER_SLOT_MAX_HOLD_MS);
+  //
+  // Uvolnit slot je menší zlo než ho ztratit natrvalo — ale NENÍ to zadarmo.
+  // Nevíme, jestli Chromium z toho běhu dojelo; může běžet dál a pak je
+  // souběžných prohlížečů víc, než kolik `MAX_CONCURRENT_BROWSERS` slibuje.
+  // Proto se to nedělá tiše: hlásí se to a počítá.
+  const safetyTimer = setTimeout(() => {
+    if (released) return;
+    browserSlots.uvolnenoPojistkou += 1;
+    console.error(
+      `[SLOT] Pojistka uvolnila slot po ${BROWSER_SLOT_MAX_HOLD_MS} ms bez dokončené `
+      + `odpovědi (${req.method} ${req.originalUrl}). Prohlížeč z toho běhu mohl `
+      + `zůstat naživu — souběžných instancí teď může být víc než `
+      + `${MAX_CONCURRENT_BROWSERS}. Celkem takových uvolnění: `
+      + `${browserSlots.uvolnenoPojistkou}.`
+    );
+    release();
+  }, BROWSER_SLOT_MAX_HOLD_MS);
   if (typeof safetyTimer.unref === 'function') safetyTimer.unref();
   res.on('finish', () => clearTimeout(safetyTimer));
   next();
@@ -781,7 +824,10 @@ app.get('/api/case-file', authenticateToken, (req, res, next) => {
  * prohlížeč drží starý bundle.
  */
 app.get('/api/version', (req, res) => {
-  res.json(serverBuildInfo());
+  // Stav slotů patří ven. `uvolnenoPojistkou > 0` znamená, že strop na
+  // souběžné prohlížeče možná neplatí — a to se z logu nedozví nikdo,
+  // kdo se na něj zrovna nedívá.
+  res.json({ ...serverBuildInfo(), browserSlots: browserSlots.stav() });
 });
 
 app.get('/api/sessions', authenticateToken, async (req, res) => {
@@ -911,8 +957,8 @@ app.post('/api/run-test', authenticateToken, heavyLimiter, urlGuard(), async (re
     ...sanitizeLlmConfig({ provider, model, host: req.body.host }),
     // headless natvrdo true mimo dev — klient si nesmí na serveru otevřít GUI
     // prohlížeč, a maxSteps má strop, aby jeden request nevytížil stroj.
-    headless: process.env.NODE_ENV === 'production' ? true : headless !== false,
-    maxSteps: Math.min(Math.max(parseInt(maxSteps) || 10, 1), MAX_AGENT_STEPS),
+    headless: vynutHeadless(headless),
+    maxSteps: omezKroky(maxSteps),
     mode: mode || 'ai',
     // Odkliknutí cookie lišty se dá vypnout.
     //
@@ -1193,8 +1239,20 @@ app.post('/api/trigger-test', triggerLimiter, requireTriggerSecret, browserSlotG
 
   const llmConfig = {
     ...sanitizeLlmConfig({}),
-    headless: headless !== false,
-    maxSteps: parseInt(maxSteps) || 10,
+    // TENTO ENDPOINT BYL JEDINÝ BEZ STROPU.
+    //
+    // `MAX_AGENT_STEPS` se uplatňuje na čtyřech dalších místech
+    // (spuštění testu, plánovač monitorů, založení i úprava monitoru).
+    // Tady chybělo obojí — `parseInt(maxSteps) || 10` bez horní meze
+    // a `headless` přebírané z těla requestu. Jeden požadavek
+    // s `maxSteps: 100000` tedy držel slot i Chromium prakticky
+    // libovolně dlouho, a `headless: false` by na serveru bez GUI
+    // buď selhal, nebo otevřel okno, které nikdo nezavře.
+    //
+    // Endpoint je chráněný sdíleným tajemstvím, ne přihlášením — je
+    // určený pro CI. O důvod víc mu nevěřit víc než ostatním.
+    headless: vynutHeadless(headless),
+    maxSteps: omezKroky(maxSteps),
     mode: ciMode,
     testLogin: testLogin || '',
     testPassword: testPassword || ''
@@ -1517,7 +1575,7 @@ async function schedulerTick() {
           // než PATCH /api/monitors začal validovat.
           ...sanitizeLlmConfig({ provider: monitor.provider, model: monitor.model, host: monitor.host }),
           headless: true,
-          maxSteps: Math.min(Math.max(monitor.maxSteps || 10, 1), MAX_AGENT_STEPS),
+          maxSteps: omezKroky(monitor.maxSteps),
           mode: 'ai',
           trackExceptions: monitor.trackExceptions !== false,
           trackPromiseRejections: monitor.trackPromiseRejections !== false,
@@ -1817,7 +1875,7 @@ app.post('/api/monitors', authenticateToken, urlGuard(), async (req, res) => {
       goal: goal || 'Prohledej stránku a najdi jakékoliv chyby',
       interval: interval || '1h',
       ...sanitizeLlmConfig({ provider, model, host }),
-      maxSteps: Math.min(Math.max(parseInt(maxSteps) || 10, 1), MAX_AGENT_STEPS),
+      maxSteps: omezKroky(maxSteps),
       trackExceptions: trackExceptions !== false,
       trackPromiseRejections: trackPromiseRejections !== false,
       trackLongTasks: trackLongTasks !== false,
@@ -1855,7 +1913,7 @@ app.patch('/api/monitors/:id', authenticateToken, async (req, res) => {
       }
     }
     if (patch.host) patch.host = resolveLlmHost(patch.host);
-    if (patch.maxSteps) patch.maxSteps = Math.min(Math.max(parseInt(patch.maxSteps) || 10, 1), MAX_AGENT_STEPS);
+    if (patch.maxSteps) patch.maxSteps = omezKroky(patch.maxSteps);
 
     // Mezi `getMonitorById` a zápisem je mezera, ve které monitor může
     // zmizet. `updateMonitor` by z toho udělal 500 s hrubým textem od
