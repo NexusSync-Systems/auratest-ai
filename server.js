@@ -458,7 +458,7 @@ const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS, 10
 //
 // Číslo níž NENÍ změřená horní mez běhu; je to velkorysá rezerva, aby
 // pojistka nestřílela na zdravé běhy. Kdy opravdu vystřelí, se pozná
-// z `/api/version` — viz `uvolnenoPojistkou`. Kdyby to číslo rostlo,
+// z `/api/ops/browser-slots` — viz `uvolnenoPojistkou`. Kdyby to číslo rostlo,
 // je to buď zaseklý handler, nebo je rezerva pořád malá; hádat, co
 // z toho, nemá smysl, proto se to počítá a vykazuje.
 const BROWSER_SLOT_MAX_HOLD_MS = parseInt(process.env.BROWSER_SLOT_MAX_HOLD_MS, 10)
@@ -824,10 +824,29 @@ app.get('/api/case-file', authenticateToken, (req, res, next) => {
  * prohlížeč drží starý bundle.
  */
 app.get('/api/version', (req, res) => {
-  // Stav slotů patří ven. `uvolnenoPojistkou > 0` znamená, že strop na
-  // souběžné prohlížeče možná neplatí — a to se z logu nedozví nikdo,
-  // kdo se na něj zrovna nedívá.
-  res.json({ ...serverBuildInfo(), browserSlots: browserSlots.stav() });
+  // ZÁMĚRNĚ BEZ PŘIHLÁŠENÍ — a záměrně BEZ provozních údajů.
+  //
+  // Odznak verze ve frontendu tenhle endpoint čte před přihlášením, aby
+  // uměl ohlásit nesoulad mezi nasazeným frontendem a serverem. Proto tu
+  // je jen `commit` a `buildTime`.
+  //
+  // Stav slotů sem nepatří a chvíli tu omylem byl: `inUse` je vytížení
+  // serveru, které by nepřihlášený pozorovatel mohl vyčítat v čase
+  // a načasovat podle něj vyčerpání kapacity. Je to slabý únik, ale
+  // zadarmo a bez důvodu.
+  res.json(serverBuildInfo());
+});
+
+/**
+ * Provozní stav slotů pro prohlížeč. Za přihlášením.
+ *
+ * `uvolnenoPojistkou > 0` znamená, že `MAX_CONCURRENT_BROWSERS` možná
+ * neplatí — pojistka uvolnila slot, aniž bychom věděli, jestli Chromium
+ * z toho běhu dojelo. Z logu se to nedozví nikdo, kdo se zrovna nedívá,
+ * takže to má být i dotazovatelné.
+ */
+app.get('/api/ops/browser-slots', authenticateToken, (req, res) => {
+  res.json(browserSlots.stav());
 });
 
 app.get('/api/sessions', authenticateToken, async (req, res) => {
