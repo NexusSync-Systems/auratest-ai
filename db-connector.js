@@ -2,7 +2,8 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
-import { assertPublicHttpUrl } from './ssrf-guard.js';
+import { assertPublicHttpUrl, resolvePublicHttpTarget } from './ssrf-guard.js';
+import { fetchPripnute } from './safe-fetch.js';
 
 const execAsync = promisify(exec);
 
@@ -85,18 +86,29 @@ async function fetchFromApi(config) {
     }
   }
 
-  const safeApiUrl = await assertPublicHttpUrl(apiUrl);
-  const response = await fetch(safeApiUrl, {
+  // ADRESA SE PŘIPÍNÁ, NESTAČÍ JI OVĚŘIT.
+  //
+  // Dřív tu bylo `fetch(await assertPublicHttpUrl(apiUrl))`. Guard doménu
+  // přeloží a ověří, `fetch` ji přeloží ZNOVU — a na ten druhý překlad se
+  // ověření nevztahuje. DNS záznam s jednosekundovou platností tak stačí
+  // k tomu, aby spojení skončilo na vnitřní síti. `redirect: 'error'` proti
+  // tomu nepomáhá: díra není v přesměrování, ale v druhém překladu.
+  //
+  // Tenhle endpoint je na to citlivější než monitory: `apiUrl` I VLASTNÍ
+  // HLAVIČKY chodí z těla requestu a odpověď se vrací uživateli. Kontrolní
+  // vlna to našla jako totéž, co se právě opravovalo v `checkPage`.
+  const response = await fetchPripnute(await resolvePublicHttpTarget(apiUrl), {
     method: 'GET',
     headers,
-    redirect: 'error', // redirect by mohl obejít kontrolu cílové adresy
-    signal: AbortSignal.timeout(15000),
+    timeoutMs: 15000,
   });
+  // `fetchPripnute` přesměrování nesleduje, takže 3xx je konec — což je
+  // totéž, co dřív zajišťoval `redirect: 'error'`.
   if (!response.ok) {
-    throw new Error(`API vrátilo chybu: ${response.status} ${response.statusText}`);
+    throw new Error(`API vrátilo chybu: ${response.status}`);
   }
 
-  const data = await response.json();
+  const data = JSON.parse(await response.text());
   return flattenObject(data);
 }
 

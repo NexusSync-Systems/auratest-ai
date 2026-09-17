@@ -5,6 +5,7 @@ import fs from 'fs';
 import AxeBuilder from '@axe-core/playwright';
 import geoip from 'geoip-lite';
 import { assertPublicHttpUrl, resolvePublicHttpTarget, guardNavigation } from './ssrf-guard.js';
+import { fetchPripnute } from './safe-fetch.js';
 import { vyhodnotFinish, UKONCENI, popisUkonceni } from './finish-policy.js';
 import { popisHttpChyby, popisHttpChybyBehu } from './http-status.js';
 import { jeZruseny, nalezSitoveChyby, poznamkaZruseneho } from './network-findings.js';
@@ -3359,14 +3360,18 @@ export async function auditCRA_SBOM(url) {
       unreadable: scriptErrors,
       limits: bundleLimits,
     } = await collectBundleEvidence(scriptResponses, {
-      // `redirect: 'manual'` je bezpečnostní požadavek, ne detail.
+      // Přesměrování se nesleduje — bezpečnostní požadavek, ne detail.
       // S výchozím 'follow' by cizí server odpověděl na same-origin URL
       // přesměrováním na 169.254.169.254 a obsah interní služby by skončil
       // v reportu. Kontrolní vlna to předvedla funkčním PoC.
-      fetchMap: (mapUrl) => fetch(mapUrl, {
-        redirect: 'manual',
-        signal: AbortSignal.timeout(10000),
-      }),
+      // `fetchPripnute` přesměrování nesleduje z principu.
+      //
+      // Adresa se navíc PŘIPÍNÁ. Dřív tu byl holý `fetch`, takže mezi
+      // `assertUrlAllowed` a spojením zbývalo okno na druhý překlad DNS —
+      // a URL source mapy určuje auditovaný, tedy cizí web. Obsah přitom
+      // končí v reportu.
+      fetchMap: async (mapUrl) =>
+        fetchPripnute(await resolvePublicHttpTarget(mapUrl), { timeoutMs: 10000 }),
       assertUrlAllowed: assertPublicHttpUrl,
     });
 
@@ -4427,20 +4432,44 @@ export async function auditCRAVulnerabilities(url) {
  */
 
 /**
- * fetch, který sleduje přesměrování ručně a každý hop znovu prožene SSRF
+ * Požadavek, který sleduje přesměrování ručně a každý hop znovu prožene SSRF
  * guardem. Vestavěné `redirect: 'follow'` validuje jen první adresu.
+ *
+ * KAŽDÝ HOP SE PŘIPÍNÁ.
+ * Dřív tu bylo `fetch(await assertPublicHttpUrl(url))`. Guard doménu přeložil
+ * a ověřil, `fetch` ji pak přeložil znovu — a na ten druhý překlad se ověření
+ * nevztahovalo. DNS záznam s jednosekundovou platností tak stačil k tomu,
+ * aby se spojení otevřelo jinam, než kam mířila kontrola. `resolvePublicHttpTarget`
+ * vrací i IP, na kterou se smí připojit, a `fetchPripnute` ji připne —
+ * druhý překlad se neuskuteční vůbec.
  */
 async function fetchFollowingSafeRedirects(rawUrl, options = {}, maxHops = 5) {
-  let current = await assertPublicHttpUrl(rawUrl);
+  // ČASOVÝ STROP PLATÍ NA CELÝ ŘETĚZ, NE NA KAŽDÝ SKOK.
+  //
+  // Dřív tu byl jeden `AbortController` na celou kontrolu. Po převodu na
+  // `fetchPripnute` se stejné `timeoutMs` předávalo každému hopu zvlášť —
+  // při `maxHops = 5` tedy až šestkrát, plus šest překladů DNS. Monitor
+  // s desetisekundovým stropem mohl viset skoro minutu. Našla to kontrolní
+  // vlna; `target.timeoutMs` navíc chodí přímo z těla requestu.
+  const celkem = options.timeoutMs ?? 10_000;
+  const konec = Date.now() + celkem;
+  const zbyva = () => {
+    const z = konec - Date.now();
+    if (z <= 0) throw Object.assign(new Error('Timeout'), { name: 'AbortError' });
+    return z;
+  };
+
+  let cil = await resolvePublicHttpTarget(rawUrl);
 
   for (let hop = 0; hop <= maxHops; hop++) {
-    const res = await fetch(current, { ...options, redirect: 'manual' });
+    const res = await fetchPripnute(cil, { ...options, timeoutMs: zbyva() });
     const isRedirect = res.status >= 300 && res.status < 400;
     const location = res.headers.get('location');
     if (!isRedirect || !location) return res;
 
     if (hop === maxHops) throw new Error('Překročen limit přesměrování.');
-    current = await assertPublicHttpUrl(new URL(location, current).href);
+    zbyva();
+    cil = await resolvePublicHttpTarget(new URL(location, cil.url).href);
   }
 
   throw new Error('Překročen limit přesměrování.');
@@ -4459,16 +4488,16 @@ export async function checkPage(target) {
     error: null,
   };
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), target.timeoutMs || 10000);
-
   try {
     // `redirect: 'follow'` obcházel SSRF kontrolu — stačilo veřejnou adresou
     // přesměrovat na interní. Přesměrování proto sledujeme ručně a každý hop
     // znovu ověřujeme. Guard tu voláme i na vstupní URL: funkce je
     // exportovaná, takže se nemůžeme spolehnout jen na middleware v server.js.
+    //
+    // Časový strop řeší `fetchPripnute` sám — `AbortController` odsud zmizel
+    // spolu s `fetch`.
     const res = await fetchFollowingSafeRedirects(target.url, {
-      signal: controller.signal,
+      timeoutMs: target.timeoutMs || 10000,
       headers: { 'User-Agent': 'auraguard-monitor/1.0' },
     });
     const body = await res.text();
@@ -4488,8 +4517,6 @@ export async function checkPage(target) {
   } catch (err) {
     result.durationMs = Date.now() - start;
     result.error = err.name === 'AbortError' ? 'Timeout' : err.message;
-  } finally {
-    clearTimeout(timeout);
   }
 
   return result;
@@ -4508,17 +4535,18 @@ export async function checkForm(target) {
     error: null,
   };
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), target.timeoutMs || 10000);
-
   try {
     const method = (target.method || 'POST').toUpperCase();
-    const body = method === 'GET' ? undefined : new URLSearchParams(target.fields || {});
+    const body = method === 'GET' ? undefined : new URLSearchParams(target.fields || {}).toString();
 
-    const res = await fetch(await assertPublicHttpUrl(target.url), {
+    // `fetch(await assertPublicHttpUrl(url))` vypadalo ošetřeně, ale guard
+    // vrací jen řetězec — `fetch` si doménu přeložil ZNOVU a na ten druhý
+    // překlad se ověření nevztahovalo. `resolvePublicHttpTarget` vrací i IP
+    // a `fetchPripnute` ji připne, takže druhý překlad nenastane.
+    // Přesměrování se nesleduje záměrně: POST se nikam neposílá dál.
+    const res = await fetchPripnute(await resolvePublicHttpTarget(target.url), {
       method,
-      signal: controller.signal,
-      redirect: 'manual', // POST se nikam nepřesměrovává, cíl zůstává ověřený
+      timeoutMs: target.timeoutMs || 10000,
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': 'auraguard-monitor/1.0',
@@ -4546,8 +4574,6 @@ export async function checkForm(target) {
   } catch (err) {
     result.durationMs = Date.now() - start;
     result.error = err.name === 'AbortError' ? 'Timeout' : err.message;
-  } finally {
-    clearTimeout(timeout);
   }
 
   return result;

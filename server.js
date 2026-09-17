@@ -9,7 +9,8 @@ import { runAutonomousTest, comparePages, auditTranslations, extractInternalLink
 import { fetchTranslations } from './db-connector.js';
 import { authenticateToken } from './auth.js';
 import { auth } from './db.js';
-import { assertPublicHttpUrl } from './ssrf-guard.js';
+import { assertPublicHttpUrl, resolvePublicHttpTarget } from './ssrf-guard.js';
+import { fetchPripnute } from './safe-fetch.js';
 import { isEmailAllowed, accessConfig } from './access-control.js';
 import { verifySlackRequest, parseSlackPayload } from './slack-verify.js';
 import { sendSlackNotification } from './slack-notifier.js';
@@ -2138,11 +2139,15 @@ app.post('/api/notify/slack', authenticateToken, async (req, res) => {
   }
 
   try {
-    const slackRes = await fetch(safeWebhook, {
+    // Tentýž vzorec jako v monitorech: ověřit adresu a pak ji nechat
+    // přeložit znovu. Zneužít to tady by znamenalo ovládat DNS pro
+    // `hooks.slack.com`, takže je to prakticky nedosažitelné — ale
+    // nechat v repozitáři poslední výskyt vzorce, který se právě všude
+    // jinde odstranil, je pozvánka k tomu zkopírovat ho zpátky.
+    const slackRes = await fetchPripnute(await resolvePublicHttpTarget(safeWebhook), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      redirect: 'error',
-      signal: AbortSignal.timeout(10000),
+      timeoutMs: 10000,
       body: JSON.stringify({ text: String(text).slice(0, 3000) }),
     });
 
