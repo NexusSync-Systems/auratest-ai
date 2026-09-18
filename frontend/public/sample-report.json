@@ -1,30 +1,42 @@
 {
-  "measuredAt": "2026-09-10T08:41:18.177Z",
-  "target": "https://auraguard.nexusstack.eu",
+  "measuredAt": "2026-09-18T15:59:04.455Z",
+  "target": "https://www.cloudflare.com",
   "note": "Naměřeno skutečným během nástroje, ne ručně sestaveno. Nálezy popisují stav cílového webu v uvedený čas.",
   "sections": {
     "nis2": {
       "data": {
         "success": true,
-        "url": "https://auraguard.nexusstack.eu",
-        "finalUrl": "https://auraguard.nexusstack.eu/",
+        "url": "https://www.cloudflare.com",
+        "finalUrl": "https://www.cloudflare.com/",
         "nis2": {
           "hsts": true,
-          "csp": true,
+          "csp": false,
           "xContentTypeOptions": true,
           "xFrameOptions": true,
           "referrerPolicy": true,
           "permissionsPolicy": true,
           "missingHeaders": [],
-          "weakHeaders": [],
+          "weakHeaders": [
+            "Content-Security-Policy"
+          ],
           "inconclusiveHeaders": [],
-          "headersComplete": true,
-          "isCompliant": true,
+          "headersComplete": false,
+          "isCompliant": false,
           "cspDetail": {
             "present": true,
             "policies": 1,
-            "ok": true,
+            "ok": false,
             "findings": [
+              {
+                "severity": "high",
+                "id": "csp.script-src.unsafe-inline",
+                "message": "Pro skripty je povolen 'unsafe-inline' bez nonce, hashe či 'strict-dynamic' — vložený skript projde, což je hlavní vektor XSS."
+              },
+              {
+                "severity": "medium",
+                "id": "csp.script-src.unsafe-eval",
+                "message": "Pro skripty je povolen 'unsafe-eval' — kód se smí vyhodnocovat z řetězce."
+              },
               {
                 "severity": "low",
                 "id": "csp.reporting.missing",
@@ -38,9 +50,14 @@
               "img-src",
               "font-src",
               "connect-src",
-              "frame-ancestors",
+              "frame-src",
+              "object-src",
               "base-uri",
-              "form-action"
+              "form-action",
+              "frame-ancestors",
+              "worker-src",
+              "child-src",
+              "upgrade-insecure-requests"
             ]
           },
           "hstsDetail": {
@@ -56,16 +73,19 @@
             "rationale": "Platnost 31536000 s, včetně subdomén. Posuzuje se text hlavičky, ne to, jestli si ji prohlížeč skutečně zapamatoval."
           },
           "scope": "Kontrola bezpečnostních hlaviček a TLS. Nejde o posouzení shody s NIS2 jako celkem — zákon vyžaduje i organizační opatření, která externí sken ověřit nedokáže.",
-          "tlsFindings": []
+          "tlsFindings": [
+            "Server přijímá sady bez dopředné utajenosti. Kdo někdy získá privátní klíč, rozšifruje jím i dříve odposlechnutý provoz.",
+            "Server přijímá sady používající SHA-1. Ta je pro ověření zpráv v TLS považovaná za dožitou."
+          ]
         },
         "pqc": {
           "secure": true,
           "protocol": "TLS 1.3",
-          "subjectName": "auraguard.nexusstack.eu",
-          "issuer": "YE1",
-          "isQuantumSafe": false,
+          "subjectName": "www.cloudflare.com",
+          "issuer": "WE1",
+          "isQuantumSafe": true,
           "pqcGroup": "X25519MLKEM768",
-          "pqcRationale": "Server nepřijal X25519MLKEM768. Zaznamenaný provoz půjde zpětně dešifrovat, až bude k dispozici dostatečně velký kvantový počítač. Testovala se tahle jedna skupina — jinou post-kvantovou server podporovat může.",
+          "pqcRationale": "Server přijal hybridní post-kvantovou výměnu klíčů X25519MLKEM768. Provoz je chráněný i proti útoku „sesbírej teď, dešifruj později\".",
           "protocolsEnabled": [
             "TLSv1.2",
             "TLSv1.3"
@@ -74,27 +94,30 @@
           "protocolsUntested": [],
           "certificate": {
             "present": true,
-            "subject": "auraguard.nexusstack.eu",
-            "issuer": "YE1",
+            "subject": "www.cloudflare.com",
+            "issuer": "WE1",
             "notes": [],
-            "validFrom": "Aug 24 14:11:57 2026 GMT",
-            "validTo": "Nov 22 14:11:56 2026 GMT",
-            "daysRemaining": 73,
+            "validFrom": "Sep 16 13:01:15 2026 GMT",
+            "validTo": "Dec 15 14:00:55 2026 GMT",
+            "daysRemaining": 87,
             "keyBits": 256,
             "curve": "prime256v1",
             "selfSigned": false,
             "ok": true,
             "issues": []
           },
-          "tlsIssues": [],
+          "tlsIssues": [
+            "Server přijímá sady bez dopředné utajenosti. Kdo někdy získá privátní klíč, rozšifruje jím i dříve odposlechnutý provoz.",
+            "Server přijímá sady používající SHA-1. Ta je pro ověření zpráv v TLS považovaná za dožitou."
+          ],
           "tlsNotes": [
-            "Server odmítl všechny sady, které šlo změřit (2 ze 3). Zkoušel se uzavřený seznam, takže z toho neplyne, že přijímá jen ty nejlepší. Nezměřitelné naším prostředím: Sady s 3DES — tyhle sady v našem buildu OpenSSL neexistují, takže je klient nemůže nabídnout. O serveru to neříká nic a do verdiktu se to nepočítá.",
+            "Server přijímá 2 skupiny slabých sad šifer. Nezměřitelné naším prostředím: Sady s 3DES — tyhle sady v našem buildu OpenSSL neexistují, takže je klient nemůže nabídnout. O serveru to neříká nic a do verdiktu se to nepočítá.",
             "Server OCSP odpověď nepřikládá. Není to porušení předpisu — jde o doporučené zpevnění, ne o povinnost."
           ],
-          "recommendation": "Server nepřijal X25519MLKEM768. Dnes zachycený provoz půjde zpětně dešifrovat, až bude k dispozici dostatečně silný kvantový počítač. Podpora je v OpenSSL 3.5+, BoringSSL i u velkých CDN. Pozn.: testovala se tahle jedna skupina — server může podporovat jinou post-kvantovou."
+          "recommendation": "Server přijímá hybridní post-kvantovou výměnu klíčů X25519MLKEM768. Provoz je chráněný proti strategii „sesbírej teď, dešifruj později\"."
         },
         "tls": {
-          "ok": true,
+          "ok": false,
           "protocols": {
             "enabled": [
               "TLSv1.2",
@@ -112,12 +135,12 @@
           },
           "certificate": {
             "present": true,
-            "subject": "auraguard.nexusstack.eu",
-            "issuer": "YE1",
+            "subject": "www.cloudflare.com",
+            "issuer": "WE1",
             "notes": [],
-            "validFrom": "Aug 24 14:11:57 2026 GMT",
-            "validTo": "Nov 22 14:11:56 2026 GMT",
-            "daysRemaining": 73,
+            "validFrom": "Sep 16 13:01:15 2026 GMT",
+            "validTo": "Dec 15 14:00:55 2026 GMT",
+            "daysRemaining": 87,
             "keyBits": 256,
             "curve": "prime256v1",
             "selfSigned": false,
@@ -125,13 +148,16 @@
             "issues": []
           },
           "pqc": {
-            "supported": false,
-            "status": "fail",
-            "rationale": "Server nepřijal X25519MLKEM768. Zaznamenaný provoz půjde zpětně dešifrovat, až bude k dispozici dostatečně velký kvantový počítač. Testovala se tahle jedna skupina — jinou post-kvantovou server podporovat může."
+            "supported": true,
+            "status": "pass",
+            "rationale": "Server přijal hybridní post-kvantovou výměnu klíčů X25519MLKEM768. Provoz je chráněný i proti útoku „sesbírej teď, dešifruj později\"."
           },
           "ciphers": {
-            "ok": true,
-            "accepted": [],
+            "ok": false,
+            "accepted": [
+              "noForwardSecrecy",
+              "sha1Mac"
+            ],
             "untested": [
               "Sady s 3DES"
             ],
@@ -139,8 +165,19 @@
               "Sady s 3DES"
             ],
             "inconclusive": [],
-            "findings": [],
-            "rationale": "Server odmítl všechny sady, které šlo změřit (2 ze 3). Zkoušel se uzavřený seznam, takže z toho neplyne, že přijímá jen ty nejlepší. Nezměřitelné naším prostředím: Sady s 3DES — tyhle sady v našem buildu OpenSSL neexistují, takže je klient nemůže nabídnout. O serveru to neříká nic a do verdiktu se to nepočítá."
+            "findings": [
+              {
+                "severity": "high",
+                "key": "noForwardSecrecy",
+                "message": "Server přijímá sady bez dopředné utajenosti. Kdo někdy získá privátní klíč, rozšifruje jím i dříve odposlechnutý provoz."
+              },
+              {
+                "severity": "medium",
+                "key": "sha1Mac",
+                "message": "Server přijímá sady používající SHA-1. Ta je pro ověření zpráv v TLS považovaná za dožitou."
+              }
+            ],
+            "rationale": "Server přijímá 2 skupiny slabých sad šifer. Nezměřitelné naším prostředím: Sady s 3DES — tyhle sady v našem buildu OpenSSL neexistují, takže je klient nemůže nabídnout. O serveru to neříká nic a do verdiktu se to nepočítá."
           },
           "chain": {
             "ok": true,
@@ -150,12 +187,15 @@
             "ok": false,
             "rationale": "Server OCSP odpověď nepřikládá. Není to porušení předpisu — jde o doporučené zpevnění, ne o povinnost."
           },
-          "issues": [],
+          "issues": [
+            "Server přijímá sady bez dopředné utajenosti. Kdo někdy získá privátní klíč, rozšifruje jím i dříve odposlechnutý provoz.",
+            "Server přijímá sady používající SHA-1. Ta je pro ověření zpráv v TLS považovaná za dožitou."
+          ],
           "notes": [
-            "Server odmítl všechny sady, které šlo změřit (2 ze 3). Zkoušel se uzavřený seznam, takže z toho neplyne, že přijímá jen ty nejlepší. Nezměřitelné naším prostředím: Sady s 3DES — tyhle sady v našem buildu OpenSSL neexistují, takže je klient nemůže nabídnout. O serveru to neříká nic a do verdiktu se to nepočítá.",
+            "Server přijímá 2 skupiny slabých sad šifer. Nezměřitelné naším prostředím: Sady s 3DES — tyhle sady v našem buildu OpenSSL neexistují, takže je klient nemůže nabídnout. O serveru to neříká nic a do verdiktu se to nepočítá.",
             "Server OCSP odpověď nepřikládá. Není to porušení předpisu — jde o doporučené zpevnění, ne o povinnost."
           ],
-          "rating": "TLS konfigurace bez nálezu. Post-kvantová výměna klíčů zatím není nasazená."
+          "rating": "NALEZENO 2 problémů v TLS konfiguraci."
         }
       },
       "error": null
@@ -163,9 +203,10 @@
     "aiAct": {
       "data": {
         "success": true,
-        "url": "https://auraguard.nexusstack.eu",
+        "url": "https://www.cloudflare.com",
         "navigationError": null,
         "aiAct": {
+          "scope": "Kontrola článku 50 zvenčí: hledá se rozhraní AI v DOM stránky, upozornění v jejím textu a podpis C2PA v prvních 64 kB obrázků. Model volaný z backendu, serverová integrace ani obsah vytvořený mimo prohlížeč takový sken nevidí. Povinnosti podle odst. 3 a 4 (rozpoznávání emocí, deepfakes) jsou mimo jeho dosah úplně.",
           "obligations": [
             {
               "id": "art50.1",
@@ -177,23 +218,25 @@
                 "domIndicators": [],
                 "hasDisclaimer": true,
                 "disclosurePlacement": "below-fold",
-                "disclosureOccurrences": 2
+                "disclosureOccurrences": 9
               },
               "rationale": "Nezachyceno volání AI API ani konverzační prvek. Server-side integraci tímto testem vyloučit nelze."
             },
             {
               "id": "art50.2",
               "title": "Strojově čitelné označení syntetického obsahu",
-              "status": "not_applicable",
+              "status": "inconclusive",
               "evidence": {
-                "imagesTotal": 0,
-                "imagesSampled": 0,
+                "imagesTotal": 68,
+                "imagesSampled": 8,
                 "imagesWithC2pa": 0,
                 "imagesDeclaredAi": 0,
                 "imagesDeclaredCapture": 0,
-                "imagesUnsampled": 0
+                "imagesDeclaredAmbiguous": 0,
+                "imagesUnknownSource": 0,
+                "imagesUnsampled": 60
               },
-              "rationale": "Na stránce nejsou obrázky, u kterých by šlo označení ověřit."
+              "rationale": "Žádný z 8 zkoumaných obrázků nenese C2PA manifest. Bez znalosti toho, co systém generuje, z toho ale nelze usuzovat na porušení."
             },
             {
               "id": "art50.3",
@@ -202,10 +245,10 @@
               "outOfScope": true,
               "evidence": {
                 "hints": [
-                  "text zmiňuje rozpoznávání obličeje nebo emocí"
+                  "video + zmínka o rozpoznávání"
                 ]
               },
-              "rationale": "Na stránce jsou prvky, které mohou souviset s biometrií (text zmiňuje rozpoznávání obličeje nebo emocí). Zda jde o rozpoznávání emocí nebo kategorizaci, externí sken neurčí — posuďte ručně."
+              "rationale": "Na stránce jsou prvky, které mohou souviset s biometrií (video + zmínka o rozpoznávání). Zda jde o rozpoznávání emocí nebo kategorizaci, externí sken neurčí — posuďte ručně."
             },
             {
               "id": "art50.4",
@@ -219,11 +262,11 @@
           "counts": {
             "pass": 0,
             "fail": 0,
-            "inconclusive": 3,
-            "not_applicable": 1
+            "inconclusive": 4,
+            "not_applicable": 0
           },
           "isCompliant": null,
-          "rating": "NEPRŮKAZNÉ: 3 ze 4 povinností čl. 50 nelze externím skenem posoudit. Splnění ani porušení nelze tvrdit.",
+          "rating": "NEPRŮKAZNÉ: 4 ze 4 povinností čl. 50 nelze externím skenem posoudit. Splnění ani porušení nelze tvrdit.",
           "apisDetected": [],
           "hasDisclaimer": true,
           "status": "inconclusive"
@@ -234,7 +277,7 @@
     "cra": {
       "data": {
         "success": true,
-        "url": "https://auraguard.nexusstack.eu",
+        "url": "https://www.cloudflare.com",
         "cra": {
           "libraries": [
             {
@@ -244,7 +287,7 @@
               "version": null,
               "truncatedScan": false,
               "confidence": "presence-only",
-              "evidence": "react.element",
+              "evidence": "react.portal",
               "sources": [
                 "bundle-fingerprint"
               ]
@@ -256,7 +299,7 @@
               "version": null,
               "truncatedScan": false,
               "confidence": "presence-only",
-              "evidence": "createRoot=Qc.createRoot,Ps.hydrateRoot=Qc.hydrateRoot",
+              "evidence": "__reactContainer$",
               "sources": [
                 "bundle-fingerprint"
               ]
@@ -276,11 +319,11 @@
           "isCompliant": null,
           "rating": "NEPRŮKAZNÉ: Žádnou z 2 detekovaných knihoven nešlo ověřit proti OSV.",
           "evidence": {
-            "scriptsCaptured": 3,
-            "scriptsScanned": 3,
+            "scriptsCaptured": 40,
+            "scriptsScanned": 40,
             "scriptsUnreadable": 0,
             "sourceMapPackages": 0,
-            "truncated": false,
+            "truncated": true,
             "truncatedScripts": [],
             "droppedSourceMapPackages": 0,
             "httpError": null
@@ -294,42 +337,117 @@
     "green": {
       "data": {
         "success": true,
-        "url": "https://auraguard.nexusstack.eu",
+        "url": "https://www.cloudflare.com",
         "green": {
-          "totalMb": 1.23,
-          "co2Grams": 0.997,
-          "rating": "A (Zelený)"
+          "measured": true,
+          "totalBytes": 7169137,
+          "totalMb": 7.17,
+          "co2Grams": 1.062,
+          "rating": "F",
+          "ratingNote": "Objem přenesených dat je nad celosvětovým průměrem velikosti stránky (2,42 MB). Není to vada ani porušení předpisu — stupnice porovnává objem dat, ne shodu s právní úpravou.",
+          "uplne": true,
+          "zmerenychPozadavku": 134,
+          "nezmerenychPozadavku": 0,
+          "duvod": null,
+          "scope": {
+            "model": "Sustainable Web Design Model, verze 4",
+            "zdroj": "https://sustainablewebdesign.org/estimating-digital-emissions/",
+            "stupniceZdroj": "https://sustainablewebdesign.org/digital-carbon-ratings/",
+            "emisniFaktorGNaGb": 148.20000000000002,
+            "uhlikovaIntenzitaGNaKwh": 494,
+            "jeOdhad": true,
+            "predpoklady": [
+              "Model je atribuční a shora dolů: dělí celosvětovou spotřebu energie celosvětovým objemem přenesených dat. O spotřebě konkrétně tohoto načtení neříká nic.",
+              "Použita celosvětová průměrná uhlíková intenzita elektřiny (494 gCO2e/kWh). Umístění datových center ani uživatelů se nezohledňuje.",
+              "Zelený hosting se nezapočítává (faktor 0) — z jednoho skenu ho nezjistíme. Web na obnovitelné energii má tedy skutečnou stopu nižší.",
+              "Počítá se jedno načtení novým návštěvníkem bez mezipaměti. Vratní návštěvníci přenesou méně.",
+              "Autoři modelu volí široké hranice systému a sami uvádějí, že model spíš nadhodnocuje."
+            ],
+            "nepokryva": [
+              "skutečnou spotřebu energie serveru, sítě ani zařízení návštěvníka",
+              "emise z provozu, který nevznikne načtením stránky (API, zpracování dat)",
+              "shodu s jakýmkoli předpisem — stupnice A+ až F je srovnání objemu dat"
+            ],
+            "coSePocita": [
+              "bajty těla odpovědi tak, jak je přijal prohlížeč — tedy komprimované, je-li odpověď komprimovaná (`responseBodySize` z Playwrightu)",
+              "u odpovědí, které posílají i `content-length`, bývá toto číslo o jednotky procent vyšší — zahrnuje režii přenosu; hlavičky odpovědi se proto nepřičítají zvlášť, aby se režie nezapočetla dvakrát",
+              "bajty požadavku (hlavičky a tělo odesílané k serveru) se nepočítají; stejně je nepočítá ani HTTP Archive, ze kterého je odvozená stupnice",
+              "odpověď, u níž prohlížeč velikost neohlásí (mimo jiné trefa do mezipaměti), se nesčítá ani jako nula — počítá se zvlášť a výsledek je pak označen jako dolní mez",
+              "obsah vložený přímo v HTML přes `data:` URL vlastní požadavek nevytvoří, je součástí objemu rodičovského dokumentu"
+            ]
+          },
+          "puvod": {
+            "rozdeleno": true,
+            "originHost": "www.cloudflare.com",
+            "vlastniBajtu": 7157556,
+            "ciziBajtu": 11581,
+            "podilCizichProcent": 0.2,
+            "vlastnichDomen": 2,
+            "cizichDomen": 3,
+            "nejvetsiCizi": [
+              {
+                "domena": "static.cloudflareinsights.com",
+                "bajtu": 10338,
+                "pozadavku": 1
+              },
+              {
+                "domena": "cdn.cookielaw.org",
+                "bajtu": 858,
+                "pozadavku": 1
+              },
+              {
+                "domena": "www.googletagmanager.com",
+                "bajtu": 385,
+                "pozadavku": 1
+              }
+            ],
+            "pravidlo": "Za „vlastní\" se počítá auditovaná doména, její poddomény a doména nadřazená; předpona „www.\" se před porovnáním odřezává. Všechno ostatní je „jiná doména\". Je to srovnání JMEN, ne vlastnictví: sken nezjistí, kdo kterou doménu provozuje, takže vlastní CDN na jiné doméně vyjde jako cizí a nakoupená služba na poddoméně jako vlastní. Sourozenecké poddomény jiné než „www\" se nespárují — u skenu spuštěného na „shop.firma.cz\" vyjde „img.firma.cz\" jako jiná doména. Chyba tedy může jít oběma směry; číslo není horní ani dolní mez."
+          }
         },
         "residency": {
-          "totalDomains": 3,
+          "totalDomains": 5,
           "locations": [
             {
-              "domain": "auraguard.nexusstack.eu",
-              "ip": "4.223.166.194",
-              "country": "SE",
-              "isEU": true,
-              "onCdn": false,
-              "isOrigin": true,
-              "source": "rozsah poskytovatele",
-              "cloudProvider": "azure",
-              "cloudRegion": "swedencentral"
-            },
-            {
-              "domain": "fonts.googleapis.com",
-              "ip": "192.178.25.10",
+              "domain": "www.cloudflare.com",
+              "ip": "104.16.124.96",
               "country": "US",
               "onCdn": true,
-              "cdnProvider": "Google",
-              "cdnEvidence": "hlavička server",
+              "cdnProvider": "Cloudflare",
+              "cdnEvidence": "hlavička cf-ray",
               "isEU": null
             },
             {
-              "domain": "fonts.gstatic.com",
-              "ip": "172.217.19.227",
+              "domain": "static.cloudflareinsights.com",
+              "ip": "104.16.79.73",
               "country": "US",
               "onCdn": true,
-              "cdnProvider": "gstatic.com",
-              "cdnEvidence": "hostname obsahuje „gstatic.com\"",
+              "cdnProvider": "Cloudflare",
+              "cdnEvidence": "hlavička cf-ray",
+              "isEU": null
+            },
+            {
+              "domain": "ot.www.cloudflare.com",
+              "ip": "104.16.124.96",
+              "country": "US",
+              "onCdn": true,
+              "cdnProvider": "Cloudflare",
+              "cdnEvidence": "hlavička cf-ray",
+              "isEU": null
+            },
+            {
+              "domain": "www.googletagmanager.com",
+              "ip": "142.251.143.136",
+              "country": null,
+              "isEU": null,
+              "onCdn": false
+            },
+            {
+              "domain": "cdn.cookielaw.org",
+              "ip": "104.18.86.42",
+              "country": "US",
+              "onCdn": true,
+              "cdnProvider": "Cloudflare",
+              "cdnEvidence": "hlavička cf-ray",
               "isEU": null
             }
           ],
@@ -337,50 +455,73 @@
           "usesUSServers": false,
           "cdnDomains": [
             {
-              "domain": "fonts.googleapis.com",
-              "ip": "192.178.25.10",
+              "domain": "www.cloudflare.com",
+              "ip": "104.16.124.96",
               "country": "US",
               "onCdn": true,
-              "cdnProvider": "Google",
-              "cdnEvidence": "hlavička server"
+              "cdnProvider": "Cloudflare",
+              "cdnEvidence": "hlavička cf-ray"
             },
             {
-              "domain": "fonts.gstatic.com",
-              "ip": "172.217.19.227",
+              "domain": "static.cloudflareinsights.com",
+              "ip": "104.16.79.73",
               "country": "US",
               "onCdn": true,
-              "cdnProvider": "gstatic.com",
-              "cdnEvidence": "hostname obsahuje „gstatic.com\""
+              "cdnProvider": "Cloudflare",
+              "cdnEvidence": "hlavička cf-ray"
+            },
+            {
+              "domain": "ot.www.cloudflare.com",
+              "ip": "104.16.124.96",
+              "country": "US",
+              "onCdn": true,
+              "cdnProvider": "Cloudflare",
+              "cdnEvidence": "hlavička cf-ray"
+            },
+            {
+              "domain": "cdn.cookielaw.org",
+              "ip": "104.18.86.42",
+              "country": "US",
+              "onCdn": true,
+              "cdnProvider": "Cloudflare",
+              "cdnEvidence": "hlavička cf-ray"
             }
           ],
-          "unlocatedDomains": [],
-          "measuredDomains": 1,
-          "geoipDatabaseDate": "2026-09-09T18:41:24.000Z",
+          "unlocatedDomains": [
+            {
+              "domain": "www.googletagmanager.com",
+              "ip": "142.251.143.136",
+              "reason": "databáze adresu neumístila (výplňová souřadnice)"
+            }
+          ],
+          "measuredDomains": 0,
+          "geoipDatabaseDate": "2026-09-18T10:38:44.000Z",
           "cloudRangesSnapshot": {
-            "generatedAt": "2026-09-09T18:33:23.207Z",
+            "generatedAt": "2026-09-18T11:17:23.178Z",
             "sources": [
               {
                 "provider": "aws",
                 "url": "https://ip-ranges.amazonaws.com/ip-ranges.json",
-                "snapshot": "2026-09-09-14-37-05"
+                "snapshot": "2026-09-18-08-07-06"
               },
               {
                 "provider": "gcp",
                 "url": "https://www.gstatic.com/ipranges/cloud.json",
-                "snapshot": "2026-09-09T07:04:23.436403"
+                "snapshot": "2026-09-18T01:20:53.37432"
               },
               {
                 "provider": "azure",
-                "url": "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/ServiceTags_Public_20260907.json",
-                "snapshot": "changeNumber 417"
+                "url": "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/ServiceTags_Public_20260914.json",
+                "snapshot": "changeNumber 418"
               }
             ],
-            "count": 80598
+            "count": 83084,
+            "count6": 33688
           },
-          "originHost": "auraguard.nexusstack.eu",
-          "originMeasured": true,
-          "isEUCompliant": true,
-          "warning": "Všech 1 posouzených serverů je v EU/EHP (celkem domén: 3). Z verdiktu vyřazeno: 2 běží za CDN, kde geolokace ukazuje na nejbližší PoP, ne na místo uložení dat — rezidenci u nich doloží smlouva s poskytovatelem, ne tohle měření."
+          "originHost": "www.cloudflare.com",
+          "originMeasured": false,
+          "isEUCompliant": null,
+          "warning": "Umístění serverů se nepodařilo posoudit u žádné domény. Z verdiktu vyřazeno: 4 běží za CDN, kde geolokace ukazuje na nejbližší PoP, ne na místo uložení dat — rezidenci u nich doloží smlouva s poskytovatelem, ne tohle měření; u 1 nenašla geolokační databáze záznam k adrese. Doménu auditovaného webu (www.cloudflare.com) se umístit nepodařilo, takže o rezidenci dat provozovatele tenhle sken neříká nic — posouzené domény patří jiným službám."
         }
       },
       "error": null
@@ -388,7 +529,7 @@
     "a11y": {
       "data": {
         "success": true,
-        "url": "https://auraguard.nexusstack.eu/",
+        "url": "https://www.cloudflare.com/",
         "navigationError": null,
         "engine": {
           "name": "axe-core",
@@ -407,7 +548,7 @@
             "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
             "help": "Elements must meet minimum color contrast ratio thresholds",
             "helpUrl": "https://dequeuniversity.com/rules/axe/4.12/color-contrast?application=playwright",
-            "nodeCount": 1
+            "nodeCount": 5
           }
         ],
         "incomplete": [
@@ -417,30 +558,53 @@
             "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
             "help": "Elements must meet minimum color contrast ratio thresholds",
             "helpUrl": "https://dequeuniversity.com/rules/axe/4.12/color-contrast?application=playwright",
-            "nodeCount": 2
+            "nodeCount": 102
           }
         ],
-        "passedCount": 11
+        "passedCount": 26,
+        "scope": "Automatický test axe-core proti pravidlům WCAG 2.1 AA a EN 301 549. Pokrývá jen kritéria ověřitelná strojově — srozumitelnost textu, smysluplnost pořadí obsahu, ovládání klávesnicí napříč celou cestou uživatele ani použitelnost s odečítačem obrazovky takový test neposoudí. Položky k ručnímu posouzení nejsou splněné ani nesplněné."
       },
       "error": null
     },
     "cookies": {
       "data": {
         "success": true,
-        "url": "https://auraguard.nexusstack.eu",
+        "url": "https://www.cloudflare.com",
         "navigationError": null,
         "cookieFlags": {
-          "ok": null,
-          "total": 0,
-          "findings": [],
-          "rationale": "Při načtení stránky nebyla nastavena žádná cookie, takže není co posoudit. Neznamená to, že aplikace cookies nepoužívá — mohou vzniknout až po přihlášení."
+          "ok": true,
+          "total": 2,
+          "firstParty": 2,
+          "thirdParty": 0,
+          "findings": [
+            {
+              "severity": "medium",
+              "id": "cookie.secure.missing",
+              "cookie": "OptanonConsent",
+              "domain": ".cloudflare.com",
+              "message": "Cookie bez příznaku Secure."
+            },
+            {
+              "severity": "low",
+              "id": "cookie.httponly.missing",
+              "cookie": "OptanonConsent",
+              "domain": ".cloudflare.com",
+              "message": "Cookie bez HttpOnly je čitelná ze skriptu. U analytické cookie to bývá záměr, protože ji čte měřicí kód."
+            }
+          ],
+          "scope": "Příznaky cookies nastavených při jednom načtení stránky nepřihlášeným návštěvníkem. Cookies vznikající až po přihlášení, po udělení souhlasu nebo na dalších stránkách sken nevidí. Posuzují se jen cookies vlastní domény; cizí se počítají, ale nehodnotí, protože je provozovatel nemá jak změnit. Neposuzuje se právní titul ani nutnost cookie.",
+          "rationale": "Zkontrolováno 2 vlastních cookies, žádný závažný nedostatek v příznacích."
         },
         "gdpr": {
-          "suspiciousItems": [],
+          "suspiciousItems": [
+            "Požadavek na tracking doménu: www.googletagmanager.com"
+          ],
           "storedItems": [],
-          "requestItems": [],
-          "isCompliant": true,
-          "rating": "BEZ NÁLEZU: Před udělením souhlasu nebyly nalezeny trackery ze sledovaného seznamu. Nejde o důkaz plného souladu — seznam není vyčerpávající."
+          "requestItems": [
+            "Požadavek na tracking doménu: www.googletagmanager.com"
+          ],
+          "isCompliant": false,
+          "rating": "NÁLEZ: Před udělením souhlasu odešly požadavky na 1 sledovaných domén. Neuložila se přitom žádná cookie ani položka do úložiště prohlížeče — samotné načtení skriptu porušením být nemusí, pokud nedošlo k předání identifikátoru. Posuďte, co ty požadavky nesly."
         }
       },
       "error": null
@@ -449,11 +613,11 @@
       "data": {
         "type": "page",
         "name": "Ukázkový cíl",
-        "url": "https://auraguard.nexusstack.eu",
-        "timestamp": "2026-09-10T08:41:18.134Z",
+        "url": "https://www.cloudflare.com",
+        "timestamp": "2026-09-18T15:59:04.373Z",
         "ok": true,
         "status": 200,
-        "durationMs": 43,
+        "durationMs": 82,
         "error": null
       },
       "error": null
