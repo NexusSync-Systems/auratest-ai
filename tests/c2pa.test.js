@@ -1,3 +1,4 @@
+import slovnik from './fixtures/iptc-digitalsourcetype.json';
 import { inspectImageBytes, summarizeC2pa, SOURCE_TYPE } from '../c2pa.js';
 
 /**
@@ -157,5 +158,110 @@ describe('nepřečtený typ zdroje (regrese kontrolní vlny)', () => {
     for (const vzorek of [[unknown], [photo], [{ hasManifest: true, sourceType: SOURCE_TYPE.AI_GENERATED }]]) {
       expect(summarizeC2pa(vzorek, 1).rationale).toMatch(/[Pp]odpis/);
     }
+  });
+});
+
+/**
+ * SLOVNÍK IPTC — CELÝ, NE JEN TO, CO JSEM SI PAMATOVAL.
+ *
+ * Tabulka v `c2pa.js` měla pět hodnot, které jsem napsal z hlavy. Slovník
+ * jich má dvacet a jedna z chybějících je `compositeSynthetic`, tedy podle
+ * IPTC „Composite including generative AI elements — at least one of which
+ * is Generative AI". Obrázek s tímhle pověřením vycházel jako „typ zdroje
+ * se nepodařilo přečíst" a nezapočítal se mezi označený syntetický obsah.
+ * Označení existovalo a my jsme do reportu napsali, že nevíme — přesně
+ * u údaje, na kterém stojí posouzení čl. 50 odst. 2.
+ *
+ * Fixtura je snímek slovníku staženého 18. 9. 2026 ze cv.iptc.org, včetně
+ * doslovných definic. Test tedy porovnává kód proti vydavateli slovníku,
+ * ne proti mé představě o něm.
+ */
+describe('typy zdroje proti slovníku IPTC', () => {
+  const sManifestem = (typ) =>
+    `\xFF\xD8\xFF\xE0JFIF..jumb..jumd..c2pa..${typ}..\x00\x01binární smetí`;
+
+  test.each(slovnik.hodnoty.map((h) => [h.id, h.očekáváme, h.definice]))(
+    '%s → %s',
+    (id, ocekavame) => {
+      expect(inspectImageBytes(sManifestem(id)).sourceType).toBe(ocekavame);
+    }
+  );
+
+  test('slovník ve fixtuře je úplný proti tomu, co kód umí', () => {
+    // Kdyby někdo přidal marker do kódu a zapomněl na fixturu, tenhle
+    // test to řekne — a naopak.
+    const vFixture = new Set(slovnik.hodnoty.map((h) => h.id));
+    const neposuzujeme = new Set(slovnik.neposuzujeme.map((h) => h.id));
+    for (const id of vFixture) expect(neposuzujeme.has(id)).toBe(false);
+    expect(vFixture.size).toBe(17);
+  });
+
+  test('hodnota mimo slovník je NEPRŮKAZNÁ, ne „není to AI"', () => {
+    // Slovník se mění — `computationalCapture`, `humanEdits`,
+    // `digitalCreation` a `screenCapture` přibyly až v září 2024.
+    // Co neznáme, nesmí skončit jako tvrzení o obsahu.
+    const v = inspectImageBytes(sManifestem('nejakaBudouciHodnota'));
+    expect(v.hasManifest).toBe(true);
+    expect(v.sourceType).toBe(SOURCE_TYPE.UNKNOWN);
+  });
+
+  test('`composite` nepřebije `compositeSynthetic`', () => {
+    // Hledá se podřetězec, takže na pořadí v tabulce záleží: kdyby
+    // obecné `composite` stálo první, označený syntetický obsah by
+    // vycházel jako nerozhodný.
+    expect(inspectImageBytes(sManifestem('compositeSynthetic')).sourceType)
+      .toBe(SOURCE_TYPE.AI_COMPOSITE);
+    expect(inspectImageBytes(sManifestem('compositeCapture')).sourceType)
+      .toBe(SOURCE_TYPE.CAPTURE);
+  });
+});
+
+describe('nerozhodný typ zdroje se nevydává za „není to AI"', () => {
+  test('samé nerozhodné hodnoty → odůvodnění to přizná', () => {
+    const souhrn = summarizeC2pa([
+      { hasManifest: true, sourceType: SOURCE_TYPE.AMBIGUOUS },
+      { hasManifest: true, sourceType: SOURCE_TYPE.AMBIGUOUS },
+    ], 2);
+    expect(souhrn.declaredAmbiguous).toBe(2);
+    expect(souhrn.declaredAi).toBe(0);
+    expect(souhrn.rationale).toMatch(/nerozhoduje|neplyne/);
+    expect(souhrn.rationale).not.toMatch(/žádný z přečtených se nehlásí/);
+  });
+
+  test('vedle přečtených se nerozhodné vypíšou zvlášť', () => {
+    const souhrn = summarizeC2pa([
+      { hasManifest: true, sourceType: SOURCE_TYPE.CAPTURE },
+      { hasManifest: true, sourceType: SOURCE_TYPE.AMBIGUOUS },
+    ], 2);
+    expect(souhrn.rationale).toMatch(/U 1 typ zdroje o generativní AI nerozhoduje/);
+  });
+});
+
+/**
+ * Nerozhodné hodnoty se nesmí ztratit ani v odůvodnění čl. 50 odst. 2.
+ * Tohle je to „všude kromě jednoho místa" znovu: `summarizeC2pa` je
+ * přiznává, `ai-act.js` si stavěl větu vlastní.
+ */
+describe('odůvodnění čl. 50 odst. 2 nerozhodné přiznává', () => {
+  test('žádné AI, ale nerozhodné položky → věta to řekne', async () => {
+    const { evaluateSyntheticMarkingObligation } = await import('../ai-act.js');
+    const ob = evaluateSyntheticMarkingObligation({
+      dom: {
+        images: {
+          total: 3,
+          sampled: 3,
+          withC2pa: 3,
+          c2pa: {
+            declaredAi: 0,
+            declaredCapture: 1,
+            declaredAmbiguous: 1,
+            unknownSource: 1,
+            unsampled: 0,
+          },
+        },
+      },
+    });
+    expect(ob.rationale).toMatch(/u 2 typ zdroje chybí nebo o generativní AI nerozhoduje/);
+    expect(ob.rationale).not.toMatch(/Žádný z nich se ale nehlásí/);
   });
 });

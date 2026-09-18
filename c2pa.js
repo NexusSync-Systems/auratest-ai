@@ -31,6 +31,13 @@ export const SOURCE_TYPE = {
   ALGORITHMIC: 'algorithmic',
   /** Pořízeno zařízením. */
   CAPTURE: 'capture',
+  /**
+   * Typ zdroje je ve slovníku, ale o generativní AI nerozhoduje.
+   * IPTC u něj výslovně říká „may or may not be generative AI".
+   */
+  AMBIGUOUS: 'ambiguous',
+  /** Typ zdroje je přečtený a generativní AI to není. */
+  NOT_AI: 'not-ai',
   /** Manifest je, ale typ zdroje se v načtené části nenašel. */
   UNKNOWN: 'unknown',
   /** Manifest není. */
@@ -40,18 +47,56 @@ export const SOURCE_TYPE = {
 /**
  * Identifikátory IPTC, jak se v manifestu vyskytují.
  *
- * Pořadí je od nejužšího k nejširšímu. Delší identifikátory se zkoušejí
- * dřív, aby kratší podřetězec nepřebil přesnější shodu.
+ * ODKUD TA TABULKA JE
+ * Ze slovníku samotného: http://cv.iptc.org/newscodes/digitalsourcetype/,
+ * staženo 18. 9. 2026. Původní verze měla PĚT hodnot, které jsem napsal
+ * z hlavy, a slovník jich má dvacet. To není kosmetická mezera:
  *
- * Seznam NENÍ úplný — slovník IPTC má přes deset hodnot. Co v něm není,
- * skončí jako `UNKNOWN`, tedy neprůkazné, ne jako „není to AI".
+ *   `compositeSynthetic` — „Composite including generative AI elements /
+ *   Mix or composite of several elements, at least one of which is
+ *   Generative AI"
+ *
+ * je podle IPTC označení generativní AI, a v našem seznamu chyběl. Obrázek
+ * s tímhle pověřením skončil jako „typ zdroje se nepodařilo přečíst",
+ * takže se NEZAPOČÍTAL mezi označený syntetický obsah — přesně ten údaj,
+ * na kterém stojí posouzení čl. 50 odst. 2. Označení existovalo a my
+ * jsme napsali, že nevíme.
+ *
+ * POŘADÍ JE PODSTATNÉ.
+ * Hledá se podřetězec, takže obecnější hodnota nesmí stát před užší:
+ * `composite` je podřetězcem `compositeSynthetic` i `compositeCapture`.
+ * Proto se dlouhé zkoušejí první a `composite` je až úplně poslední.
  */
 const SOURCE_MARKERS = [
+  // Generativní AI — o tyhle jde v čl. 50 odst. 2.
   ['compositeWithTrainedAlgorithmicMedia', SOURCE_TYPE.AI_COMPOSITE],
+  ['compositeSynthetic', SOURCE_TYPE.AI_COMPOSITE],
   ['trainedAlgorithmicMedia', SOURCE_TYPE.AI_GENERATED],
+
+  // Algoritmus bez trénování — render, matematická formule.
+  ['algorithmicallyEnhanced', SOURCE_TYPE.NOT_AI],
   ['algorithmicMedia', SOURCE_TYPE.ALGORITHMIC],
-  ['digitalCapture', SOURCE_TYPE.CAPTURE],
+
+  // Záznam skutečnosti.
   ['computationalCapture', SOURCE_TYPE.CAPTURE],
+  ['compositeCapture', SOURCE_TYPE.CAPTURE],
+  ['digitalCapture', SOURCE_TYPE.CAPTURE],
+  ['negativeFilm', SOURCE_TYPE.CAPTURE],
+  ['positiveFilm', SOURCE_TYPE.CAPTURE],
+
+  // Přečtené, ale generativní AI to není.
+  ['digitalCreation', SOURCE_TYPE.NOT_AI],
+  ['minorHumanEdits', SOURCE_TYPE.NOT_AI],   // vyřazeno 2024, může být ve starších souborech
+  ['humanEdits', SOURCE_TYPE.NOT_AI],
+  ['dataDrivenMedia', SOURCE_TYPE.NOT_AI],
+  ['screenCapture', SOURCE_TYPE.NOT_AI],
+
+  // Slovník sám říká, že o AI nerozhodují. Vydávat je za „není to AI"
+  // by bylo tvrzení, které IPTC výslovně nedává.
+  //   virtualRecording: „based on Generative AI and/or captured elements"
+  //   composite:        „any of which may or may not be generative AI"
+  ['virtualRecording', SOURCE_TYPE.AMBIGUOUS],
+  ['composite', SOURCE_TYPE.AMBIGUOUS],
 ];
 
 /**
@@ -129,6 +174,12 @@ export function summarizeC2pa(results, totalImages) {
       (r) => r.sourceType === SOURCE_TYPE.AI_GENERATED || r.sourceType === SOURCE_TYPE.AI_COMPOSITE
     ).length,
     declaredCapture: list.filter((r) => r.sourceType === SOURCE_TYPE.CAPTURE).length,
+    // Typ zdroje je přečtený a generativní AI to není.
+    declaredNotAi: list.filter((r) => r.sourceType === SOURCE_TYPE.NOT_AI).length,
+    // Typ zdroje je přečtený, ale o AI nerozhoduje — IPTC u něj sám říká
+    // „may or may not be generative AI". Do „nehlásí se jako AI" tyhle
+    // položky NEPATŘÍ.
+    declaredAmbiguous: list.filter((r) => r.sourceType === SOURCE_TYPE.AMBIGUOUS).length,
     // Manifest je, ale typ zdroje se nepodařilo přečíst. Počítat ho mezi
     // „nehlásí se jako AI" by znamenalo tvrdit něco, co se nezměřilo:
     // seznam identifikátorů IPTC je delší, než co pokrýváme, a typ může
@@ -151,22 +202,29 @@ export function summarizeC2pa(results, totalImages) {
       'hlásí jako vytvořené generativním modelem — označení tedy existuje. ' +
       'Podpis manifestu se neověřuje, takže jde o tvrzení obsažené v souboru, ' +
       'ne o prokázaný původ.';
-  } else if (counts.unknownSource === counts.withManifest) {
+  } else if (counts.unknownSource + counts.declaredAmbiguous === counts.withManifest) {
     // Všechny nalezené manifesty mají nepřečtený typ zdroje — o povaze
     // obsahu tedy nevíme nic.
     rationale =
       `${counts.withManifest} z ${counts.sampled} zkoumaných obrázků nese Content ` +
-      'Credentials, ale typ zdroje se v načtené části souboru nepodařilo ' +
-      'přečíst. Zda jde o syntetický obsah, z toho neplyne ani tak, ani onak. ' +
-      'Podpis manifestu se navíc neověřuje.';
+      'Credentials, ale typ zdroje se buď v načtené části souboru nepodařilo ' +
+      'přečíst, nebo o generativní AI nerozhoduje (slovník IPTC u části hodnot ' +
+      'sám uvádí, že obsah AI zahrnovat může i nemusí). Zda jde o syntetický ' +
+      'obsah, z toho neplyne ani tak, ani onak. Podpis se navíc neověřuje.';
   } else {
     const unknownNote = counts.unknownSource > 0
       ? ` U ${counts.unknownSource} se typ zdroje přečíst nepodařilo.`
       : '';
+    // Nerozhodné hodnoty se přiznávají zvlášť. Zamlčet je by z věty
+    // „žádný se nehlásí jako vytvořený AI" udělalo tvrzení o obrázcích,
+    // u kterých to slovník nechává otevřené.
+    const ambiguousNote = counts.declaredAmbiguous > 0
+      ? ` U ${counts.declaredAmbiguous} typ zdroje o generativní AI nerozhoduje.`
+      : '';
     rationale =
       `${counts.withManifest} z ${counts.sampled} zkoumaných obrázků nese Content ` +
       'Credentials, žádný z přečtených se nehlásí jako vytvořený AI.' +
-      `${unknownNote} Podpis se neověřuje.`;
+      `${unknownNote}${ambiguousNote} Podpis se neověřuje.`;
   }
 
   return {

@@ -1,0 +1,30 @@
+{
+  "zdroj": "http://cv.iptc.org/newscodes/digitalsourcetype/",
+  "staženo": "2026-09-18",
+  "licence": "CC BY 4.0, Copyright 2024 IPTC — www.iptc.org",
+  "poznámka": "Úplný slovník tak, jak ho vydává IPTC. Definice jsou citované doslova (en-GB), protože právě z nich plyne zařazení. Původní tabulka v c2pa.js měla pět hodnot napsaných z hlavy a compositeSynthetic mezi nimi chyběl.",
+  "hodnoty": [
+    { "id": "trainedAlgorithmicMedia", "název": "Created using Generative AI", "definice": "Digital media created algorithmically using an Artificial Intelligence model trained on captured content", "očekáváme": "ai-generated" },
+    { "id": "compositeWithTrainedAlgorithmicMedia", "název": "Edited using Generative AI", "definice": "Augmentation, correction or enhancement using a Generative AI model, such as with inpainting or outpainting operations", "očekáváme": "ai-composite" },
+    { "id": "compositeSynthetic", "název": "Composite including generative AI elements", "definice": "Mix or composite of several elements, at least one of which is Generative AI", "očekáváme": "ai-composite" },
+    { "id": "algorithmicMedia", "název": "Pure algorithmic media", "definice": "Media created purely by an algorithm not based on any sampled training data, e.g. an image created by software using a mathematical formula", "očekáváme": "algorithmic" },
+    { "id": "digitalCapture", "název": "Digital capture sampled from real life", "definice": "The media was captured from a real-life source using a digital camera or digital recording device", "očekáváme": "capture" },
+    { "id": "computationalCapture", "název": "Multi-frame computational capture sampled from real life", "definice": "The media is the result of capturing multiple frames from a real-life source ... using digital signal processing techniques and/or non-generative AI", "očekáváme": "capture" },
+    { "id": "compositeCapture", "název": "Composite of captured elements", "definice": "Mix or composite of several elements that are all captures of real life", "očekáváme": "capture" },
+    { "id": "negativeFilm", "název": "Digitised from a transparent negative", "definice": "The media was digitised from a negative on film or other transparent medium", "očekáváme": "capture" },
+    { "id": "positiveFilm", "název": "Digitised from a transparent positive", "definice": "The media was digitised from a positive on a transparency or other transparent medium", "očekáváme": "capture" },
+    { "id": "humanEdits", "název": "Human-edited media", "definice": "Augmentation, correction or enhancement by one or more humans using non-generative tools", "očekáváme": "not-ai" },
+    { "id": "minorHumanEdits", "název": "Original media with minor human edits", "definice": "Minor augmentation or correction by a human", "vyřazeno": "2024-09-17", "očekáváme": "not-ai" },
+    { "id": "digitalCreation", "název": "Digital creation", "definice": "Media created by a human using non-generative tools", "očekáváme": "not-ai" },
+    { "id": "algorithmicallyEnhanced", "název": "Algorithmically-altered media", "definice": "Modification or correction by algorithm without changing the main content of the media, initiated or configured by a human", "očekáváme": "not-ai" },
+    { "id": "dataDrivenMedia", "název": "Data-driven media", "definice": "Digital media representation of data via human programming or creativity", "očekáváme": "not-ai" },
+    { "id": "screenCapture", "název": "Screen capture", "definice": "A capture of the contents of the screen of a computer or mobile device", "očekáváme": "not-ai" },
+    { "id": "virtualRecording", "název": "Virtual event recording", "definice": "Live recording of virtual event based on Generative AI and/or captured elements", "očekáváme": "ambiguous" },
+    { "id": "composite", "název": "Composite of elements", "definice": "Mix or composite of several elements, any of which may or may not be generative AI", "očekáváme": "ambiguous" }
+  ],
+  "neposuzujeme": [
+    { "id": "print", "důvod": "digitalizace z papíru — CAPTURE, ale slovo 'print' je tak krátké, že by se v binárním smetí trefilo náhodou" },
+    { "id": "softwareImage", "důvod": "vyřazeno 2022, nahrazeno konkrétnějšími hodnotami" },
+    { "id": "digitalArt", "důvod": "vyřazeno 2024, nahrazeno digitalCreation" }
+  ]
+}

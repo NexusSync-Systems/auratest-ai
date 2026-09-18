@@ -275,6 +275,8 @@ export function evaluateSyntheticMarkingObligation(signals) {
     imagesWithC2pa: images.withC2pa,
     imagesDeclaredAi: c2pa?.declaredAi ?? null,
     imagesDeclaredCapture: c2pa?.declaredCapture ?? null,
+    imagesDeclaredAmbiguous: c2pa?.declaredAmbiguous ?? null,
+    imagesUnknownSource: c2pa?.unknownSource ?? null,
     imagesUnsampled: c2pa?.unsampled ?? null,
   };
 
@@ -296,12 +298,21 @@ export function evaluateSyntheticMarkingObligation(signals) {
     // generativního modelu jsou přitom pro čl. 50 odst. 2 dvě různé věci:
     // v druhém případě označení PROKAZATELNĚ existuje.
     const declaredAi = c2pa?.declaredAi ?? 0;
+    // Nerozhodné hodnoty se NEPOČÍTAJÍ mezi „nehlásí se jako AI".
+    // Slovník IPTC u `composite` a `virtualRecording` sám říká, že obsah
+    // generativní AI zahrnovat může i nemusí — a totéž platí pro manifest,
+    // jehož typ zdroje se přečíst nepodařilo. Věta „žádný se nehlásí jako
+    // vytvořený AI" by o nich tvrdila víc, než z nich plyne.
+    const nerozhodnych = (c2pa?.declaredAmbiguous ?? 0) + (c2pa?.unknownSource ?? 0);
 
     const detail = declaredAi > 0
       ? `${declaredAi} z nich se hlásí jako vytvořené generativním modelem, ` +
         'takže označení u nich existuje. Podpis manifestu se neověřuje — jde ' +
         'o tvrzení obsažené v souboru, ne o prokázaný původ.'
-      : 'Žádný z nich se ale nehlásí jako vytvořený AI.';
+      : (nerozhodnych > 0
+        ? `Žádný z přečtených se nehlásí jako vytvořený AI; u ${nerozhodnych} `
+          + 'typ zdroje chybí nebo o generativní AI nerozhoduje.'
+        : 'Žádný z nich se ale nehlásí jako vytvořený AI.');
 
     const unsampled = c2pa?.unsampled
       ? ` Zbylých ${c2pa.unsampled} obrázků na stránce zůstalo neprozkoumaných.`
