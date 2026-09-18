@@ -112,3 +112,58 @@ describe('NIS2: neprůkazné měření nevyrobí dvanáct verdiktů', () => {
     expect(ok.some((r) => r.ok !== null)).toBe(true);
   });
 });
+
+describe('AI Act: důvod neprůkaznosti sedí na to, co se stalo', () => {
+  /**
+   * Verdikty u čl. 50 vycházejí neprůkazně tak jako tak, takže falešné
+   * „splněno" tu nehrozilo. Vadné bylo ODŮVODNĚNÍ: „povinnost nelze
+   * externím skenem posoudit" je tvrzení o mezích nástroje, ne o tom, že
+   * server vrátil 503. Skener `navigationError` dřív nevracel vůbec —
+   * byl poslední z osmi, kde kontrola statusu chyběla.
+   */
+  const obligations = [
+    { id: 'art50.1', title: 'Informování uživatele', status: 'inconclusive',
+      rationale: 'Na stránce nebyl nalezen chat ani jiné rozhraní AI.' },
+    { id: 'art50.2', title: 'Označení syntetického obsahu', status: 'inconclusive',
+      rationale: 'Žádný obrázek se nedeklaroval jako AI.' },
+  ];
+
+  test('při chybě navigace se vypíše skutečný důvod', () => {
+    const rows = verdictsForAudit('ai-act-audit', {
+      navigationError: 'Server odpověděl 503.',
+      aiAct: { obligations },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.ok === null)).toBe(true);
+    expect(rows.every((r) => /Měření neproběhlo: Server odpověděl 503/.test(r.rationale)))
+      .toBe(true);
+    // Původní odůvodnění by tvrdilo, že jsme se dívali a nic nenašli.
+    expect(rows.some((r) => /nebyl nalezen chat/.test(r.rationale))).toBe(false);
+  });
+
+  test('bez chyby navigace zůstane původní odůvodnění', () => {
+    const rows = verdictsForAudit('ai-act-audit', { aiAct: { obligations } });
+    expect(rows[0].rationale).toMatch(/nebyl nalezen chat/);
+  });
+});
+
+describe('CRA: chyba serveru je slepé místo i u neprázdného SBOM', () => {
+  /**
+   * `ev.httpError` se dřív četl JEN ve větvi s prázdným SBOM. Chybová
+   * stránka za CDN ale často načte vlastní skripty (challenge, jQuery),
+   * takže `libraries.length > 0` a šlo se do hlavní větve — a tam o chybě
+   * serveru nikdo nevěděl. Výsledek mohl znít „PASS: všech N knihoven
+   * bez známých CVE" o stránce, která vrátila 403.
+   *
+   * Testuje se přes `verdictsForAudit`, protože vlastní sestavení verdiktu
+   * v `agent.js` potřebuje prohlížeč.
+   */
+  test('httpError se dostane do odůvodnění, ne jen do prázdné větve', () => {
+    const rows = verdictsForAudit('analyze-cra', {
+      sbom: [{ name: 'jQuery', version: '3.6.0' }],
+      evidence: { httpError: 'Server odpověděl 403.', scriptsCaptured: 2, scriptsScanned: 2 },
+    });
+    const text = rows.map((r) => r.rationale).join(' ');
+    expect(text).toMatch(/403/);
+  });
+});

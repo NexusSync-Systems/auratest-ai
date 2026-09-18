@@ -276,7 +276,17 @@ export function verdictsForAudit(slug, result) {
         key: o.id,
         label: o.title || o.id,
         ok: statusToTri(o.status),
-        rationale: o.rationale || '',
+        // DŮVOD MUSÍ SEDĚT NA TO, CO SE STALO.
+        //
+        // Verdikty u čl. 50 vycházejí neprůkazně tak jako tak, ale
+        // odůvodnění „povinnost nelze externím skenem posoudit" je
+        // tvrzení o MEZÍCH NÁSTROJE. Když server vrátil 503, je pravdivý
+        // důvod jiný — nedívali jsme se vůbec. Skener teď `navigationError`
+        // vrací (dřív ho neměl), takže se to dá rozlišit.
+        rationale: result.navigationError
+          ? `Měření neproběhlo: ${result.navigationError} Stránka se `
+            + 'neposuzovala; z tohoto skenu neplyne splnění ani porušení.'
+          : (o.rationale || ''),
       }));
 
     case 'analyze-cra': {
@@ -290,7 +300,15 @@ export function verdictsForAudit(slug, result) {
           // je to zjištění stavu. Verdikt proto zůstává neprůkazný a report
           // uvádí, co se našlo i co se přečíst nepodařilo.
           ok: null,
+          // CHYBA SERVERU JDE PRVNÍ.
+          //
+          // Odůvodnění vypisovalo počty přečtených a nepřečtených skriptů,
+          // stropy i zahozené balíčky — ale `ev.httpError` ne. U stránky,
+          // která vrátila 403, tedy ve spisu stálo „Nalezeno N komponent
+          // z M přečtených skriptů", jako by se měřil zákazníkův web.
+          // Měřila se blokovací stránka. Našel to test tohohle chování.
           rationale:
+            (ev.httpError ? `${ev.httpError} ` : '') +
             `Nalezeno ${found} komponent z ${ev.scriptsScanned ?? '?'} přečtených skriptů` +
             (ev.scriptsUnreadable ? ` (${ev.scriptsUnreadable} se přečíst nepodařilo)` : '') +
             (ev.truncated ? ', prohledávání bylo useknuto na horním limitu' : '') +

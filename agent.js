@@ -3826,10 +3826,15 @@ export async function auditAIAct(url) {
     // Selhání navigace se poznamená. Povinnosti čl. 50 sice vycházejí
     // neprůkazně i tak, ale report má říct PROČ — „nenašli jsme chat"
     // a „nepodařilo se otevřít stránku" nejsou totéž.
-    let navigationError = null;
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch((err) => {
-      navigationError = err.message;
-    });
+    //
+    // Tenhle skener chytal jen VÝJIMKU, stav odpovědi ne. `page.goto()`
+    // na server vracející 503 nevyhazuje, takže `navigationError` zůstalo
+    // `null` a odpověď tvrdila, že se stránka načetla. Verdikt vycházel
+    // správně neprůkazně, ale ze špatného důvodu: „4 ze 4 povinností
+    // nelze externím skenem posoudit" je tvrzení o mezích NÁSTROJE,
+    // ne o tom, že server neodpověděl. Byl poslední z osmi skenerů,
+    // kde to chybělo.
+    const { navigationError } = await navigujAOver(page, url);
     // Chat widgety se často načítají opožděně, po `networkidle`.
     await page.waitForTimeout(3000);
 
@@ -4442,6 +4447,16 @@ export async function auditCRAVulnerabilities(url) {
   // i když se polovina skriptů nepřečetla nebo se narazilo na limit.
   const ev = sbomReport.evidence || {};
   const blindSpots = [];
+  // NEJSILNĚJŠÍ SLEPÉ MÍSTO JDE PRVNÍ.
+  //
+  // `ev.httpError` se dřív četl JEN ve větvi s prázdným SBOM. Chybová
+  // stránka za CDN ale často načte vlastní skripty (challenge, jQuery),
+  // takže `libraries.length > 0` a jde se sem — a tady o chybě serveru
+  // nikdo nevěděl. Výsledek pak mohl znít „PASS: všech N detekovaných
+  // knihoven je bez známých CVE" o stránce, která vrátila 403.
+  if (ev.httpError) {
+    blindSpots.push(ev.httpError.replace(/\.$/, '').toLowerCase());
+  }
   if (ev.scriptsUnreadable > 0) {
     // Jmenovatel je počet ODCHYCENÝCH skriptů, ne prohledaných.
     blindSpots.push(`${ev.scriptsUnreadable} z ${ev.scriptsCaptured} skriptů se nepodařilo přečíst`);
