@@ -246,14 +246,24 @@ describe('globální rozsahy a zkrácené názvy', () => {
   });
 
   it('regiony bez doloženého umístění zůstávají neprůkazné', () => {
-    // Tyhle nikde doložené nejsou a jméno země v sobě nenesou. Odhadnout
-    // u evropského regionu zemi by znamenalo tvrdit něco o EHP bez
-    // podkladu.
+    // Tyhle v dokumentaci poskytovatele NEJSOU (ověřeno 18. 9. 2026)
+    // a jméno země v sobě nenesou. Odhadnout u evropského regionu zemi
+    // by znamenalo tvrdit něco o EHP bez podkladu.
     expect(regionCountry('gcp', 'europe-west15')).toBeNull();
-    expect(regionCountry('gcp', 'asia-southeast3')).toBeNull();
     expect(regionCountry('aws', 'me-west-1')).toBeNull();
     expect(regionCountry('aws', 'sa-west-1')).toBeNull();
     expect(regionCountry('azure', 'northeurope2')).toBeNull();
+  });
+
+  it('asia-southeast3 UŽ doložený je — Bangkok', () => {
+    // TENHLE TEST TVRDIL OPAK, a měl pravdu jen do chvíle, než se to
+    // dohledalo. Cementoval mezeru („zemi neznáme") jako pravidlo
+    // („zemi nemá"), což jsou dvě různé věci — a ta záměna je přesně
+    // to, čemu se celý nástroj vyhýbá.
+    //
+    // „asia-southeast3-a  Bangkok, Thailand, APAC" — tabulka zón,
+    // https://cloud.google.com/compute/docs/regions-zones
+    expect(regionCountry('gcp', 'asia-southeast3')).toBe('TH');
   });
 });
 

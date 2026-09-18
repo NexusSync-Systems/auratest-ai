@@ -176,6 +176,9 @@ const GCP = {
   'asia-northeast1': 'JP', 'asia-northeast2': 'JP', 'asia-northeast3': 'KR',
   'asia-south1': 'IN', 'asia-south2': 'IN',
   'asia-southeast1': 'SG', 'asia-southeast2': 'ID',
+  // „asia-southeast3-a  Bangkok, Thailand, APAC" — tabulka zón
+  // https://cloud.google.com/compute/docs/regions-zones (ověřeno 18. 9. 2026)
+  'asia-southeast3': 'TH',
   'australia-southeast1': 'AU', 'australia-southeast2': 'AU',
   // Blízký východ a Afrika
   'me-west1': 'IL', 'me-central1': 'QA', 'me-central2': 'SA',
@@ -207,3 +210,44 @@ export function knownRegionCount() {
 }
 
 export const REGION_MAPS = MAPY;
+
+/**
+ * REGIONY, KTERÉ POSKYTOVATEL ZVEŘEJŇUJE, ALE NEPŘIZNÁVÁ.
+ *
+ * Skript pro obnovu snímku hlásí regiony, které neumíme převést na zemi.
+ * Ke dni 18. 9. 2026 jich bylo sedm; dva z nich (`aws:GLOBAL`,
+ * `gcp:global`) jsou globální a zemi nemají ze své podstaty. U zbylých
+ * pěti jsem prošel oficiální dokumentaci poskytovatelů:
+ *
+ *   gcp:asia-southeast3   → DOPLNĚNO (TH, Bangkok) — je v tabulce zón
+ *   gcp:europe-west15     → V DOKUMENTACI NENÍ
+ *   aws:me-west-1         → V DOKUMENTACI NENÍ
+ *   aws:sa-west-1         → V DOKUMENTACI NENÍ
+ *   azure:northeurope2    → V DOKUMENTACI NENÍ
+ *
+ * Ověřeno, že nejde o chybu našeho zpracování: názvy služeb u těch
+ * rozsahů odpovídají poskytovateli (`AzureCloud.northeurope2`,
+ * `Google Cloud`, servisní tagy AWS). Poskytovatelé tedy vydávají
+ * rozsahy pro regiony, které ještě neuvedli ve svém veřejném seznamu —
+ * nejspíš nespuštěné nebo neohlášené.
+ *
+ * ZEMI K NIM NEDOPLŇUJEME, I KDYŽ SE NABÍZÍ.
+ * `northeurope2` vypadá na Irsko (Azure má `northeurope` = Irsko),
+ * `me-west-1` na Izrael, `sa-west-1` na Chile. Všechno to jsou ale
+ * dohady z názvu — a přesně proti tomu stojí celý tenhle soubor:
+ * `eu-west-2` je Londýn, tedy MIMO EHP, ačkoli prefix říká „eu".
+ * Doplnit zemi podle názvu by znamenalo vyrobit důkazní tvrzení
+ * z domněnky.
+ *
+ * Adresa v takovém regionu proto vyjde jako NEPRŮKAZNÁ. To je správně:
+ * poskytovatel ji zná, my nevíme kde leží, a report to tak napíše.
+ *
+ * Až poskytovatel region ohlásí, doplní se sem s citací — stejně jako
+ * `asia-southeast3` výš.
+ */
+export const REGIONY_BEZ_DOKUMENTACE = Object.freeze([
+  'gcp:europe-west15',
+  'aws:me-west-1',
+  'aws:sa-west-1',
+  'azure:northeurope2',
+]);
