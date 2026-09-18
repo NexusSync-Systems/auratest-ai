@@ -40,7 +40,10 @@ import { severityOf } from './osv-severity.js';
 // Rozsahy zveřejněné poskytovatelem cloudu. Silnější podklad než
 // geolokační databáze třetí strany: údaj pochází od toho, kdo o umístění
 // serveru rozhoduje.
-import { lookupCloudIp, rangesSnapshot, maIpv6Rozsahy } from './cloud-ranges.js';
+import {
+  lookupCloudIp, rangesSnapshot, maIpv6Rozsahy,
+  jeSnimekZastaraly, stariSnimkuDnu, SNIMEK_MAX_STARI_DNU,
+} from './cloud-ranges.js';
 // Čtení hlaviček je ve vlastním modulu, aby šlo testovat bez prohlížeče.
 // Dokud to byly regulární výrazy uvnitř `analyzeNis2`, nešlo je otestovat
 // samostatně — a tak se netestovaly vůbec.
@@ -3080,11 +3083,22 @@ function residencyWarning(totalDomains, measured, nonEULocations, cdnDomains, un
 
 /** Doplňková věta, když se nepodařilo umístit doménu auditovaného webu. */
 function originNote(originMeasured, originHost, snapshot) {
-  const chybiSnimek = !snapshot?.generatedAt
-    ? ' Snímek IP rozsahů poskytovatelů cloudu není k dispozici, takže se '
+  let chybiSnimek = '';
+  if (!snapshot?.generatedAt) {
+    chybiSnimek = ' Snímek IP rozsahů poskytovatelů cloudu není k dispozici, takže se '
       + 'vycházelo jen z geolokační databáze; ta u cloudových adres často '
-      + 'neurčí nic. Obnovit ho lze příkazem `npm run update:cloud-ranges`.'
-    : '';
+      + 'neurčí nic. Obnovit ho lze příkazem `npm run update:cloud-ranges`.';
+  } else if (jeSnimekZastaraly()) {
+    // ZASTARALÝ SNÍMEK NENESE VERDIKT.
+    //
+    // Dřív se hlídala jen existence. Když snímek BYL, ale byl starý,
+    // vyslovil se verdikt o zemi se stejnou jistotou jako nad čerstvými
+    // daty — přestože rozsah mohl mezitím přejít do jiného regionu.
+    chybiSnimek = ` Snímek IP rozsahů poskytovatelů je ${stariSnimkuDnu()} dnů starý `
+      + `(práh je ${SNIMEK_MAX_STARI_DNU}), takže se z něj země neurčovala — `
+      + 'rozsahy se mezitím mohly přeřadit. Obnovte ho příkazem '
+      + '`npm run update:cloud-ranges`.';
+  }
   if (originMeasured) return chybiSnimek;
   return ` Doménu auditovaného webu (${originHost || 'neznámá'}) se umístit `
     + 'nepodařilo, takže o rezidenci dat provozovatele tenhle sken neříká nic '
@@ -3217,6 +3231,11 @@ export async function auditGreenAndResidency(url) {
     try { originHost = new URL(page.url() || url).hostname; } catch { originHost = null; }
     let originMeasured = false;
 
+    // Jednou pro celý sken — `loadRanges` sice cachuje, ale volat to
+    // v cyklu by znamenalo číst datum u každé domény znovu.
+    const snimekZastaraly = jeSnimekZastaraly();
+    const stariSnimku = stariSnimkuDnu();
+
     const cdnDomains = [];
     // Domény, ke kterým geolokační databáze nezná adresu. Dřív se tiše
     // zahazovaly, takže z osmi domén mohla být posouzená jedna a verdikt
@@ -3254,6 +3273,22 @@ export async function auditGreenAndResidency(url) {
           cdnProvider: cdn.provider, cdnEvidence: cdn.evidence };
         cdnDomains.push(info);
         locations.push({ ...info, isEU: null });
+        continue;
+      }
+
+      // Zastaralý snímek zemi NEURČUJE.
+      //
+      // Anycast se posuzuje dál (ta vlastnost se stárnutím nemění tak,
+      // aby z toho vzniklo tvrzení o zemi), ale ze staré tabulky se
+      // nevysloví „server v EU/EHP" ani „mimo EU/EHP".
+      if (cloud?.country && snimekZastaraly) {
+        unlocatedDomains.push({
+          domain,
+          ip,
+          reason: `snímek rozsahů poskytovatelů je ${stariSnimku} dnů starý `
+            + `(práh ${SNIMEK_MAX_STARI_DNU}) — rozsah se mezitím mohl přeřadit`,
+        });
+        locations.push({ domain, ip, country: null, isEU: null, onCdn: false });
         continue;
       }
 

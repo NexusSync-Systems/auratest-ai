@@ -348,6 +348,56 @@ export function rangesSnapshot(file = RANGES_FILE) {
 }
 
 /**
+ * Jak starý smí snímek být, než přestane nést verdikt.
+ *
+ * ODKUD TO ČÍSLO JE
+ * Ze snímku samotného. Poskytovatelé rozsahy vydávají průběžně:
+ * Azure publikuje `ServiceTags_Public_RRRRMMDD.json` v týdenních
+ * souborech, AWS mění `createDate` u `ip-ranges.json` řádově denně.
+ * Devadesát dnů tedy znamená, že nám uteklo kolem TŘINÁCTI revizí.
+ *
+ * PROČ TO VŮBEC HLÍDAT
+ * Kontrolovala se jen existence snímku. Když snímek BYL, ale byl starý,
+ * vyslovil se verdikt „server v EU/EHP" nebo „mimo EU/EHP" se stejnou
+ * jistotou jako nad čerstvými daty. Přitom zastaralý snímek selhává
+ * dvěma způsoby a jeden z nich je tichý:
+ *   • nový rozsah v něm chybí → adresa se nenajde a spadne na geolokaci,
+ *     tedy na zdroj, kvůli kterému tenhle modul vznikl,
+ *   • rozsah mezitím přešel do jiného regionu → vyjde CIZÍ ZEMĚ, a to
+ *     s plnou jistotou.
+ *
+ * Práh je záměrně velkorysý: jde o to zachytit snímek, na který se
+ * zapomnělo, ne trestat týden zpoždění.
+ */
+export const SNIMEK_MAX_STARI_DNU = 90;
+
+/**
+ * Stáří snímku ve dnech, nebo `null` když snímek nemá datum.
+ */
+export function stariSnimkuDnu(file = RANGES_FILE, ted = Date.now()) {
+  const { generatedAt } = loadRanges(file);
+  if (!generatedAt) return null;
+  const kdy = Date.parse(generatedAt);
+  if (Number.isNaN(kdy)) return null;
+  return Math.max(0, Math.floor((ted - kdy) / 86400000));
+}
+
+/**
+ * Je snímek tak starý, že z něj nelze vyslovit verdikt o zemi?
+ *
+ * Chybějící datum se počítá jako ZASTARALÝ. Snímek bez data neumíme
+ * posoudit, a neposouditelný podklad nesmí nést tvrzení o rezidenci.
+ */
+export function jeSnimekZastaraly(file = RANGES_FILE, ted = Date.now()) {
+  const { ranges, ranges6, generatedAt } = loadRanges(file);
+  // Prázdný snímek řeší volající zvlášť („snímek není k dispozici").
+  if (ranges.length === 0 && ranges6.length === 0) return false;
+  if (!generatedAt) return true;
+  const dnu = stariSnimkuDnu(file, ted);
+  return dnu === null || dnu > SNIMEK_MAX_STARI_DNU;
+}
+
+/**
  * Obsahuje snímek vůbec nějaké rozsahy IPv6?
  *
  * Rozhoduje o tom, co se smí říct o adrese IPv6, kterou jsme nenašli.

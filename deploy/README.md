@@ -171,6 +171,44 @@ systemctl list-timers auraguard-cleanup    # ověření
 
 - [ ] Vyzkoušej naprázdno: `DRY_RUN=1 bash deploy/cleanup-artifacts.sh`
 
+## 7b. Obnova snímku IP rozsahů
+
+Rezidence dat se určuje z rozsahů, které zveřejňují AWS, GCP a Azure.
+Snímek je v `data/cloud-ranges.json` a **stárne**: poskytovatelé rozsahy
+vydávají průběžně (Azure týdenní soubory, AWS mění `createDate` řádově
+denně). Po 90 dnech z něj `cloud-ranges.js` přestane určovat zemi a
+rezidence vyjde jako neprůkazná — ne chybně, ale bez výsledku.
+
+- [ ] Nainstalovat timer na týdenní obnovu:
+
+```bash
+sudo cp deploy/auraguard-ranges.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now auraguard-ranges.timer
+systemctl list-timers auraguard-ranges.timer
+```
+
+- [ ] Ověřit, že obnova projde (trvá jednotky minut, stahuje ~25 MB):
+
+```bash
+sudo systemctl start auraguard-ranges.service
+journalctl -u auraguard-ranges.service -n 20 --no-pager
+```
+
+- [ ] Zkontrolovat stáří snímku kdykoli později:
+
+```bash
+cd ~/auratest-ai && docker compose exec auratest-ai node -e "
+import('./cloud-ranges.js').then(m=>console.log('stáří:', m.stariSnimkuDnu(), 'dnů | zastaralý:', m.jeSnimekZastaraly()));"
+```
+
+> `data/` je od téhle změny **bind svazek**, ne součást obrazu. Bez toho
+> by obnova zapsala do zahozeného kontejneru a běžící aplikace by dál
+> četla starou kopii — snímek by tiše stárnul a po 90 dnech by rezidence
+> přestala fungovat, aniž by kdo tušil proč.
+
+---
+
 ## 8. Ověření naostro
 
 Tohle je jediná část, kterou nešlo ověřit předem — sandbox nemá DNS ani

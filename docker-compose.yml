@@ -53,6 +53,12 @@ services:
       # Neměnný záznam auditů. Bez svazku by ho smazal každý rebuild,
       # což je u důkazního materiálu ta nejhorší možná vlastnost.
       - ./ledger:/app/ledger
+      # Snímek IP rozsahů poskytovatelů cloudu. Jsou to DATA, ne kód:
+      # obnovují se týdně (`auraguard-ranges.timer`) a bez svazku by je
+      # obnova zapsala do zahozeného kontejneru, zatímco běžící aplikace
+      # by dál četla starou kopii z obrazu — a `cloud-ranges.js` by po
+      # 90 dnech přestal z rozsahů určovat zemi, aniž by kdo tušil proč.
+      - ./data:/app/data
       # Servisní klíč se montuje read-only, do image se nekopíruje.
       - ./firebase-credentials.json:/app/firebase-credentials.json:ro
 

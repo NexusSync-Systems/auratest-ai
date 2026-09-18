@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ipv4ToInt, cidrToRange, lookupCloudIp, rangesSnapshot, clearCache,
   ipv6ToBigInt, cidr6ToRange, bigIntNaHex, maIpv6Rozsahy,
+  stariSnimkuDnu, jeSnimekZastaraly, SNIMEK_MAX_STARI_DNU,
 } from '../cloud-ranges.js';
 import { regionCountry, knownRegionCount } from '../cloud-regions.js';
 
@@ -422,5 +423,73 @@ describe('IPv6', () => {
     expect(lookupCloudIp('2603:1020:1000::5', soubor)).toBeNull();
     // IPv4 funguje dál beze změny.
     expect(lookupCloudIp('52.30.1.1', soubor).country).toBe('IE');
+  });
+});
+
+/**
+ * STÁŘÍ SNÍMKU.
+ *
+ * Kontrolovala se jen existence. Když snímek BYL, ale byl starý, vyslovil
+ * se verdikt „server v EU/EHP" nebo „mimo EU/EHP" se stejnou jistotou
+ * jako nad čerstvými daty. Zastaralý snímek přitom selhává dvěma způsoby
+ * a ten druhý je tichý:
+ *   • nový rozsah v něm chybí → adresa spadne na geolokaci, tedy na
+ *     zdroj, kvůli kterému tenhle modul vznikl,
+ *   • rozsah mezitím přešel do jiného regionu → vyjde CIZÍ ZEMĚ, a to
+ *     s plnou jistotou.
+ *
+ * Práh 90 dnů je odvozený ze snímku samotného: Azure publikuje
+ * `ServiceTags_Public_RRRRMMDD.json` týdně, AWS mění `createDate`
+ * řádově denně. Devadesát dnů je tedy kolem třinácti zmeškaných revizí.
+ */
+describe('stáří snímku', () => {
+  const DEN = 86400000;
+  const kdy = (iso) => Date.parse(iso);
+
+  it('čerstvý snímek verdikt nese', () => {
+    // SNIMEK má generatedAt 2026-09-09.
+    const ted = kdy('2026-09-20T00:00:00Z');
+    expect(stariSnimkuDnu(SNIMEK, ted)).toBe(11);
+    expect(jeSnimekZastaraly(SNIMEK, ted)).toBe(false);
+  });
+
+  it('přesně na prahu ještě prochází', () => {
+    const ted = kdy('2026-09-09T00:00:00.000Z') + SNIMEK_MAX_STARI_DNU * DEN;
+    expect(stariSnimkuDnu(SNIMEK, ted)).toBe(SNIMEK_MAX_STARI_DNU);
+    expect(jeSnimekZastaraly(SNIMEK, ted)).toBe(false);
+  });
+
+  it('den za prahem už ne', () => {
+    const ted = kdy('2026-09-09T00:00:00.000Z') + (SNIMEK_MAX_STARI_DNU + 1) * DEN;
+    expect(jeSnimekZastaraly(SNIMEK, ted)).toBe(true);
+  });
+
+  it('snímek BEZ data je zastaralý, ne čerstvý', () => {
+    // Neposouditelný podklad nesmí nést tvrzení o rezidenci.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auraguard-bezdata-'));
+    const soubor = path.join(dir, 'cloud-ranges.json');
+    fs.writeFileSync(soubor, JSON.stringify({
+      sources: [],
+      ranges: [rozsah('aws', '52.30.0.0/16', 'eu-west-1', 'EC2')],
+    }), 'utf8');
+    clearCache();
+    expect(stariSnimkuDnu(soubor)).toBeNull();
+    expect(jeSnimekZastaraly(soubor)).toBe(true);
+  });
+
+  it('prázdný snímek NENÍ zastaralý — to je jiná situace', () => {
+    // „Snímek není k dispozici" má vlastní hlášku; prohlásit ho navíc za
+    // zastaralý by čtenáři naservírovalo dvě různá vysvětlení téhož.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auraguard-prazdny-'));
+    const soubor = path.join(dir, 'cloud-ranges.json');
+    fs.writeFileSync(soubor, JSON.stringify({ sources: [], ranges: [] }), 'utf8');
+    clearCache();
+    expect(jeSnimekZastaraly(soubor)).toBe(false);
+  });
+
+  it('datum v budoucnosti nedá záporné stáří', () => {
+    const ted = kdy('2026-01-01T00:00:00Z');
+    expect(stariSnimkuDnu(SNIMEK, ted)).toBe(0);
+    expect(jeSnimekZastaraly(SNIMEK, ted)).toBe(false);
   });
 });
