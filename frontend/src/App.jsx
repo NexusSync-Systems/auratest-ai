@@ -2070,8 +2070,15 @@ export default function App() {
                      {cookieResult && (
                        <div>
                          <h3 style={{ color: 'var(--accent)', marginTop: 0 }}>Striktní GDPR Cookie Auditor</h3>
-                         <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', borderLeft: `4px solid ${cookieResult.gdpr.isCompliant ? '#10b981' : '#ef4444'}`, marginBottom: '16px' }}>
-                           <strong style={{ color: cookieResult.gdpr.isCompliant ? '#10b981' : '#ef4444' }}>
+                         {/* Trojstav, ne zelená/červená. `isCompliant` je
+                             `null`, když se stránka nenačetla (agent.js:4302),
+                             a `null` je falsy — neprůkazný výsledek proto
+                             dostával ČERVENOU, tedy barvu porušení. Tiskový
+                             report tuhle opravu má i s komentářem; obrazovka
+                             ji nedostala. Totéž jako u rezidence o kus výš. */}
+                         <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', borderLeft: `4px solid ${complianceColor(cookieResult.gdpr.isCompliant)}`, marginBottom: '16px' }}>
+                           <strong style={{ color: complianceColor(cookieResult.gdpr.isCompliant) }}>
+                             {`[${complianceLabel(cookieResult.gdpr.isCompliant)}] `}
                              {cookieResult.gdpr.rating}
                            </strong>
                          </div>
