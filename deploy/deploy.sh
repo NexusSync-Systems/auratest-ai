@@ -93,10 +93,34 @@ else
     ok "Paměť: ${TOTAL_MB} MB"
 fi
 
-# Volné místo: artefakty (videa!) rostou rychle.
+# Volné místo.
+#
+# Tohle varování dřív posílalo rovnou na `cleanup-artifacts.sh` a znělo,
+# jako by artefakty byly příčina. Nejsou. Naměřeno 2026-09-18 při 78 %
+# zaplnění: artefakty 15 MB, build cache Dockeru 19,75 GB. Úklid artefaktů
+# uvolnil 15 MB, `docker builder prune` 11 GB — disk spadl na 37 %.
+#
+# Každé sestavení image přidá vrstvy do build cache a ta se sama neuklízí.
+# Při deseti nasazeních denně je to hlavní spotřebitel, a doporučení, které
+# to neřekne, pošle člověka uklízet megabajty proti gigabajtovému problému.
+#
+# Varování proto ukáže SKUTEČNÉ rozdělení, ne domněnku. Když `docker system
+# df` selže, řekne se to — dohadovat se nebude.
 FREE_GB="$(df -BG --output=avail . 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)"
 if (( FREE_GB > 0 && FREE_GB < 10 )); then
-    warn "Volno jen ${FREE_GB} GB. Pusť deploy/cleanup-artifacts.sh a zkontroluj rotaci logů."
+    warn "Volno jen ${FREE_GB} GB."
+    if DF_OUT="$(docker system df 2>/dev/null)"; then
+        echo "$DF_OUT" | sed 's/^/      /'
+        echo "      Obvyklý viník je Build Cache — roste s každým sestavením"
+        echo "      a sama se neuklízí. Uvolní ji:"
+        echo "        docker builder prune -f       # jen nepoužívaná cache"
+        echo "      Artefakty (screenshoty, videa) bývají řádově menší:"
+        echo "        bash deploy/cleanup-artifacts.sh"
+    else
+        echo "      \`docker system df\` se nepodařilo spustit, takže co místo"
+        echo "      zabírá, tenhle skript neví. Zkus:"
+        echo "        docker system df && bash deploy/cleanup-artifacts.sh"
+    fi
 else
     ok "Volné místo: ${FREE_GB} GB"
 fi

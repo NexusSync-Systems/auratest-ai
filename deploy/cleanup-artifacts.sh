@@ -2,9 +2,20 @@
 #
 # Úklid artefaktů: screenshoty, videa a vygenerované skripty.
 #
-# Bez tohohle rostou donekonečna. Videa z Playwrightu jsou největší položka —
-# jeden běh agenta o deseti krocích umí zabrat desítky MB, takže 50GB disk
-# Oracle instance zmizí rychleji, než by člověk čekal.
+# Bez tohohle rostou donekonečna. Videa z Playwrightu jsou z nich největší
+# položka.
+#
+# CO TENHLE SKRIPT NEUKLÍZÍ — a proč to tu stojí
+# Původní věta tvrdila, že „jeden běh agenta o deseti krocích umí zabrat
+# desítky MB". Naměřeno 2026-09-18: šest videí dohromady 8,5 MB, tedy asi
+# 1,4 MB na běh; celý úklid uvolnil 15 MB. Disk byl přitom na 78 %.
+#
+# Místo brala BUILD CACHE DOCKERU — 19,75 GB, z toho 12,6 GB uvolnitelných.
+# Roste s každým sestavením image a sama se neuklízí. Po `docker builder
+# prune -f` spadl disk na 37 %.
+#
+# Tenhle skript je tedy retenční politika, ne nástroj na uvolnění místa.
+# Když je disk plný, začni u `docker system df`.
 #
 # Zároveň je to technická část retenční politiky (D5 z PLAN.md): u nástroje,
 # který zpracovává obsah cizích webů, není „mažeme, až dojde místo" obhajitelné
@@ -76,5 +87,19 @@ else
     echo "Smazáno: ${total_files} souborů, $(numfmt --to=iec --suffix=B "$total_bytes" 2>/dev/null || echo "${total_bytes} B")"
 fi
 
-# Kolik místa zbývá — hlavní důvod, proč tenhle skript existuje.
+# Kolik místa zbývá.
 df -h "$ROOT" | tail -1 | awk '{print "Volno na disku: " $4 " z " $2 " (" $5 " zaplněno)"}'
+
+# Když je pořád plno, artefakty to nebyly.
+#
+# Bez téhle věty vypadá výstup jako „uklizeno, hotovo" i ve chvíli, kdy se
+# uvolnily megabajty proti gigabajtovému problému — a člověk jde pryč
+# s pocitem, že to vyřešil.
+USE_PCT="$(df --output=pcent "$ROOT" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)"
+if (( USE_PCT >= 70 )); then
+    echo
+    echo "Disk je pořád na ${USE_PCT} %. Artefakty tedy nejsou hlavní spotřebitel —"
+    echo "podívej se na build cache Dockeru, ta roste s každým sestavením:"
+    echo "  docker system df"
+    echo "  docker builder prune -f"
+fi
