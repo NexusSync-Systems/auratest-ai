@@ -80,6 +80,26 @@ sudo netfilter-persistent save
 - [ ] **Port 3001 neotevírej.** `docker-compose.yml` ho váže na loopback,
       aplikace patří za proxy.
 
+### IPv6 kontejner nemá — a je to vědomé
+
+Ověřeno na produkci 18. 9. 2026:
+
+```bash
+docker compose exec auratest-ai node -e "require('dns').lookup('www.cloudflare.com',{all:true},(e,a)=>console.log(a))"
+#   104.16.123.96 (v4), 2606:4700::6810:7b60 (v6)   ← DNS AAAA vrací
+docker compose exec auratest-ai node -e "require('net').connect({host:'2606:4700::6810:7b60',port:443,family:6}).on('error',e=>console.log(e.code))"
+#   ENETUNREACH                                     ← spojení neprojde
+```
+
+Důsledek: Chromium vždy spadne na IPv4, takže větev pro rozsahy IPv6
+v `cloud-ranges.js` se v tomhle nasazení **nikdy nespustí**. Kód je
+správný a otestovaný, jen spí.
+
+Na měřených webech to nic nekazí — rezidence se určí z adresy IPv4 a
+report netvrdí víc, než co naměřil. Kdyby někdo IPv6 v Dockeru zapnul
+(`daemon.json`: `ipv6`, `fixed-cidr-v6`, `ip6tables`), větev se
+aktivuje sama; je to ale zásah do sítě serveru, ne úklid.
+
 ## 3. Doména
 
 - [ ] A záznam na veřejnou IP instance

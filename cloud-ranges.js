@@ -24,6 +24,21 @@
  * skenu by znamenalo, že týž audit může vyjít jinak podle toho, co zrovna
  * bylo na internetu, a nikdo by to nedoložil.
  *
+ * V TOMHLE NASAZENÍ SE IPv6 VĚTEV NESPOUŠTÍ
+ * Ověřeno na produkčním serveru 18. 9. 2026: kontejner IPv6 trasu nemá.
+ *
+ *   dns.lookup('www.cloudflare.com', {all:true})
+ *     → 104.16.123.96 (v4), 2606:4700::6810:7b60 (v6)   — DNS AAAA vrací
+ *   net.connect('2606:4700::6810:7b60', 443)
+ *     → ENETUNREACH                                      — spojení neprojde
+ *
+ * Chromium proto vždy spadne na IPv4 a `response.serverAddr()` vrátí
+ * adresu v4. Podpora IPv6 níž je tedy správná, otestovaná a ZATÍM SPÍCÍ;
+ * začne platit v okamžiku, kdy IPv6 v Dockeru někdo zapne, nebo na jiném
+ * nasazení. Je to poznámka o NAŠEM prostředí, ne o měřených webech —
+ * report ani tak netvrdí víc, než co naměřil: rezidenci určenou z adresy
+ * IPv4, což je poctivý údaj.
+ *
  * CO TO NEUMÍ
  *   • Rozsah říká, kde stojí SERVER. Kam ten server data ukládá dál —
  *     do zálohy, do jiné služby — z toho neplyne nic.
