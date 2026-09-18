@@ -8,7 +8,9 @@ import { assertPublicHttpUrl, resolvePublicHttpTarget, guardNavigation } from '.
 import { fetchPripnute } from './safe-fetch.js';
 import { vyhodnotFinish, UKONCENI, popisUkonceni } from './finish-policy.js';
 import { popisHttpChyby, popisHttpChybyBehu, navigujAOver } from './http-status.js';
-import { jeZruseny, nalezSitoveChyby, poznamkaZruseneho } from './network-findings.js';
+import {
+  zatridSelhani, jeOvereniRobota, poznamkaOvereniRobota,
+} from './network-findings.js';
 import { vytvorChaosHandler, vyhodnotChaos } from './chaos-run.js';
 import { bezpecnePrvky, zamlcenychPrvku, vytvorZnacku, obalDataZeStranky, obalStavStranky, pokynKDatumZeStranky } from './prompt-safety.js';
 import { SCREENSHOTS_DIR, VIDEOS_DIR, GENERATED_SCRIPTS_DIR, ensureDir, safeFileToken } from './paths.js';
@@ -1635,38 +1637,29 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     const errText = request.failure()?.errorText || 'Unknown failure';
     const reqUrl = request.url();
 
-    // Zrušený požadavek NENÍ vada webu.
+    // Zatřídění je v `network-findings.js`, aby šlo testovat bez
+    // prohlížeče — posluchač sám se jinak rozjede jedině naostro.
     //
-    // `net::ERR_ABORTED` znamená, že požadavek někdo zrušil: odchod
-    // z stránky, `AbortController` v aplikaci, spekulativní přednačtení,
-    // které prohlížeč zahodil, nebo HEAD ukončený po hlavičkách. Nic
-    // z toho není závada — a odlišit „aplikace si požadavek zrušila
-    // správně" od „aplikace si ho zrušila omylem" zvenčí nejde.
-    //
-    // Dřív se to přeskakovalo jen u videí. Ověřeno ostrým během:
-    // cloudflare.com, web bez závady, dostal nález
-    // „Selhal síťový požadavek: HEAD https://www.cloudflare.com/ -
-    // net::ERR_ABORTED". Zrušený požadavek proto jde mezi varování —
-    // je vidět, ale nepočítá se jako zjištění o webu.
-    if (jeZruseny(errText)) {
-      addFinding(warnings, poznamkaZruseneho(request.method(), reqUrl));
-      return;
-    }
-    // Vlastní blokace není vada webu ani runtime signál. Nesmí se dostat
-    // ani do `networkErrors` — podle nich se řídí `hasRuntimeSignals`,
-    // takže by naše blokace navíc přepnula výběr další akce na „zkus to
-    // znovu" a v každém dalším kroku vyrobila nález.
-    // Podle MNOŽINY, ne podle textu chyby. `net::ERR_BLOCKED_BY_CLIENT`
-    // hlásí prohlížeč i u blokací, které nejsou naše (rozšíření v profilu,
-    // politika prohlížeče) — plošný filtr na text by je zamlčel, a to jsou
-    // okolnosti běhu, které čtenář reportu vidět má.
-    if (blokovaneNami.has(reqUrl)) {
-      return;
-    }
-    networkErrors.push({ url: reqUrl, error: errText });
-    // Přes addFinding, aby platila stejná deduplikace jako u ostatních
-    // nálezů — přímý push ji obcházel. Metoda z requestu, ne natvrdo GET.
-    addFinding(bugs, nalezSitoveChyby(request.method(), reqUrl, errText));
+    // Tři případy, které se NESMÍ stát nálezem o webu:
+    //   • `net::ERR_ABORTED` — zrušený požadavek není vada a odlišit
+    //     „zrušeno správně" od „zrušeno omylem" zvenčí nejde,
+    //   • ochrana proti robotům — selhala kvůli tomu, že na stránku
+    //     kouká automat, tedy kvůli našemu měření,
+    //   • naše vlastní blokace — ta se nehlásí vůbec.
+    const zatrideni = zatridSelhani({
+      method: request.method(),
+      url: reqUrl,
+      errText,
+      blokovanoNami: blokovaneNami.has(reqUrl),
+    });
+
+    // Do `networkErrors` jen skutečné signály běhu. Podle nich se řídí
+    // `hasRuntimeSignals`, takže by naše vlastní blokace nebo výzva pro
+    // roboty přepnula výběr další akce na „zkus to znovu" a v každém
+    // dalším kroku vyrobila další záznam.
+    if (zatrideni.runtimeSignal) networkErrors.push({ url: reqUrl, error: errText });
+    if (zatrideni.kam === 'bugs') addFinding(bugs, zatrideni.text);
+    else if (zatrideni.kam === 'warnings') addFinding(warnings, zatrideni.text);
   });
 
   // Měření síťové latence a zachycování HTTP chyb (AuraAuraGuard)
@@ -1692,7 +1685,16 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         const resourceType = response.request().resourceType();
         const isCritical = ['fetch', 'xhr', 'document', 'script'].includes(resourceType);
         if (isCritical) {
-          addFinding(bugs, `[AuraAuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`);
+          // Druhá cesta k témuž nálezu — a oprava u `requestfailed` jí
+          // chyběla. Ostrý běh vrátil obě znění vedle sebe:
+          // „[NetworkError] Selhání API: GET https://challenges.cloudflare.com/…"
+          // a „Selhal síťový požadavek: GET https://brunhild.challenges…".
+          // „Všude kromě jednoho místa" znovu, tentokrát v jednom souboru.
+          if (jeOvereniRobota(url)) {
+            addFinding(warnings, poznamkaOvereniRobota(method, url, `HTTP ${status}`));
+          } else {
+            addFinding(bugs, `[AuraAuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`);
+          }
         }
       }
 
