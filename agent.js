@@ -1548,13 +1548,13 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     const trackNetworkErrors = llmConfig.trackNetworkErrors !== false;
     const slowApiThresholdMs = llmConfig.slowApiThresholdMs || 1500;
 
-    // Injekce lokálního monitorovacího skriptu (AuraAuraGuard)
+    // Injekce lokálního monitorovacího skriptu (AuraGuard)
     await page.addInitScript(({ trackExceptions, trackPromiseRejections, trackLongTasks }) => {
       // Sledování JS chyb na úrovni window
       if (trackExceptions) {
         window.addEventListener('error', (event) => {
           if (!event.message) return;
-          console.error(`[AuraAuraGuard-Error] Běhová chyba: ${event.message} v ${event.filename || 'unknown'}:${event.lineno || 0}`);
+          console.error(`[AuraGuard-Error] Běhová chyba: ${event.message} v ${event.filename || 'unknown'}:${event.lineno || 0}`);
         });
       }
 
@@ -1562,7 +1562,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       if (trackPromiseRejections) {
         window.addEventListener('unhandledrejection', (event) => {
           const reason = event.reason ? (event.reason.message || String(event.reason)) : 'Neznámý důvod';
-          console.error(`[AuraAuraGuard-Promise] Selhání slibu (Promise): ${reason}`);
+          console.error(`[AuraGuard-Promise] Selhání slibu (Promise): ${reason}`);
         });
       }
 
@@ -1572,7 +1572,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
           const observer = new PerformanceObserver((list) => {
             for (const entry of list.getEntries()) {
               if (entry.duration > 100) {
-                console.warn(`[AuraAuraGuard-Performance] Zaseknutí UI (Long Task): ${Math.round(entry.duration)}ms`);
+                console.warn(`[AuraGuard-Performance] Zaseknutí UI (Long Task): ${Math.round(entry.duration)}ms`);
               }
             }
           });
@@ -1585,7 +1585,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
 
     const steps = [];
     const bugs = [];
-    // Dřív šlo všechno s prefixem [AuraAuraGuard- do `bugs` a `success` se
+    // Dřív šlo všechno s prefixem [AuraGuard- do `bugs` a `success` se
     // počítalo jako bugs.length === 0. Long task > 100 ms nebo pomalé API tak
     // označilo prakticky každou reálnou aplikaci za neúspěch.
     const warnings = [];
@@ -1633,7 +1633,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     collection.push(message);
   };
   // Výkonnostní signály nejsou chyby funkčnosti.
-  const WARNING_PREFIXES = ['[AuraAuraGuard-Performance]', '[AuraAuraGuard-NetworkSlow]'];
+  const WARNING_PREFIXES = ['[AuraGuard-Performance]', '[AuraGuard-NetworkSlow]'];
 
   // Adresy, u kterých selhání zapsal posluchač odpovědí. Prohlížeč totéž
   // ohlásí i do konzole („Failed to load resource: …status of 403 ()"),
@@ -1645,7 +1645,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     const text = msg.text();
     consoleLogs.push({ type, text, timestamp: new Date().toISOString() });
 
-    if (text.startsWith('[AuraAuraGuard-')) {
+    if (text.startsWith('[AuraGuard-')) {
       // TŘETÍ cesta k téže výjimce. Hlášku vyrábí náš vlastní posluchač
       // `window.onerror` ve stránce, takže má prefix a jde sem — mimo
       // obě větve níž. Ostrý běh proti cloudflare.com měl proto nález
@@ -1675,7 +1675,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         const stav = /status of (\d{3})/.exec(text);
         const verdikt = stav ? zatridStavKod(Number(stav[1])) : { nalez: false, duvod: null };
         if (verdikt.nalez) {
-          addFinding(bugs, `[AuraAuraGuard-NetworkError] Selhání zdroje: ${zdroj} - HTTP ${stav[1]}`);
+          addFinding(bugs, `[AuraGuard-NetworkError] Selhání zdroje: ${zdroj} - HTTP ${stav[1]}`);
         } else if (stav) {
           addFinding(warnings, poznamkaOPristupu('GET', zdroj, stav[1], verdikt.duvod));
         } else {
@@ -1702,7 +1702,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       const zprava = doplnZnameZneni(exception.message);
       addFinding(
         bugs,
-        `[AuraAuraGuard-Error] Neošetřená výjimka: ${zprava}\nStack: ${exception.stack || 'Žádný stack trace'}`,
+        `[AuraGuard-Error] Neošetřená výjimka: ${zprava}\nStack: ${exception.stack || 'Žádný stack trace'}`,
         klicVyjimky(exception.message)
       );
     });
@@ -1739,7 +1739,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     else if (zatrideni.kam === 'warnings') addFinding(warnings, zatrideni.text);
   });
 
-  // Měření síťové latence a zachycování HTTP chyb (AuraAuraGuard)
+  // Měření síťové latence a zachycování HTTP chyb (AuraGuard)
   if (trackNetworkErrors) {
     // WeakMap klíčovaná objektem requestu:
     //   • dřív se klíčovalo URL, takže dva paralelní požadavky na stejnou
@@ -1783,7 +1783,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
             // `zatridStavKod`. Zůstanou vidět jako okolnost běhu.
             const verdikt = zatridStavKod(status);
             if (verdikt.nalez) {
-              addFinding(bugs, `[AuraAuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`);
+              addFinding(bugs, `[AuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`);
             } else {
               addFinding(warnings, poznamkaOPristupu(method, url, status, verdikt.duvod));
             }
@@ -1797,7 +1797,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
 
         const resourceType = response.request().resourceType();
         if (duration > slowApiThresholdMs && (resourceType === 'fetch' || resourceType === 'xhr')) {
-          addFinding(warnings, `[AuraAuraGuard-NetworkSlow] Pomalá odpověď API: ${method} ${url} trvala ${duration}ms`);
+          addFinding(warnings, `[AuraGuard-NetworkSlow] Pomalá odpověď API: ${method} ${url} trvala ${duration}ms`);
         }
       }
     });

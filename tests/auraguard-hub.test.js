@@ -105,7 +105,7 @@ const originalExistsSync = fs.existsSync;
 const originalWriteFileSync = fs.writeFileSync;
 const originalReadFileSync = fs.readFileSync;
 
-describe('AuraAuraGuard Hub API & SDK Integration Tests', () => {
+describe('AuraGuard Hub API & SDK Integration Tests', () => {
   beforeEach(() => {
     // Mock files system to isolate test data
     fs.existsSync = jest.fn().mockImplementation((path) => {

@@ -1,5 +1,5 @@
 import path from 'path';
-import { runAutonomousTest } from './agent.js';
+import { runAutonomousTest } from '../../agent.js';
 
 const __dirname = path.resolve();
 

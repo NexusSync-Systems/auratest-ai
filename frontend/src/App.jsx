@@ -160,9 +160,9 @@ export default function App() {
   
   // Active screenshot view tab
   const [inspectTab, setInspectTab] = useState('console'); // 'console', 'bugs'
-  const [monitorTab, setMonitorTab] = useState('summary'); // 'summary' (bugs), 'monitoring' (AuraAuraGuard)
+  const [monitorTab, setMonitorTab] = useState('summary'); // 'summary' (bugs), 'monitoring' (AuraGuard)
 
-  // AuraAuraGuard Hub State
+  // AuraGuard Hub State
   const [monitors, setMonitors] = useState([]);
   const [auraguardEvents, setAuraGuardEvents] = useState([]);
   const [activeAuraGuardProjectFilter, setActiveAuraGuardProjectFilter] = useState('all');
@@ -1482,7 +1482,7 @@ export default function App() {
             onClick={() => { setActiveTab('auraguard'); }}
           >
             <Activity size={16} />
-            <span>AuraAuraGuard Hub</span>
+            <span>AuraGuard Hub</span>
           </button>
           <button
             className={`nav-item ${activeTab === 'evidence' ? 'active' : ''}`}
@@ -1545,7 +1545,7 @@ export default function App() {
               {activeTab === 'history' && 'Historie testů'}
               {activeTab === 'compare' && 'Porovnávání stránek (Prod vs Preview)'}
               {activeTab === 'audit' && 'Audit překladů a lokalizace'}
-              {activeTab === 'auraguard' && 'AuraAuraGuard Hub'}
+              {activeTab === 'auraguard' && 'AuraGuard Hub'}
               {activeTab === 'evidence' && 'Doložitelnost auditů'}
               {activeTab === 'settings' && 'Globální nastavení'}
             </h1>
@@ -3063,7 +3063,7 @@ export default function App() {
             </>
           )}
 
-          {/* Tab 5: AuraAuraGuard Hub */}
+          {/* Tab 5: AuraGuard Hub */}
           {user && activeTab === 'auraguard' && (
             <div className="auraguard-hub-layout" style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: '20px', alignItems: 'start' }}>
               
@@ -3356,7 +3356,7 @@ export default function App() {
                 {/* Generátor SDK kódu */}
                 <div className="card">
                   <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <CodeIcon size={16} color="var(--accent)" /> Integrace AuraAuraGuard SDK
+                    <CodeIcon size={16} color="var(--accent)" /> Integrace AuraGuard SDK
                   </h3>
                   <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
                     Chcete monitorovat výskyt chyb přímo z produkčních webů od reálných uživatelů? Zaklikněte konfiguraci níže a vložte kód do své HTML šablony.
@@ -3487,7 +3487,7 @@ export default function App() {
                 <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {filteredAuraGuardEvents.length === 0 ? (
                     <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '32px', fontSize: '0.85rem' }}>
-                      Žádné přicházející události. Zde se v reálném čase zobrazí chyby ze stránek s integrovaným AuraAuraGuard SDK.
+                      Žádné přicházející události. Zde se v reálném čase zobrazí chyby ze stránek s integrovaným AuraGuard SDK.
                     </div>
                   ) : (
                     filteredAuraGuardEvents.map((evt) => {

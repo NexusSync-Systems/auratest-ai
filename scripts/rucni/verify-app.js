@@ -1,6 +1,6 @@
 import path from 'path';
-import { runAutonomousTest, comparePages, auditTranslations } from './agent.js';
-import { fetchTranslations } from './db-connector.js';
+import { runAutonomousTest, comparePages, auditTranslations } from '../../agent.js';
+import { fetchTranslations } from '../../db-connector.js';
 
 const __dirname = path.resolve();
 

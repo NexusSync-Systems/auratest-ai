@@ -45,7 +45,7 @@ describe('doplnění skutečného znění', () => {
 describe('jedna výjimka je jeden nález', () => {
   test('všechna tři znění téže chyby dávají stejný klíč', () => {
     // Přesně ty tři obálky ze skutečných běhů.
-    const zKonzole = '[AuraAuraGuard-Error] Běhová chyba: Uncaught Error: Minified React error #418; visit https://react.dev/errors/ v main.js:1';
+    const zKonzole = '[AuraGuard-Error] Běhová chyba: Uncaught Error: Minified React error #418; visit https://react.dev/errors/ v main.js:1';
     const zPageerror = 'Minified React error #418; visit https://react.dev/errors/418?args[]';
     const holy = 'Uncaught Error: Minified React error #418';
     expect(klicVyjimky(zKonzole)).toBe(klicVyjimky(zPageerror));
@@ -58,7 +58,7 @@ describe('jedna výjimka je jeden nález', () => {
   });
 
   test('obecná výjimka: obálka a stack klíč neovlivní', () => {
-    const a = '[AuraAuraGuard-Error] Neošetřená výjimka: TypeError: cannot read properties of null\nStack: at foo (bundle.js:1:2)';
+    const a = '[AuraGuard-Error] Neošetřená výjimka: TypeError: cannot read properties of null\nStack: at foo (bundle.js:1:2)';
     const b = 'Uncaught TypeError: cannot read properties of null';
     expect(klicVyjimky(a)).toBe(klicVyjimky(b));
   });

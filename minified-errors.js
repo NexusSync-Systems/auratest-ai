@@ -91,7 +91,7 @@ export function klicVyjimky(text) {
   // Obecná výjimka: odloupnout naše i prohlížečovy prefixy, zahodit
   // stack a odkazy, zbytek porovnávat bez ohledu na velikost písmen.
   const jadro = t
-    .replace(/^\[AuraAuraGuard-Error\]\s*/, '')
+    .replace(/^\[AuraGuard-Error\]\s*/, '')
     .replace(/^(Běhová chyba|Neošetřená výjimka|Detekována chyba v konzoli):\s*/, '')
     .replace(/^Uncaught\s+/, '')
     .split(/\nStack:/)[0]

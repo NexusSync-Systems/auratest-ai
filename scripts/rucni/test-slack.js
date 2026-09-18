@@ -1,4 +1,4 @@
-import { sendSlackNotification } from './slack-notifier.js';
+import { sendSlackNotification } from '../../slack-notifier.js';
 import dotenv from 'dotenv';
 dotenv.config();
 

@@ -1,4 +1,4 @@
-import { fetchTranslations } from './db-connector.js';
+import { fetchTranslations } from '../../db-connector.js';
 
 // Pozn.: dřív skript končil kódem 0 i když ochrana proti zápisovým dotazům
 // selhala — nic se nevypsalo a nic nesignalizovalo problém. Sada validací

@@ -1547,7 +1547,7 @@ async function schedulerTick() {
         //
         // sessionId musí být nepredikovatelné — je součástí názvu screenshotů.
         const sessionId = `session_monitor_${randomUUID()}`;
-        console.log(`[AuraAuraGuard] Spouštím monitor: ${monitor.name} (${monitor.url}) -> ${sessionId}`);
+        console.log(`[AuraGuard] Spouštím monitor: ${monitor.name} (${monitor.url}) -> ${sessionId}`);
 
         const sessionData = {
           id: sessionId,
@@ -1566,13 +1566,13 @@ async function schedulerTick() {
         try {
           await db.saveSession(sessionId, sessionData);
         } catch (err) {
-          console.error(`[AuraAuraGuard] Nepodařilo se založit session monitoru ${monitor.name}:`, err.message);
+          console.error(`[AuraGuard] Nepodařilo se založit session monitoru ${monitor.name}:`, err.message);
           continue;
         }
 
 
         if (!browserSlots.tryAcquire()) {
-          console.warn(`[AuraAuraGuard] Monitor ${monitor.name} odložen: vyčerpán limit souběžných prohlížečů.`);
+          console.warn(`[AuraGuard] Monitor ${monitor.name} odložen: vyčerpán limit souběžných prohlížečů.`);
           // Session je v databázi už jako `running` a další tik založí
           // NOVOU — tuhle proto musíme dopsat hned, jinak by tvrdila
           // „běží" navždycky a nikdo by ji neuklidil.
@@ -2496,7 +2496,7 @@ app.get('/api/auraguard/sdk.js', (req, res) => {
   const reportUrl = '${reportBaseUrl}/api/auraguard/report';
 
   if (!project) {
-    console.error('[AuraAuraGuard] Chybí data-project atribut pro odesílání logů.');
+    console.error('[AuraGuard] Chybí data-project atribut pro odesílání logů.');
     return;
   }
 

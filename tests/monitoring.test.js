@@ -4,7 +4,7 @@ const mockPage = {
   addInitScript: jest.fn().mockResolvedValue(null),
   goto: jest.fn(),
   url: jest.fn().mockReturnValue('https://example.com/test-page'),
-  title: jest.fn().mockResolvedValue('AuraAuraGuard Test Page'),
+  title: jest.fn().mockResolvedValue('AuraGuard Test Page'),
   screenshot: jest.fn().mockResolvedValue(Buffer.from([])),
   on: jest.fn(),
   evaluate: jest.fn().mockResolvedValue([]),
@@ -39,7 +39,7 @@ const originalFetch = global.fetch;
 const originalExistsSync = fs.existsSync;
 const originalWriteFileSync = fs.writeFileSync;
 
-describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
+describe('AuraGuard Page Monitoring Unit Tests', () => {
   let listeners = {};
 
   beforeEach(() => {
@@ -89,11 +89,11 @@ describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
       if (listeners['console']) {
         listeners['console']({
           type: () => 'error',
-          text: () => '[AuraAuraGuard-Error] Běhová chybová hláška'
+          text: () => '[AuraGuard-Error] Běhová chybová hláška'
         });
         listeners['console']({
           type: () => 'error',
-          text: () => '[AuraAuraGuard-Promise] Selhání slibu (Promise): API call failed'
+          text: () => '[AuraGuard-Promise] Selhání slibu (Promise): API call failed'
         });
       }
       return null;
@@ -117,8 +117,8 @@ describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
 
     // Ověříme výsledné bugs
     expect(result.bugs).toBeDefined();
-    expect(result.bugs).toContain('[AuraAuraGuard-Error] Běhová chybová hláška');
-    expect(result.bugs).toContain('[AuraAuraGuard-Promise] Selhání slibu (Promise): API call failed');
+    expect(result.bugs).toContain('[AuraGuard-Error] Běhová chybová hláška');
+    expect(result.bugs).toContain('[AuraGuard-Promise] Selhání slibu (Promise): API call failed');
   });
 
   it('by měl úspěšně zachytit performance varování z console listeneru', async () => {
@@ -126,7 +126,7 @@ describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
       if (listeners['console']) {
         listeners['console']({
           type: () => 'warning',
-          text: () => '[AuraAuraGuard-Performance] Zaseknutí UI (Long Task): 180ms'
+          text: () => '[AuraGuard-Performance] Zaseknutí UI (Long Task): 180ms'
         });
       }
       return null;
@@ -151,8 +151,8 @@ describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
     // Výkonnostní signály nejsou chyby funkčnosti: dřív padaly do `bugs`
     // a přes `success: bugs.length === 0` označily za neúspěch prakticky
     // každou reálnou aplikaci (long task > 100 ms je běžný).
-    expect(result.warnings).toContain('[AuraAuraGuard-Performance] Zaseknutí UI (Long Task): 180ms');
-    expect(result.bugs).not.toContain('[AuraAuraGuard-Performance] Zaseknutí UI (Long Task): 180ms');
+    expect(result.warnings).toContain('[AuraGuard-Performance] Zaseknutí UI (Long Task): 180ms');
+    expect(result.bugs).not.toContain('[AuraGuard-Performance] Zaseknutí UI (Long Task): 180ms');
     expect(result.success).toBe(true);
   });
 
@@ -194,6 +194,6 @@ describe('AuraAuraGuard Page Monitoring Unit Tests', () => {
     );
 
     expect(result.bugs.some(b => b.includes('Fatal exception occurred'))).toBe(true);
-    expect(result.bugs).toContain('[AuraAuraGuard-NetworkError] Selhání API: POST https://example.com/api/data - HTTP 500');
+    expect(result.bugs).toContain('[AuraGuard-NetworkError] Selhání API: POST https://example.com/api/data - HTTP 500');
   });
 });

@@ -1,13 +1,19 @@
 [Unit]
 Description=AuraGuard — úklid artefaktů (screenshoty, videa, skripty)
-Documentation=file:///home/ubuntu/auratest-ai/deploy/cleanup-artifacts.sh
+Documentation=file:///home/nexus/auratest-ai/deploy/cleanup-artifacts.sh
 # Nemá smysl uklízet, když aplikace neběží a nic nepřibývá.
+#
+# POZOR NA ÚČET A CESTU. Dřív tu stálo `User=ubuntu` a
+# `/home/ubuntu/auratest-ai` — to je z původního zadání na Oracle Cloud.
+# Produkce běží na Azure jako `nexus`, takže úloha by tiše selhala
+# a artefakty by se neuklízely, dokud by někdo nenarazil na plný disk.
+# (Stalo se: 19,75 GB v build cache Dockeru, disk na 78 %.)
 After=docker.service
 
 [Service]
 Type=oneshot
-User=ubuntu
-WorkingDirectory=/home/ubuntu/auratest-ai
+User=nexus
+WorkingDirectory=/home/nexus/auratest-ai
 Environment=RETENTION_DAYS=7
 ExecStart=/usr/bin/env bash deploy/cleanup-artifacts.sh
 
@@ -15,5 +21,5 @@ ExecStart=/usr/bin/env bash deploy/cleanup-artifacts.sh
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/home/ubuntu/auratest-ai
+ReadWritePaths=/home/nexus/auratest-ai
 NoNewPrivileges=true
