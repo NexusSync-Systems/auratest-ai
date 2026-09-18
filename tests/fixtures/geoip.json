@@ -1,0 +1,88 @@
+{
+  "_generovano": "scripts/build-geoip-fixtures.mjs — NEUPRAVOVAT RUČNĚ",
+  "_verzeKnihovny": "2.0.3",
+  "_datumDatabaze": "2026-07-08",
+  "_vygenerovano": "2026-09-18",
+  "zaznamy": {
+    "4.223.166.194": {
+      "popis": "veřejná adresa vlastního serveru v Azure Sweden Central; databáze u ní vrací country US se souřadnicí geografického středu USA a poloměrem 1000 km. Kvůli ní tenhle modul vznikl.",
+      "odpoved": {
+        "range": [
+          80740352,
+          81788927
+        ],
+        "country": "US",
+        "region": "",
+        "eu": "0",
+        "timezone": "America/Chicago",
+        "city": "",
+        "ll": [
+          37.751,
+          -97.822
+        ],
+        "metro": 0,
+        "area": 1000
+      }
+    },
+    "116.202.1.1": {
+      "popis": "Hetzner, Německo",
+      "odpoved": {
+        "range": [
+          1959395328,
+          1959403519
+        ],
+        "country": "DE",
+        "region": "",
+        "eu": "1",
+        "timezone": "Europe/Berlin",
+        "city": "",
+        "ll": [
+          51.2993,
+          9.491
+        ],
+        "metro": 0,
+        "area": 200
+      }
+    },
+    "46.28.108.1": {
+      "popis": "Wedos, Česko",
+      "odpoved": {
+        "range": [
+          773614592,
+          773614847
+        ],
+        "country": "CZ",
+        "region": "53",
+        "eu": "1",
+        "timezone": "Europe/Prague",
+        "city": "Recany nad Labem",
+        "ll": [
+          50.05,
+          15.4833
+        ],
+        "metro": 0,
+        "area": 50
+      }
+    },
+    "8.8.8.8": {
+      "popis": "Google DNS — běžná veřejná adresa pro srovnání",
+      "odpoved": {
+        "range": [
+          134742016,
+          134774783
+        ],
+        "country": "US",
+        "region": "",
+        "eu": "0",
+        "timezone": "America/Chicago",
+        "city": "",
+        "ll": [
+          37.751,
+          -97.822
+        ],
+        "metro": 0,
+        "area": 1000
+      }
+    }
+  }
+}

@@ -1,23 +1,29 @@
 import { geoQuality, geoipDatabaseDate, MAX_USABLE_RADIUS_KM } from '../geoip-quality.js';
 
 /**
- * Odpovědi ZACHYCENÉ ze skutečné databáze (geoip-lite, snímek 8. 7. 2026).
+ * Fixtury se NEPÍŠÍ, generují se ze skutečné knihovny.
  *
- * Doslovný opis toho, co `geoip.lookup()` vrátil. Modul samotný knihovnu
- * neimportuje — je to čistá funkce nad výsledkem — takže ji netahá ani
- * test. Kdyby se tyhle tvary někdy změnily, chceme si toho všimnout při
- * povýšení databáze, ne až u zákazníka.
+ * Tenhle blok dřív začínal větou „Odpovědi ZACHYCENÉ ze skutečné
+ * databáze… Doslovný opis toho, co `geoip.lookup()` vrátil." Kontrolní
+ * vlna je porovnala s nainstalovanou knihovnou a DVĚ ZE TŘÍ byly
+ * vymyšlené — `116.202.1.1` mělo mít region `''` a area 200, ne `BY`
+ * a 20; `46.28.108.1` region `53` a Řečany, ne `31` a Hlubokou.
+ * Chyběla i pole `range`, `eu`, `timezone`, `metro`.
+ *
+ * Verdikt se tím neměnil, takže z toho falešný nález neplynul. Selhal
+ * ale deklarovaný účel: „kdyby se tyhle tvary změnily, chceme si toho
+ * všimnout při povýšení databáze." Toho si nikdo nevšimne, když fixtura
+ * knihovnu nikdy neviděla — a slovo „doslovný" navíc odradí recenzenta,
+ * aby to kontroloval. Stejný případ jako `preactAttr` u SBOM.
+ *
+ * Generuje `scripts/build-geoip-fixtures.mjs`. Test níž navíc knihovnu
+ * JEDNOU zavolá doopravdy, takže rozchod fixtury se skutečností spadne.
  */
-const ZACHYCENO = {
-  // veřejná adresa vlastního serveru v Azure Sweden Central
-  '4.223.166.194': { range: [80740352, 81788927], country: 'US', region: '', eu: '0',
-    timezone: 'America/Chicago', city: '', ll: [37.751, -97.822], metro: 0, area: 1000 },
-  // Hetzner, Německo
-  '116.202.1.1': { country: 'DE', region: 'BY', city: 'Munich', ll: [48.1543, 11.5545], area: 20 },
-  // Wedos, Česko
-  '46.28.108.1': { country: 'CZ', region: '31', city: 'Hluboka nad Vltavou', ll: [49.05, 14.4333], area: 50 },
-};
+import fixtura from './fixtures/geoip.json';
 
+const ZACHYCENO = Object.fromEntries(
+  Object.entries(fixtura.zaznamy).map(([ip, { odpoved }]) => [ip, odpoved]),
+);
 /**
  * Odpověď „nevím" se nesmí číst jako „jinde".
  *
@@ -79,5 +85,32 @@ describe('stáří databáze', () => {
     const d = geoipDatabaseDate();
     expect(d).toEqual(expect.any(String));
     expect(Number.isNaN(Date.parse(d))).toBe(false);
+  });
+});
+
+
+/**
+ * POJISTKA PROTI ROZCHODU FIXTURY SE SKUTEČNOSTÍ.
+ *
+ * Ostatní testy v souboru běží nad fixturou, protože `geoQuality` je
+ * čistá funkce a knihovnu tahat nepotřebuje. Tenhle jediný ji zavolá —
+ * jinak by se fixtura mohla libovolně rozejít s tím, co databáze vrací,
+ * a nikdo by si toho nevšiml. Přesně to se stalo.
+ */
+describe('fixtura odpovídá nainstalované knihovně', () => {
+  // eslint-disable-next-line global-require
+  const geoip = require('geoip-lite');
+
+  test.each(Object.keys(ZACHYCENO))('%s vrací to, co je ve fixtuře', (ip) => {
+    expect(geoip.lookup(ip)).toEqual(ZACHYCENO[ip]);
+  });
+
+  test('fixtura nese verzi knihovny i stáří databáze', () => {
+    // Bez toho nejde poznat, k čemu se ta čísla vztahují — a `geoQuality`
+    // je základ verdiktu „prokazatelně mimo EU/EHP".
+    expect(fixtura._verzeKnihovny).toMatch(/^\d+\.\d+/);
+    expect(fixtura._datumDatabaze).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // eslint-disable-next-line global-require
+    expect(fixtura._verzeKnihovny).toBe(require('geoip-lite/package.json').version);
   });
 });
