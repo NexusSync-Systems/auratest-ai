@@ -751,3 +751,86 @@ describe('chaos test se nevydává za předpisovou kontrolu', () => {
       .toBeInTheDocument();
   });
 });
+
+
+/**
+ * ROZSAH MĚŘENÍ V TIŠTĚNÉM DOKUMENTU.
+ *
+ * Pole `scope` neslo pět z osmi skenerů, ale tiskový report ho vypisoval
+ * jedině u Green Dealu. U přístupnosti, AI Actu a cookies pole vůbec
+ * neexistovalo. Výsledek: dokument pro úřad tvrdil „Splněno" pod nadpisem
+ * „Výsledky EAA", aniž kdekoli stálo, že automatický test pokrývá menšinu
+ * kritérií WCAG.
+ *
+ * Testy jsou psané tak, aby padly při odstranění `<RozsahMereni>` z dané
+ * sekce — hledají text UVNITŘ sekce, ne kdekoli v dokumentu.
+ */
+describe('rozsah měření se tiskne u každé sekce, která ho nese', () => {
+  const pripady = [
+    ['Výsledky EAA', { a11yResult: { violations: [], incomplete: [], scope: 'ROZSAH-EAA' } }, 'ROZSAH-EAA'],
+    ['EU AI Act', { aiActResult: { aiAct: { isCompliant: null, rating: 'x', obligations: [], apisDetected: [], scope: 'ROZSAH-AIACT' } } }, 'ROZSAH-AIACT'],
+    ['NIS2 & PQC', { nis2Result: { nis2: { isCompliant: null, headers: {}, scope: 'ROZSAH-NIS2' }, pqc: {} } }, 'ROZSAH-NIS2'],
+    ['DORA — Chaos Engineering', { chaosResult: { chaos: { isResilient: null, rating: 'x', scope: 'ROZSAH-DORA' } } }, 'ROZSAH-DORA'],
+    ['CRA SBOM', { craResult: { sbom: [], scope: 'ROZSAH-SBOM' } }, 'ROZSAH-SBOM'],
+    ['GDPR Cookie Auditor', {
+      cookieResult: {
+        gdpr: { isCompliant: null, rating: 'x', suspiciousItems: [] },
+        cookieFlags: { ok: null, total: 0, findings: [], rationale: 'nic', scope: 'ROZSAH-COOKIE' },
+      },
+    }, 'ROZSAH-COOKIE'],
+  ];
+
+  test.each(pripady)('%s', (nadpis, props, marker) => {
+    vykresli(props);
+    const s = sekce(new RegExp(nadpis.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    // Text musí být UVNITŘ té sekce, jinak by test prošel i tehdy, když
+    // se rozsah vytiskne u jiného skeneru.
+    expect(s.getByText(new RegExp(marker))).toBeInTheDocument();
+    expect(s.getByText(/Rozsah měření/)).toBeInTheDocument();
+  });
+
+  test('prázdný rozsah nevytiskne osiřelý nadpis', () => {
+    vykresli({ a11yResult: { violations: [], incomplete: [], scope: '   ' } });
+    expect(screen.queryByText(/Rozsah měření/)).toBeNull();
+  });
+});
+
+
+/**
+ * PŘÍZNAKY COOKIES SE DO DOKUMENTU NEDOSTALY VŮBEC.
+ *
+ * Audit je počítá od opravy S3 a obrazovka je ukazuje, ale PrintReport
+ * o `cookieFlags` nevěděl. Relační cookie bez HttpOnly — nález se
+ * závažností „high", tedy jediné XSS znamená převzetí účtu — v tištěném
+ * dokumentu nebyla nikde.
+ */
+describe('příznaky cookies v tištěném dokumentu', () => {
+  test('nález je vidět i s jménem cookie a závažností', () => {
+    vykresli({
+      cookieResult: {
+        gdpr: { isCompliant: true, rating: 'BEZ NÁLEZU', suspiciousItems: [] },
+        cookieFlags: {
+          ok: false,
+          total: 1,
+          findings: [{ severity: 'high', id: 'cookie.httponly.missing', cookie: 'PHPSESSID', message: 'Relační cookie bez HttpOnly.' }],
+          rationale: 'Z 1 vlastní cookie má 1 závažný nedostatek.',
+          scope: 'ROZSAH-COOKIE',
+        },
+      },
+    });
+    const s = sekce(/GDPR Cookie Auditor/);
+    expect(s.getByText(/PHPSESSID/)).toBeInTheDocument();
+    expect(s.getByText(/Relační cookie bez HttpOnly/)).toBeInTheDocument();
+  });
+
+  test('neprůkazné příznaky se nepíšou jako nesplněné', () => {
+    vykresli({
+      cookieResult: {
+        gdpr: { isCompliant: true, rating: 'BEZ NÁLEZU', suspiciousItems: [] },
+        cookieFlags: { ok: null, total: 0, findings: [], rationale: 'Nebyla nastavena žádná cookie.', scope: 'R' },
+      },
+    });
+    const s = sekce(/GDPR Cookie Auditor/);
+    expect(s.getByText(/Příznaky cookies \[Neprůkazné\]/i)).toBeInTheDocument();
+  });
+});

@@ -2511,7 +2511,16 @@ export async function auditAccessibility(url) {
       // (typicky kontrast na obrázkovém pozadí). Dřív se zahazovaly, což
       // vyrábělo false negatives — patří do reportu k ručnímu posouzení.
       incomplete: results.incomplete.map(mapNodes),
-      passedCount: results.passes.length
+      passedCount: results.passes.length,
+      // Rozsah měření. Pět z osmi skenerů ho neslo, tenhle ne — a přitom
+      // je u přístupnosti nejpotřebnější: automatický test pokrývá menšinu
+      // kritérií WCAG a „bez nálezu" se bez téhle věty čte jako „web je
+      // přístupný".
+      scope: 'Automatický test axe-core proti pravidlům WCAG 2.1 AA a EN 301 549. '
+        + 'Pokrývá jen kritéria ověřitelná strojově — srozumitelnost textu, '
+        + 'smysluplnost pořadí obsahu, ovládání klávesnicí napříč celou cestou '
+        + 'uživatele ani použitelnost s odečítačem obrazovky takový test '
+        + 'neposoudí. Položky k ručnímu posouzení nejsou splněné ani nesplněné.',
     };
   } catch (err) {
     console.error('Chyba při auditu přístupnosti:', err);
@@ -3880,6 +3889,14 @@ export async function auditAIAct(url) {
       url,
       navigationError,
       aiAct: {
+        // ROZSAH MĚŘENÍ. Chyběl, přestože právě tady je nejtěsnější:
+        // sken vidí jen to, co je v DOM a v síťovém provozu prohlížeče.
+        scope: 'Kontrola článku 50 zvenčí: hledá se rozhraní AI v DOM stránky, '
+          + 'upozornění v jejím textu a podpis C2PA v prvních 64 kB obrázků. '
+          + 'Model volaný z backendu, serverová integrace ani obsah vytvořený '
+          + 'mimo prohlížeč takový sken nevidí. Povinnosti podle odst. 3 a 4 '
+          + '(rozpoznávání emocí, deepfakes) jsou mimo jeho dosah úplně.',
+
         // Čtyři povinnosti čl. 50 zvlášť. Dřív se slučovaly do jednoho
         // výsledku, takže report tvrdil víc, než uměl doložit.
         obligations,

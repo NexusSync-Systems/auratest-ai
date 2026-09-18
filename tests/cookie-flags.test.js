@@ -191,3 +191,33 @@ describe('cizí cookies (regrese kontrolní vlny)', () => {
     expect(result.ok).not.toBeUndefined();
   });
 });
+
+/**
+ * ROZSAH MĚŘENÍ.
+ *
+ * Bez něj se „žádný závažný nedostatek" čte jako „cookies jsou v pořádku".
+ * Sken přitom vidí jen cookies z jednoho načtení úvodní stránky
+ * nepřihlášeným návštěvníkem — tedy typicky ani jednu z těch, na kterých
+ * stojí přihlášení. Věta musí být u KAŽDÉHO ze tří návratů, i u těch
+ * neprůkazných; právě tam je nejpotřebnější.
+ */
+describe('rozsah měření', () => {
+  const rozsahyVsech = [
+    ['bez cookies', auditCookieFlags([], { host: 'example.com' })],
+    ['jen cizí cookies', auditCookieFlags(
+      [{ name: 'x', domain: 'cdn.jiny.cz', secure: true, httpOnly: true }],
+      { host: 'example.com' }
+    )],
+    ['vlastní cookies', auditCookieFlags(
+      [{ name: 'x', domain: 'example.com', secure: true, httpOnly: true }],
+      { host: 'example.com' }
+    )],
+  ];
+
+  test.each(rozsahyVsech)('%s nese rozsah', (_, vysledek) => {
+    expect(typeof vysledek.scope).toBe('string');
+    // Musí pojmenovat obě hlavní omezení, ne jen být neprázdný.
+    expect(vysledek.scope).toMatch(/přihlášení/);
+    expect(vysledek.scope).toMatch(/vlastní domény/);
+  });
+});

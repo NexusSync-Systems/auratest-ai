@@ -71,6 +71,21 @@ export function isFirstParty(cookieDomain, siteHost) {
  * @param {string} [options.host] hostitel auditovaného webu
  * @returns {{ok: boolean|null, total: number, findings: Array, rationale: string}}
  */
+/**
+ * ROZSAH MĚŘENÍ.
+ *
+ * Bez téhle věty se „žádný závažný nedostatek" čte jako „cookies jsou
+ * v pořádku". Sken přitom vidí jen cookies nastavené při jednom načtení
+ * úvodní stránky nepřihlášeným návštěvníkem — tedy typicky ani jednu
+ * z těch, na kterých stojí přihlášení.
+ */
+export const ROZSAH_COOKIE =
+  'Příznaky cookies nastavených při jednom načtení stránky nepřihlášeným '
+  + 'návštěvníkem. Cookies vznikající až po přihlášení, po udělení souhlasu '
+  + 'nebo na dalších stránkách sken nevidí. Posuzují se jen cookies vlastní '
+  + 'domény; cizí se počítají, ale nehodnotí, protože je provozovatel '
+  + 'nemá jak změnit. Neposuzuje se právní titul ani nutnost cookie.';
+
 export function auditCookieFlags(cookies, { https = true, host = null } = {}) {
   const list = Array.isArray(cookies) ? cookies : [];
 
@@ -81,6 +96,7 @@ export function auditCookieFlags(cookies, { https = true, host = null } = {}) {
       ok: null,
       total: 0,
       findings: [],
+      scope: ROZSAH_COOKIE,
       rationale:
         'Při načtení stránky nebyla nastavena žádná cookie, takže není co ' +
         'posoudit. Neznamená to, že aplikace cookies nepoužívá — mohou ' +
@@ -180,6 +196,7 @@ export function auditCookieFlags(cookies, { https = true, host = null } = {}) {
       firstParty: 0,
       thirdParty,
       findings: [],
+      scope: ROZSAH_COOKIE,
       rationale:
         `Všech ${list.length} nalezených cookies nastavila třetí strana ` +
         '(vložený obsah). Příznaky vlastních cookies aplikace tak nebylo ' +
@@ -193,6 +210,7 @@ export function auditCookieFlags(cookies, { https = true, host = null } = {}) {
     firstParty: own,
     thirdParty,
     findings,
+    scope: ROZSAH_COOKIE,
     rationale:
       (high > 0
         ? `Z ${own} vlastních cookies má ${high} závažný nedostatek v příznacích.`

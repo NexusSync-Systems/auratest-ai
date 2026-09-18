@@ -93,6 +93,30 @@ function popisListy(b) {
     + 'pod překryvem.';
 }
 
+/**
+ * Rozsah měření pod výsledkem sekce.
+ *
+ * PROČ TO TU PŘIBYLO
+ * Pole `scope` neslo pět z osmi skenerů, ale tiskový report ho vypisoval
+ * JEN u uhlíkové stopy. Ostatní si ho tedy vyplňovaly do prázdna: údaj,
+ * který říká „tohle jsme neměřili", nedošel k tomu, komu je určený.
+ *
+ * Právě u dokumentu pro úřad je to podstatné. „NIS2: splněno" bez věty
+ * „nejde o posouzení shody s NIS2 jako celkem, zákon vyžaduje i
+ * organizační opatření" je tvrzení, které sken nedokládá — a ta věta
+ * v datech celou dobu byla.
+ *
+ * Text si nese každý skener sám, tahle komponenta ho jen umí zobrazit.
+ */
+function RozsahMereni({ scope }) {
+  if (!scope || typeof scope !== 'string' || scope.trim().length === 0) return null;
+  return (
+    <p className="print-note" style={{ marginTop: '6px', marginBottom: '16px' }}>
+      <strong>Rozsah měření: </strong>{scope}
+    </p>
+  );
+}
+
 function jeAgentniBeh(session) {
   return Boolean(session) && session.kind !== 'compliance-scan';
 }
@@ -569,6 +593,8 @@ export default function PrintReport({
               </ul>
             </>
           )}
+
+          <RozsahMereni scope={a11yResult.scope} />
         </div>
       )}
 
@@ -750,9 +776,7 @@ export default function PrintReport({
               )}
             </tbody>
           </table>
-          <p style={{ fontSize: '0.85em', color: '#475569' }}>
-            {chaosResult.chaos.scope}
-          </p>
+          <RozsahMereni scope={chaosResult.chaos.scope} />
         </div>
       )}
 
@@ -793,6 +817,8 @@ export default function PrintReport({
               </ul>
             </div>
           )}
+
+          <RozsahMereni scope={aiActResult.aiAct.scope} />
         </div>
       )}
 
@@ -911,11 +937,7 @@ export default function PrintReport({
           {/* Vymezení rozsahu. Agent v něm výslovně říká, že nejde
               o posouzení shody s NIS2 jako celkem — bez toho by nadpis
               sekce a odznak dohromady tvrdily víc, než sken umí. */}
-          {nis2Result.nis2.scope && (
-            <p style={{ marginTop: '15px', fontSize: '0.8rem', color: '#475569' }}>
-              {nis2Result.nis2.scope}
-            </p>
-          )}
+          <RozsahMereni scope={nis2Result.nis2.scope} />
           {nis2Result.pqc.tlsIssues?.length > 0 && (
             <ul>
               {nis2Result.pqc.tlsIssues.map((issue) => <li key={issue}>{issue}</li>)}
@@ -962,7 +984,7 @@ export default function PrintReport({
                 && `, ${craResult.evidence.scriptsUnreadable} skriptů se nepodařilo přečíst`}.
             </p>
           )}
-          {craResult.scope && <p style={{ fontSize: '0.8rem' }}>{craResult.scope}</p>}
+          <RozsahMereni scope={craResult.scope} />
         </div>
       )}
 
@@ -982,6 +1004,31 @@ export default function PrintReport({
               <ul style={{ paddingLeft: '20px', marginTop: '8px' }}>
                 {cookieResult.gdpr.suspiciousItems.map((item, i) => <li key={i} style={{ fontFamily: 'monospace', fontSize: '14px', color: '#475569' }}>{item}</li>)}
               </ul>
+            </div>
+          )}
+
+          {/* PŘÍZNAKY COOKIES SE DO TIŠTĚNÉHO REPORTU NEDOSTALY VŮBEC.
+              Audit je počítá a obrazovka je ukazuje, ale dokument pro úřad
+              obsahoval jen verdikt o trackerech. Relační cookie bez HttpOnly
+              — tedy nález se závažností „high" — v něm nebyla nikde. */}
+          {cookieResult.cookieFlags && (
+            <div style={{ marginTop: '15px' }}>
+              <p style={{ marginBottom: '4px', fontWeight: 600 }}>
+                Příznaky cookies [{complianceLabel(cookieResult.cookieFlags.ok)}]
+              </p>
+              <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#475569' }}>
+                {cookieResult.cookieFlags.rationale}
+              </p>
+              {cookieResult.cookieFlags.findings?.length > 0 && (
+                <ul style={{ paddingLeft: '20px' }}>
+                  {cookieResult.cookieFlags.findings.map((f, i) => (
+                    <li key={i} style={{ marginBottom: '4px', fontSize: '14px' }}>
+                      <strong>{f.cookie}</strong> ({f.severity}) — {f.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <RozsahMereni scope={cookieResult.cookieFlags.scope} />
             </div>
           )}
         </div>
