@@ -44,13 +44,58 @@ export const OKRAJE_SPISU = {
 };
 
 /**
+ * Prohlížeč, ve kterém se tiskne spis, NESMÍ SÁHNOUT DO SÍTĚ.
+ *
+ * Tohle byl jediný kontext v celém nástroji bez hlídače navigace. Dnes
+ * ho drží nad vodou důsledné escapování v `case-file.js` — jenže to je
+ * jedna funkce a jedna chyba v ní stačí: do spisu se dostávají adresy
+ * auditovaných webů, a ty zadává zákazník. Vložený `<img src="http://
+ * 169.254.169.254/latest/meta-data/">` by z tisku spisu udělal nástroj
+ * na čtení metadat cloudu.
+ *
+ * Hlídač je tu proto přísnější než `guardNavigation` u skenerů: ten
+ * adresy prověřuje, protože skener SE MÁ na web podívat. Tady se dívat
+ * nemá na nic. Předloha je záměrně bez externích zdrojů, takže každý
+ * požadavek ven je buď chyba v šabloně, nebo pokus o zneužití — a obojí
+ * patří do logu, ne do PDF.
+ *
+ * `data:` a `about:` se propouštějí: nejdou ven a předloha je může
+ * legitimně použít pro vložený obrázek nebo prázdný rámec.
+ */
+export async function zakazSit(page, onBlocked) {
+  if (typeof page?.route !== 'function') {
+    console.warn('[spis] Stránka neumí route() — hlídač sítě se nezapnul.');
+    return;
+  }
+  await page.route('**/*', async (route, request) => {
+    // Výjimka z async handleru by skončila jako neodchycené odmítnutí
+    // Promise a shodila proces — přesně to se u skenerů už jednou stalo.
+    try {
+      const url = String(request.url() || '');
+      if (/^(data:|about:|blob:)/i.test(url)) return await route.continue();
+
+      console.warn(`[spis] Zablokován požadavek ven při tisku spisu: ${url}`);
+      if (onBlocked) onBlocked(url);
+      return await route.abort();
+    } catch {
+      // Ani selhání hlídače nesmí položit export.
+      try { await route.abort(); } catch { /* route už mohla být vyřízena */ }
+    }
+  });
+}
+
+/**
  * @param {string} html předloha z `renderCaseFileHtml()`
+ * @param {object} [options]
+ * @param {(url: string) => void} [options.onBlocked] volá se pro každý
+ *   zablokovaný požadavek — testy si tak ověří, že hlídač opravdu drží.
  * @returns {Promise<Buffer>}
  */
-export async function renderCaseFilePdf(html) {
+export async function renderCaseFilePdf(html, { onBlocked } = {}) {
   const browser = await chromium.launch(launchOptions());
   try {
     const page = await browser.newPage();
+    await zakazSit(page, onBlocked);
 
     // `setContent` místo dočasného souboru: spis obsahuje otisky a cíle
     // auditů, které nemá smysl odkládat na disk.
