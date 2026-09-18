@@ -161,3 +161,70 @@ export function zatridSelhani({ method, url, errText, blokovanoNami = false }) {
     runtimeSignal: true,
   };
 }
+
+/**
+ * Co říká stavový kód — o WEBU, nebo o TOM, KDO SE PTAL?
+ *
+ * PROČ TO ROZLIŠUJEME
+ * Smoke test proti cloudflare.com vrátil jako vadu aplikace:
+ *
+ *   [NetworkError] Selhání API: GET https://www.cloudflare.com/plans/
+ *     enterprise/demo/ - HTTP 403
+ *
+ * Tu stránku si člověk v prohlížeči otevře. 403 dostal náš agent —
+ * nepřihlášený automat. A přesně to ten kód znamená.
+ *
+ * ZDROJ, NE MOJE PAMĚŤ
+ * RFC 9110 (HTTP Semantics, červen 2022) a RFC 6585:
+ *
+ *   § 15.5 „The 4xx (Client Error) class of status code indicates that
+ *           the client seems to have erred."
+ *   § 15.5.2 (401) „…the request has not been applied because it lacks
+ *           valid authentication credentials for the target resource."
+ *   § 15.5.4 (403) „…the server understood the request but refuses to
+ *           fulfill it. If authentication credentials were provided in
+ *           the request, the server considers them insufficient to
+ *           grant access."
+ *   § 15.5.5 (404) „…the origin server did not find a current
+ *           representation for the target resource…"
+ *   § 15.6 (5xx) „…the server is aware that it has erred or is
+ *           incapable of performing the requested method."
+ *   RFC 6585 § 4 (429) „…the user has sent too many requests in a given
+ *           amount of time (»rate limiting«)."
+ *
+ * Z toho plyne dělicí čára, kterou nevymýšlím:
+ *   • 401, 403, 429 popisují ŽADATELE — jeho pověření a jeho tempo.
+ *     O tom, jestli web funguje oprávněnému člověku, neříkají nic.
+ *     Náš sken je nepřihlášený automat, takže je nemá jak rozhodnout.
+ *   • 404 popisuje ZDROJ (není co vrátit) — nález o webu.
+ *   • 5xx popisuje SERVER (sám ví, že chyboval) — nález o webu.
+ *
+ * POZOR NA OPAČNOU CHYBU
+ * Neplatí, že 403 nikdy nic neznamená. Jen to zvenčí a bez přihlášení
+ * nerozhodneme — a neprůkazné se podle řídící zásady nástroje hlásí jako
+ * neprůkazné, ne jako vada ani jako pořádek. V reportu proto zůstane
+ * vidět, včetně adresy, ať si to zákazník ověří přihlášeně.
+ */
+const KODY_O_ZADATELI = new Set([401, 403, 429]);
+
+export function zatridStavKod(status) {
+  const kod = Number(status);
+  if (!Number.isInteger(kod) || kod < 400) {
+    return { nalez: false, duvod: null };
+  }
+  if (KODY_O_ZADATELI.has(kod)) {
+    return {
+      nalez: false,
+      duvod: kod === 429
+        ? 'omezení tempa dotazů se týká našeho skenu, ne funkčnosti webu'
+        : 'odpověď se týká oprávnění žadatele; náš sken je nepřihlášený automat',
+    };
+  }
+  return { nalez: true, duvod: null };
+}
+
+/** Okolnost běhu u kódů, které mluví o žadateli. */
+export function poznamkaOPristupu(method, url, status, duvod) {
+  return `Server odmítl náš požadavek (${duvod}): ${method || '?'} ${url} `
+    + `- HTTP ${status}. Ověřte přihlášeně, jestli stránka funguje.`;
+}

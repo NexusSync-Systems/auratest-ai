@@ -10,6 +10,7 @@ import { vyhodnotFinish, UKONCENI, popisUkonceni } from './finish-policy.js';
 import { popisHttpChyby, popisHttpChybyBehu, navigujAOver } from './http-status.js';
 import {
   zatridSelhani, jeOvereniRobota, poznamkaOvereniRobota,
+  zatridStavKod, poznamkaOPristupu,
 } from './network-findings.js';
 import { vytvorChaosHandler, vyhodnotChaos } from './chaos-run.js';
 import { bezpecnePrvky, zamlcenychPrvku, vytvorZnacku, obalDataZeStranky, obalStavStranky, pokynKDatumZeStranky } from './prompt-safety.js';
@@ -1612,6 +1613,11 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
   // Výkonnostní signály nejsou chyby funkčnosti.
   const WARNING_PREFIXES = ['[AuraAuraGuard-Performance]', '[AuraAuraGuard-NetworkSlow]'];
 
+  // Adresy, u kterých selhání zapsal posluchač odpovědí. Prohlížeč totéž
+  // ohlásí i do konzole („Failed to load resource: …status of 403 ()"),
+  // jenže BEZ ADRESY — dva řádky o jedné věci a ten druhý nepoužitelný.
+  const hlasenaSelhani = new Set();
+
   page.on('console', (msg) => {
     const type = msg.type();
     const text = msg.text();
@@ -1620,6 +1626,32 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     if (text.startsWith('[AuraAuraGuard-')) {
       addFinding(WARNING_PREFIXES.some((p) => text.startsWith(p)) ? warnings : bugs, text);
     } else if (type === 'error') {
+      // Hlášení prohlížeče o selhaném zdroji NENÍ chyba aplikace: je to
+      // druhé znění téhož faktu, který už nese posluchač odpovědí —
+      // a to první, na rozdíl od tohohle, obsahuje adresu.
+      if (text.startsWith('Failed to load resource')) {
+        // Adresa je v `location()`, ne v textu. Bez ní je řádek
+        // k ničemu — zákazník nemá co ověřit — takže mlčíme.
+        const zdroj = msg.location()?.url || null;
+        if (!zdroj || hlasenaSelhani.has(zdroj)) return;
+        hlasenaSelhani.add(zdroj);
+
+        // Posluchač odpovědí bere jen `fetch`, `xhr`, `document`
+        // a `script`, takže obrázek nebo styl projde JEN tudy. Rozbitý
+        // obrázek je vada webu a nesmí se cestou sem ztratit — proto se
+        // tu rozhoduje podle stejného pravidla, ne paušálně na varování.
+        const stav = /status of (\d{3})/.exec(text);
+        const verdikt = stav ? zatridStavKod(Number(stav[1])) : { nalez: false, duvod: null };
+        if (verdikt.nalez) {
+          addFinding(bugs, `[AuraAuraGuard-NetworkError] Selhání zdroje: ${zdroj} - HTTP ${stav[1]}`);
+        } else if (stav) {
+          addFinding(warnings, poznamkaOPristupu('GET', zdroj, stav[1], verdikt.duvod));
+        } else {
+          // Bez stavového kódu (přerušené spojení, DNS) nevíme, čí to je.
+          addFinding(warnings, `Prohlížeč ohlásil selhání zdroje bez stavového kódu: ${zdroj}`);
+        }
+        return;
+      }
       addFinding(bugs, consoleFinding(text));
     }
   });
@@ -1682,6 +1714,13 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       const method = response.request().method();
 
       if (status >= 400) {
+        // Adresa se zapamatuje, ať ji posluchač konzole nehlásí podruhé.
+        // Prohlížeč totéž selhání ohlásí i do konzole hláškou „Failed to
+        // load resource: the server responded with a status of 403 ()",
+        // ve které navíc adresa CHYBÍ — v reportu z toho byly dva řádky
+        // o jedné věci a ten druhý zákazníkovi neřekl ani co selhalo.
+        hlasenaSelhani.add(url);
+
         const resourceType = response.request().resourceType();
         const isCritical = ['fetch', 'xhr', 'document', 'script'].includes(resourceType);
         if (isCritical) {
@@ -1693,7 +1732,16 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
           if (jeOvereniRobota(url)) {
             addFinding(warnings, poznamkaOvereniRobota(method, url, `HTTP ${status}`));
           } else {
-            addFinding(bugs, `[AuraAuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`);
+            // 401, 403 a 429 popisují podle RFC 9110 a RFC 6585 ŽADATELE,
+            // ne web. Náš sken je nepřihlášený automat, takže z nich
+            // o funkčnosti pro oprávněného člověka neplyne nic — viz
+            // `zatridStavKod`. Zůstanou vidět jako okolnost běhu.
+            const verdikt = zatridStavKod(status);
+            if (verdikt.nalez) {
+              addFinding(bugs, `[AuraAuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`);
+            } else {
+              addFinding(warnings, poznamkaOPristupu(method, url, status, verdikt.duvod));
+            }
           }
         }
       }

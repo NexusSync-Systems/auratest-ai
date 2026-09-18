@@ -1,4 +1,4 @@
-import { jeZruseny, nalezSitoveChyby, poznamkaZruseneho, jeOvereniRobota, poznamkaOvereniRobota, zatridSelhani,
+import { jeZruseny, nalezSitoveChyby, poznamkaZruseneho, jeOvereniRobota, poznamkaOvereniRobota, zatridSelhani, zatridStavKod, poznamkaOPristupu,
 } from '../network-findings.js';
 import { sanitizeActionResponse } from '../agent.js';
 
@@ -187,5 +187,62 @@ describe('zatřídění selhaného požadavku', () => {
       url: 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x',
       blokovanoNami: true,
     }).kam).toBe('ticho');
+  });
+});
+
+/**
+ * STAVOVÝ KÓD: O WEBU, NEBO O TOM, KDO SE PTAL?
+ *
+ * Smoke test proti cloudflare.com vrátil jako vadu aplikace:
+ *   [NetworkError] Selhání API: GET https://www.cloudflare.com/plans/
+ *     enterprise/demo/ - HTTP 403
+ * Tu stránku si člověk otevře. 403 dostal náš agent — nepřihlášený
+ * automat. Dělicí čára není vymyšlená, je z RFC 9110 a RFC 6585:
+ * 401/403/429 popisují žadatele, 404 zdroj, 5xx server.
+ */
+describe('zatřídění stavového kódu', () => {
+  test('401, 403 a 429 nejsou nález o webu', () => {
+    for (const kod of [401, 403, 429]) {
+      const v = zatridStavKod(kod);
+      expect(v.nalez).toBe(false);
+      // Důvod musí být k dispozici — okolnost bez vysvětlení je jen
+      // řádek navíc.
+      expect(typeof v.duvod).toBe('string');
+      expect(v.duvod.length).toBeGreaterThan(10);
+    }
+  });
+
+  test('429 má vlastní vysvětlení — tempo, ne oprávnění', () => {
+    expect(zatridStavKod(429).duvod).toMatch(/tempa dotazů/);
+    expect(zatridStavKod(403).duvod).toMatch(/oprávnění/);
+  });
+
+  test('404 a 5xx nálezy zůstávají', () => {
+    // 404 mluví o zdroji („did not find a current representation"),
+    // 5xx o serveru („the server is aware that it has erred").
+    for (const kod of [404, 410, 500, 502, 503]) {
+      expect(zatridStavKod(kod).nalez).toBe(true);
+    }
+  });
+
+  test('úspěšná odpověď není nález', () => {
+    for (const kod of [200, 204, 301, 304, 399]) {
+      expect(zatridStavKod(kod).nalez).toBe(false);
+    }
+  });
+
+  test('nesmyslný vstup se nevydává za nález', () => {
+    for (const v of [null, undefined, 'text', NaN, 0]) {
+      expect(zatridStavKod(v).nalez).toBe(false);
+    }
+  });
+
+  test('poznámka nese adresu, kód i výzvu k ověření', () => {
+    const p = poznamkaOPristupu('GET', 'https://www.cloudflare.com/plans/enterprise/demo/', 403, 'oprávnění žadatele');
+    expect(p).toMatch(/HTTP 403/);
+    expect(p).toMatch(/plans\/enterprise\/demo/);
+    // Adresa v poznámce je podstatná: zákazník si to má ověřit
+    // přihlášeně, a bez ní nemá co otevřít.
+    expect(p).toMatch(/Ověřte přihlášeně/);
   });
 });
