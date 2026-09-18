@@ -58,14 +58,15 @@ describe('C2PA proti skutečně podepsanému souboru', () => {
     });
   }
 
-  test('fixtury chybí — a je to vidět', () => {
+  test('chybějící fixtura se hlásí nahlas, ne mlčky', () => {
     const chybi = pripady
       .map(([jmeno]) => jmeno)
       .filter((jmeno) => !fs.existsSync(path.join(DIR, jmeno)));
 
     if (chybi.length > 0) {
       // Ne `fail()`. Chybějící fixtura není chyba kódu, je to nedokončené
-      // ověření — a to se hlásí nahlas, ne červeně.
+      // ověření — a to se hlásí nahlas, ne červeně. Kdyby test padal,
+      // někdo by ho vypnul a ověření by zmizelo úplně.
       console.warn(
         `[C2PA] Struktura kontejneru zůstává neověřená proti cizímu `
         + `podepisovateli. Chybí: ${chybi.join(', ')}. `
@@ -73,5 +74,21 @@ describe('C2PA proti skutečně podepsanému souboru', () => {
       );
     }
     expect(Array.isArray(chybi)).toBe(true);
+  });
+
+  test('podepsáno CIZÍM nástrojem, ne naším', () => {
+    // Smysl fixtury stojí a padá s tím, kdo podpis vyrobil. Kdyby ho
+    // vyrobil náš kód z popisu specifikace, testovali bychom znovu jen
+    // vlastní představu — jen v binární podobě.
+    const soubor = path.join(DIR, 'podepsany-ai.jpg');
+    if (!fs.existsSync(soubor)) return;
+
+    const hlavicka = nactiHlavicku('podepsany-ai.jpg');
+    // `c2patool` se do manifestu podepisuje jako generátor nároku.
+    expect(hlavicka).toMatch(/c2patool/);
+    // A nese i tvar, který jsem v hlavě NEMĚL: `c2pa.actions.v2`
+    // s `claim_version: 2`. Čtenář ho přesto našel — což je přesně to,
+    // co tahle fixtura měla rozhodnout.
+    expect(hlavicka).toMatch(/c2pa\.actions\.v2/);
   });
 });
