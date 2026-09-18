@@ -23,6 +23,24 @@
  *            scrollování nedožene. Bez dalšího zkoumání se z toho nic vyvodit
  *            nedá, takže se to nesmí tvrdit.
  *
+ *   prostredi Nezdařilo se to, protože se pod agentem rozpadlo prostředí:
+ *            zavřel se prohlížeč, stránka mezitím navigovala, prvek se
+ *            přerenderoval. O aplikaci to neříká NIC — a část toho jsme
+ *            způsobili sami. Ověřeno spuštěním: pět takových hlášek
+ *            (`Target page, context or browser has been closed`,
+ *            `Execution context was destroyed`, `Element is not attached
+ *            to the DOM`, `Target crashed`) padalo do `app` a zapisovalo se
+ *            do `bugs` jako vada zákazníkova webu. Znění jsou ověřená proti
+ *            `playwright-core/lib/coreBundle.js`, ne odhadnutá.
+ *
+ *   neurcitelne  Timeout bez dalšího vodítka. Playwright čekal, prvek se
+ *            nedal ovládnout, ale PROČ se z hlášky nepozná — call log
+ *            neuvádí ani překryv, ani viewport. Může to být rozbité
+ *            tlačítko (vada), nekonečná animace, nebo pomalý server.
+ *            Řídící zásada nástroje říká, že neprůkazné se nehlásí jako
+ *            nález; zůstane tedy vidět mezi varováními i s původní hláškou,
+ *            aby si člověk mohl udělat úsudek sám.
+ *
  *   app      Všechno ostatní — teprve tohle smí zvednout ruku jako nález.
  *
  * Modul je záměrně bez závislostí, aby šel testovat bez importu agent.js
@@ -32,6 +50,32 @@
 const POLICY_PATTERNS = /zablokována|neveřejn|interní rozsah/i;
 const OVERLAY_PATTERN = /intercepts pointer events/i;
 const VIEWPORT_PATTERN = /element is outside of the viewport/i;
+
+/**
+ * Rozpadlo se prostředí, ne aplikace.
+ *
+ * Každé znění je opsané z `playwright-core/lib/coreBundle.js`, ne odhadnuté:
+ *   „Target page, context or browser has been closed"  (2×)
+ *   „Execution context was destroyed, most likely because of a navigation" (6×)
+ *   „Element is not attached to the DOM"               (3×)
+ *   „detached from document" / „detached from the DOM"  (5×)
+ *   „Target crashed"                                    (2×)
+ *
+ * První z nich způsobíme obvykle sami (konec běhu, uvolnění slotu). Druhá
+ * a třetí nastanou na každé živé aplikaci, která během kliknutí naviguje
+ * nebo překreslí komponentu — u Reactu a Vue je to běžný stav, ne vada.
+ */
+const PROSTREDI_PATTERN =
+  /has been closed|Target crashed|Execution context was destroyed|not attached to the DOM|detached from/i;
+
+/**
+ * Timeout bez vysvětlení.
+ *
+ * Musí se testovat AŽ PO překryvu a viewportu — ty mají vlastní znění
+ * uvnitř call logu a jsou konkrétnější. Zbude případ, kdy Playwright
+ * jen čekal a nic bližšího neuvedl.
+ */
+const TIMEOUT_PATTERN = /Timeout \d+ms exceeded/i;
 
 /**
  * Call log Playwrightu do reportu nepatří celý.
@@ -89,6 +133,30 @@ export function classifyActionFailure(action, step, errorMessage) {
         `Akce '${action}' v kroku ${step} nešla provést: prvek se nepodařilo ` +
         'dostat do viditelné části okna ani po odscrollování. Z toho neplyne ' +
         'vada aplikace ani její nepřítomnost — agent se na prvek nedostal.',
+    };
+  }
+
+  if (PROSTREDI_PATTERN.test(text)) {
+    return {
+      kind: 'prostredi',
+      isAppFault: false,
+      message:
+        `Akce '${action}' v kroku ${step} neproběhla: rozpadlo se prostředí `
+        + `měření (${zkratCallLog(text)}). Stránka mezitím navigovala, prvek `
+        + 'se překreslil, nebo se zavřel prohlížeč. O aplikaci to neříká nic.',
+    };
+  }
+
+  if (TIMEOUT_PATTERN.test(text)) {
+    return {
+      kind: 'neurcitelne',
+      isAppFault: false,
+      message:
+        `Akce '${action}' v kroku ${step} se nepodařila a důvod se určit `
+        + `nedá: ${zkratCallLog(text)} Call log neuvádí ani překryv, ani `
+        + 'prvek mimo viewport. Může jít o nefunkční prvek, o animaci, která '
+        + 'ho nikdy neustálí, nebo o pomalou odpověď serveru — z jediného '
+        + 'pokusu se to nepozná, takže se to nehlásí jako nález.',
     };
   }
 

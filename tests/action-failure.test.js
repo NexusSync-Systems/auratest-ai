@@ -60,14 +60,28 @@ describe('classifyActionFailure', () => {
     expect(r.isAppFault).toBe(false);
   });
 
-  test('obyčejný timeout bez překryvu JE nález na aplikaci', () => {
+  /**
+   * ZMĚNA ROZHODNUTÍ, NE OPRAVA CHYBY.
+   *
+   * Tenhle test dřív tvrdil „obyčejný timeout bez překryvu JE nález na
+   * aplikaci". To je ale tvrzení, na které měření nestačí: Playwright
+   * čekal a prvek se nedal ovládnout, ale PROČ se z hlášky nepozná.
+   * Může jít o nefunkční tlačítko (vada), o animaci, která prvek nikdy
+   * neustálí, nebo o pomalou odpověď serveru.
+   *
+   * Řídící zásada nástroje říká, že neprůkazné se nevydává za nález —
+   * a to platí i opačným směrem, než na který jsme zvyklí. Timeout
+   * zůstává vidět mezi varováními i s původní hláškou, takže informace
+   * se neztrácí; jen se z ní nedělá doložené porušení.
+   */
+  test('obyčejný timeout bez vodítka je neprůkazný, ne nález', () => {
     const r = classifyActionFailure(
       'click',
       1,
       "page.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator('[data-qa-id=\"5\"]')"
     );
-    expect(r.kind).toBe('app');
-    expect(r.isAppFault).toBe(true);
+    expect(r.kind).toBe('neurcitelne');
+    expect(r.isAppFault).toBe(false);
     expect(r.message).toContain('Timeout 5000ms exceeded');
   });
 
@@ -133,13 +147,25 @@ describe('prvek mimo viditelnou část okna', () => {
 });
 
 describe('skutečné selhání aplikace se zkrátí, ale neztratí příčinu', () => {
+  /**
+   * Ukázka musí být SKUTEČNÁ vada aplikace.
+   *
+   * Dřív tu jako příklad „skutečného selhání aplikace" stálo
+   * `Element is not attached to the DOM` — jenže to je artefakt měření:
+   * komponenta se překreslila mezi čtením a kliknutím, což u Reactu
+   * a Vue nastává běžně. Test tak cementoval právě to zařazení, které
+   * do `bugs` posílalo hlášky o zákazníkově webu bez opory.
+   *
+   * Smysl testu je zkrácení call logu, ne klasifikace — použije se tedy
+   * hláška, která nálezem opravdu je.
+   */
   test('call log se ustřihne, první věta zůstane', () => {
     const r = classifyActionFailure('click', 3,
-      'page.click: Element is not attached to the DOM.\nCall log:\n  - '
+      'page.click: strict mode violation: locator resolved to 3 elements.\nCall log:\n  - '
       + 'retrying click action - waiting 20ms\n'.repeat(50));
     expect(r.kind).toBe('app');
     expect(r.isAppFault).toBe(true);
-    expect(r.message).toMatch(/not attached to the DOM/);
+    expect(r.message).toMatch(/strict mode violation/);
     expect(r.message).not.toMatch(/retrying click action/);
     expect(r.message.length).toBeLessThan(400);
   });
@@ -147,5 +173,83 @@ describe('skutečné selhání aplikace se zkrátí, ale neztratí příčinu', 
   test('krátká zpráva bez call logu zůstane celá', () => {
     const r = classifyActionFailure('type', 2, 'Element is disabled.');
     expect(r.message).toMatch(/Element is disabled\.$/);
+  });
+});
+
+/**
+ * CHYBA MĚŘENÍ NENÍ VADA WEBU.
+ *
+ * Modul má v hlavičce napsané, že „když si vlastní neschopnost provést
+ * kliknutí zapíše jako bug testovaného webu, tvrdí něco, co neizměřil".
+ * Přesto do větve `app` — tedy do `bugs` v reportu pro úřad — padalo pět
+ * hlášek, které o aplikaci neříkají nic. Ověřeno spuštěním, ne odhadem.
+ *
+ * Znění jsou opsaná z `playwright-core/lib/coreBundle.js`. Kdyby se
+ * vymýšlela, opakovala by se chyba s `preactAttr` a `transferSize`.
+ */
+describe('rozpadlé prostředí se nehlásí jako vada aplikace', () => {
+  const merici = [
+    ['zavřený prohlížeč — způsobíme si ho obvykle sami',
+      'page.click: Target page, context or browser has been closed'],
+    ['navigace během kliknutí — běžné na živé aplikaci',
+      'page.click: Execution context was destroyed, most likely because of a navigation'],
+    ['překreslená komponenta — běžný stav Reactu a Vue',
+      'page.click: Element is not attached to the DOM'],
+    ['spadlý renderer',
+      'page.click: Target crashed'],
+  ];
+
+  test.each(merici)('%s', (_popis, hlaska) => {
+    const r = classifyActionFailure('click', 1, hlaska);
+    expect(r.isAppFault).toBe(false);
+    expect(r.kind).toBe('prostredi');
+    // Původní hláška zůstává čitelná — bez ní se nedá dohledat, co se stalo.
+    expect(r.message).toMatch(/neproběhla|prostředí/);
+  });
+
+  test('do bugs jde jen to, co je opravdu o aplikaci', () => {
+    // Kontrolní protiklad: skutečná vada v selektoru zůstává nálezem.
+    const r = classifyActionFailure('click', 1,
+      'page.click: strict mode violation: locator resolved to 3 elements');
+    expect(r.isAppFault).toBe(true);
+    expect(r.kind).toBe('app');
+  });
+});
+
+describe('timeout bez vodítka je neprůkazný, ne nález', () => {
+  const holyTimeout = 'page.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator';
+
+  test('nehlásí se jako vada webu', () => {
+    // Může to být nefunkční tlačítko, animace, která prvek neustálí, nebo
+    // pomalý server. Z jednoho pokusu se to nepozná — a řídící zásada
+    // říká, že neprůkazné se nevydává za nález.
+    const r = classifyActionFailure('click', 1, holyTimeout);
+    expect(r.isAppFault).toBe(false);
+    expect(r.kind).toBe('neurcitelne');
+  });
+
+  test('řekne se PROČ se to neví', () => {
+    // „Nepodařilo se" bez důvodu je k ničemu; člověk musí poznat, že jsme
+    // se nedívali, ne že jsme se dívali a nic nenašli.
+    const r = classifyActionFailure('click', 1, holyTimeout);
+    expect(r.message).toMatch(/důvod se určit nedá/);
+    expect(r.message).toMatch(/nehlásí jako nález/);
+  });
+
+  /**
+   * POŘADÍ ROZHODUJE.
+   *
+   * Překryv i viewport se v Playwrightu projeví JAKO timeout — konkrétní
+   * důvod je až uvnitř call logu. Kdyby se obecný timeout testoval dřív,
+   * spolkl by obě konkrétnější kategorie a report by přišel o vysvětlení.
+   */
+  test('překryv a viewport mají přednost před obecným timeoutem', () => {
+    const prekryv = classifyActionFailure('click', 1,
+      'page.click: Timeout 5000ms exceeded.\nCall log:\n  - <div> intercepts pointer events');
+    expect(prekryv.kind).toBe('overlay');
+
+    const mimo = classifyActionFailure('click', 1,
+      'page.click: Timeout 5000ms exceeded.\nCall log:\n  - element is outside of the viewport');
+    expect(mimo.kind).toBe('viewport');
   });
 });
