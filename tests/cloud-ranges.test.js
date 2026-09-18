@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import {
   ipv4ToInt, cidrToRange, lookupCloudIp, rangesSnapshot, clearCache,
+  ipv6ToBigInt, cidr6ToRange, bigIntNaHex, maIpv6Rozsahy,
 } from '../cloud-ranges.js';
 import { regionCountry, knownRegionCount } from '../cloud-regions.js';
 
@@ -24,6 +25,11 @@ let SNIMEK;
 const rozsah = (p, cidr, r, svc) => {
   const { start, end, bits } = cidrToRange(cidr);
   return { p, cidr, s: start, e: end, b: bits, r, svc };
+};
+
+const rozsah6 = (p, cidr, r, svc) => {
+  const { start, end, bits } = cidr6ToRange(cidr);
+  return { p, cidr, s6: bigIntNaHex(start), e6: bigIntNaHex(end), b: bits, r, svc };
 };
 
 beforeAll(() => {
@@ -55,6 +61,14 @@ beforeAll(() => {
       rozsah('gcp', '34.140.0.0/14', 'europe-west1', 'Google Cloud'),
       // Region, který v mapě není — musí dát neprůkazné, ne odhad.
       rozsah('aws', '99.99.0.0/16', 'xx-nikde-1', 'EC2'),
+    ],
+    ranges6: [
+      // Skutečné prefixy ze snímků poskytovatelů, ne vymyšlené adresy.
+      rozsah6('aws', '2a05:d018::/36', 'eu-west-1', 'EC2'),
+      rozsah6('aws', '2a05:d018:76c:b800::/56', 'eu-west-1', 'S3'),
+      rozsah6('aws', '2600:9000::/28', 'GLOBAL', 'CLOUDFRONT'),
+      rozsah6('azure', '2603:1020:1000::/44', 'northeurope', 'AzureCloud'),
+      rozsah6('gcp', '2600:1900:4000::/44', 'us-central1', 'Google Cloud'),
     ],
   }), 'utf8');
 });
@@ -276,5 +290,137 @@ describe('rozhodovat musí pravidlo, ne pořadí v poli', () => {
     const r = lookupCloudIp('100.90.1.1', SNIMEK);
     expect(r).not.toBeNull();
     expect(r.country).toBe('NL');
+  });
+});
+
+/**
+ * IPv6.
+ *
+ * Modul uměl jen IPv4 a komentář to přiznával jako omezení. Jenže to
+ * omezení není neutrální: Chromium na dvoustohovém stroji volí IPv6
+ * (Happy Eyeballs), takže `response.serverAddr()` vrátí IPv6 a korekce
+ * podle rozsahů poskytovatele se neuplatní ANI JEDNOU. Verdikt pak stojí
+ * na geolokační databázi — na zdroji, jehož selhávání u cloudových adres
+ * je důvodem existence celého modulu.
+ */
+describe('IPv6', () => {
+  describe('převod adresy', () => {
+    it('plný i zkrácený zápis dají totéž', () => {
+      const plny = ipv6ToBigInt('2001:0db8:0000:0000:0000:0000:0000:0001');
+      expect(ipv6ToBigInt('2001:db8::1')).toBe(plny);
+      expect(plny).toBe(0x20010db8000000000000000000000001n);
+    });
+
+    it('krajní hodnoty', () => {
+      expect(ipv6ToBigInt('::')).toBe(0n);
+      expect(ipv6ToBigInt('::1')).toBe(1n);
+      expect(ipv6ToBigInt('ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff'))
+        .toBe((1n << 128n) - 1n);
+    });
+
+    it('hranaté závorky z URL a zónu z linkové adresy odřízne', () => {
+      expect(ipv6ToBigInt('[2001:db8::1]')).toBe(ipv6ToBigInt('2001:db8::1'));
+      expect(ipv6ToBigInt('fe80::1%eth0')).toBe(ipv6ToBigInt('fe80::1'));
+    });
+
+    it('koncovku v zápisu IPv4 převede', () => {
+      // ::ffff:1.2.3.4 — adresa IPv4 namapovaná do IPv6.
+      expect(ipv6ToBigInt('::ffff:1.2.3.4')).toBe(0xffff01020304n);
+    });
+
+    it('vadný zápis odmítne, nedopočítává', () => {
+      for (const v of [
+        '2001:db8::1::2',      // dvě zkrácení — nejednoznačné
+        '2001:db8:0:0:0:0:1',  // sedm skupin bez `::`
+        'gggg::1',             // nešestnáctkové
+        '12345::1',            // skupina delší než čtyři znaky
+        '1.2.3.4', 'text', '', null, undefined,
+      ]) {
+        expect(ipv6ToBigInt(v)).toBeNull();
+      }
+    });
+
+    it('`::` musí zkracovat aspoň jednu skupinu', () => {
+      // Osm skupin a k tomu `::` — zápis je neplatný a dopočítat ho
+      // znamená vymyslet adresu, která v něm není.
+      expect(ipv6ToBigInt('1:2:3:4:5:6:7:8::')).toBeNull();
+    });
+  });
+
+  describe('rozklad CIDR', () => {
+    it('maskuje bity za prefixem', () => {
+      // AWS i Azure publikují prefixy s nenulovými bity za maskou.
+      const r = cidr6ToRange('2a05:d018:76c:b8ff::/56');
+      expect(r.start).toBe(ipv6ToBigInt('2a05:d018:76c:b800::'));
+      expect(r.end).toBe(ipv6ToBigInt('2a05:d018:76c:b8ff:ffff:ffff:ffff:ffff'));
+    });
+
+    it('/0 i /128', () => {
+      expect(cidr6ToRange('::/0')).toEqual({ start: 0n, end: (1n << 128n) - 1n, bits: 0 });
+      const jedna = cidr6ToRange('2001:db8::1/128');
+      expect(jedna.start).toBe(jedna.end);
+    });
+
+    it('nesmysl odmítne', () => {
+      for (const v of ['2001:db8::/129', '2001:db8::/-8', '2001:db8::', '1.2.3.0/24', '']) {
+        expect(cidr6ToRange(v)).toBeNull();
+      }
+    });
+  });
+
+  describe('vyhledání ve snímku', () => {
+    it('adresa v regionálním rozsahu dostane zemi', () => {
+      const v = lookupCloudIp('2603:1020:1000::5', SNIMEK);
+      expect(v.provider).toBe('azure');
+      expect(v.region).toBe('northeurope');
+      expect(v.country).toBe('IE');
+      expect(v.anycast).toBe(false);
+    });
+
+    it('užší rozsah přebíjí širší, stejně jako u IPv4', () => {
+      const v = lookupCloudIp('2a05:d018:76c:b800::1', SNIMEK);
+      expect(v.prefix).toBe('2a05:d018:76c:b800::/56');
+      expect(v.country).toBe('IE');
+    });
+
+    it('anycast nedostane zemi', () => {
+      const v = lookupCloudIp('2600:9000:1234::1', SNIMEK);
+      expect(v.anycast).toBe(true);
+      expect(v.country).toBeNull();
+    });
+
+    it('adresa mimo všechny rozsahy je nenalezená', () => {
+      expect(lookupCloudIp('2001:db8::1', SNIMEK)).toBeNull();
+    });
+
+    it('IPv4 a IPv6 se nepletou', () => {
+      // Kdyby se obě rodiny držely v jednom poli, porovnání `Number`
+      // s `BigInt` by tiše selhalo nebo by adresa dostala cizí region.
+      expect(lookupCloudIp('4.223.166.194', SNIMEK).region).toBe('swedencentral');
+      expect(lookupCloudIp('2603:1020:1000::5', SNIMEK).region).toBe('northeurope');
+    });
+  });
+
+  it('snímek hlásí, jestli IPv6 vůbec obsahuje', () => {
+    expect(maIpv6Rozsahy(SNIMEK)).toBe(true);
+    expect(rangesSnapshot(SNIMEK).count6).toBe(5);
+  });
+
+  it('starý snímek bez klíče ranges6 se načte a přizná, že IPv6 nezná', () => {
+    // Snímek v repozitáři je zatím starého tvaru a regeneruje ho člověk.
+    // Modul na něm nesmí spadnout — a hlavně nesmí tvrdit, že IPv6 pokrývá.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auraguard-stary-'));
+    const soubor = path.join(dir, 'cloud-ranges.json');
+    fs.writeFileSync(soubor, JSON.stringify({
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      sources: [],
+      ranges: [rozsah('aws', '52.30.0.0/16', 'eu-west-1', 'EC2')],
+    }), 'utf8');
+
+    clearCache();
+    expect(maIpv6Rozsahy(soubor)).toBe(false);
+    expect(lookupCloudIp('2603:1020:1000::5', soubor)).toBeNull();
+    // IPv4 funguje dál beze změny.
+    expect(lookupCloudIp('52.30.1.1', soubor).country).toBe('IE');
   });
 });

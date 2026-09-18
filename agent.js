@@ -37,7 +37,7 @@ import { severityOf } from './osv-severity.js';
 // Rozsahy zveřejněné poskytovatelem cloudu. Silnější podklad než
 // geolokační databáze třetí strany: údaj pochází od toho, kdo o umístění
 // serveru rozhoduje.
-import { lookupCloudIp, rangesSnapshot } from './cloud-ranges.js';
+import { lookupCloudIp, rangesSnapshot, maIpv6Rozsahy } from './cloud-ranges.js';
 // Čtení hlaviček je ve vlastním modulu, aby šlo testovat bez prohlížeče.
 // Dokud to byly regulární výrazy uvnitř `analyzeNis2`, nešlo je otestovat
 // samostatně — a tak se netestovaly vůbec.
@@ -3279,6 +3279,27 @@ export async function auditGreenAndResidency(url) {
           reason: cloud.anycast
             ? `rozsah ${cloud.prefix} je globální (${cloud.provider}), umístění dat z něj neplyne`
             : `${cloud.provider} uvádí region ${cloud.region || 'neuvedený'}, který neumíme převést na zemi`,
+        });
+        locations.push({ domain, ip, country: null, isEU: null, onCdn: false });
+        continue;
+      }
+
+      // ADRESA IPv6 VE SNÍMKU, KTERÝ IPv6 NEOBSAHUJE.
+      //
+      // „Nenašli jsme ji v rozsazích" tu neznamená „není to cloud" —
+      // znamená to, že jsme se nedívali. Propadnout na geolokační databázi
+      // by vrátilo přesně tu chybu, kvůli které rozsahy vznikly: vlastní
+      // server v Azure Sweden Central z ní vyšel jako Spojené státy.
+      //
+      // Prohlížeč na dvoustohovém stroji volí IPv6 (Happy Eyeballs), takže
+      // tohle není okrajový případ — u zákazníka s IPv6 by se korekce
+      // podle rozsahů neuplatnila ANI JEDNOU.
+      if (!cloud && String(ip).includes(':') && !maIpv6Rozsahy()) {
+        unlocatedDomains.push({
+          domain,
+          ip,
+          reason: 'adresa IPv6, a snímek rozsahů poskytovatelů zatím IPv6 '
+            + 'neobsahuje — geolokační databáze u cloudových adres nestačí',
         });
         locations.push({ domain, ip, country: null, isEU: null, onCdn: false });
         continue;

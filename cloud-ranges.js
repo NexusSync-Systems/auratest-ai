@@ -25,8 +25,6 @@
  * bylo na internetu, a nikdo by to nedoložil.
  *
  * CO TO NEUMÍ
- *   • Jen IPv4. IPv6 rozsahy poskytovatelé zveřejňují taky, ale zatím se
- *     nezpracovávají; adresa IPv6 vyjde jako nenalezená, tedy neprůkazná.
  *   • Rozsah říká, kde stojí SERVER. Kam ten server data ukládá dál —
  *     do zálohy, do jiné služby — z toho neplyne nic.
  *   • Anycast služby (CloudFront, Front Door, globální load balancery)
@@ -82,9 +80,11 @@ let cache = null;
  */
 function maxRangeSize(ranges) {
   if (ranges.__maxSize === undefined) {
-    let max = 0;
+    // Nula správného typu: u IPv6 jsou hranice `BigInt` a míchat typy
+    // v porovnání by tiše selhalo.
+    let max = typeof ranges[0]?.s === 'bigint' ? 0n : 0;
     for (const r of ranges) {
-      const size = r.e - r.s + 1;
+      const size = r.e - r.s + (typeof r.s === 'bigint' ? 1n : 1);
       if (size > max) max = size;
     }
     Object.defineProperty(ranges, '__maxSize', { value: max, enumerable: false });
@@ -119,6 +119,83 @@ export function cidrToRange(cidr) {
 }
 
 /**
+ * Převede IPv6 na `BigInt`. Vrací `null` u čehokoli, co IPv6 není.
+ *
+ * PROČ TO TU VŮBEC JE
+ * Modul uměl jen IPv4 a komentář to přiznával jako omezení. Jenže to
+ * omezení není neutrální: Chromium na dvoustohovém stroji volí IPv6
+ * (Happy Eyeballs), takže `response.serverAddr()` vrátí adresu IPv6 —
+ * a rozsahy poskytovatele se vůbec nepoužijí. Verdikt pak stojí na
+ * geolokační databázi, tedy PŘESNĚ na tom zdroji, jehož selhávání
+ * u cloudových adres je důvodem existence celého modulu. Server v Azure
+ * Sweden Central dostal přes IPv4 „US" a ten nález se opravil jen díky
+ * rozsahům; přes IPv6 by se neopravil.
+ *
+ * Rozbor je vlastní, ne přes `net.isIPv6`: potřebujeme číslo, ne jen
+ * ano/ne, a chceme odmítnout i zápisy, které Node bere shovívavě.
+ */
+export function ipv6ToBigInt(ip) {
+  let text = String(ip || '').trim().toLowerCase();
+  // `[2001:db8::1]` z URL a `fe80::1%eth0` z linkové adresy.
+  if (text.startsWith('[') && text.endsWith(']')) text = text.slice(1, -1);
+  const zona = text.indexOf('%');
+  if (zona !== -1) text = text.slice(0, zona);
+  if (!text.includes(':')) return null;
+
+  // Koncovka v IPv4 zápisu (`::ffff:1.2.3.4`) se převede na dvě skupiny.
+  const posledni = text.lastIndexOf(':');
+  const konec = text.slice(posledni + 1);
+  if (konec.includes('.')) {
+    const v4 = ipv4ToInt(konec);
+    if (v4 === null) return null;
+    const horni = Math.floor(v4 / 65536);
+    const dolni = v4 % 65536;
+    text = `${text.slice(0, posledni + 1)}${horni.toString(16)}:${dolni.toString(16)}`;
+  }
+
+  const casti = text.split('::');
+  if (casti.length > 2) return null;
+  const vlevo = casti[0] ? casti[0].split(':') : [];
+  const vpravo = casti.length === 2 ? (casti[1] ? casti[1].split(':') : []) : null;
+
+  let skupiny;
+  if (vpravo === null) {
+    // Bez `::` musí být přesně osm skupin — dopočítávat je by znamenalo
+    // domýšlet adresu, která v zápisu není.
+    if (vlevo.length !== 8) return null;
+    skupiny = vlevo;
+  } else {
+    const doplnit = 8 - vlevo.length - vpravo.length;
+    // `::` musí zkracovat aspoň jednu skupinu, jinak je zápis neplatný.
+    if (doplnit < 1) return null;
+    skupiny = [...vlevo, ...Array(doplnit).fill('0'), ...vpravo];
+  }
+
+  let n = 0n;
+  for (const g of skupiny) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    n = (n << 16n) | BigInt(Number.parseInt(g, 16));
+  }
+  return n;
+}
+
+/** Pevně široký šestnáctkový zápis — v JSON se `BigInt` uložit nedá. */
+export function bigIntNaHex(n) {
+  return n.toString(16).padStart(32, '0');
+}
+
+/** Rozloží `2600:1f00::/40` na interval. `null`, když to CIDR IPv6 není. */
+export function cidr6ToRange(cidr) {
+  const [ip, bitsRaw] = String(cidr || '').split('/');
+  const start = ipv6ToBigInt(ip);
+  const bits = Number(bitsRaw);
+  if (start === null || !Number.isInteger(bits) || bits < 0 || bits > 128) return null;
+  const size = 1n << BigInt(128 - bits);
+  const maskovany = (start / size) * size;
+  return { start: maskovany, end: maskovany + size - 1n, bits };
+}
+
+/**
  * Načte snímek rozsahů.
  *
  * Soubor nemusí existovat — repozitář jde naklonovat a spustit i bez něj.
@@ -127,12 +204,26 @@ export function cidrToRange(cidr) {
  */
 export function loadRanges(file = RANGES_FILE) {
   if (cache && cache.file === file) return cache.data;
-  let data = { generatedAt: null, sources: [], ranges: [] };
+  let data = { generatedAt: null, sources: [], ranges: [], ranges6: [] };
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     // Rozsahy se řadí podle začátku, aby šlo binárně vyhledávat.
     const ranges = (raw.ranges || []).slice().sort((a, b) => a.s - b.s);
-    data = { generatedAt: raw.generatedAt || null, sources: raw.sources || [], ranges };
+
+    // IPv6 se drží zvlášť a hranice se převádějí na `BigInt` až tady.
+    // V JSON jsou jako pevně široký šestnáctkový zápis — `BigInt` se
+    // serializovat nedá a `Number` by u 128 bitů ztratil přesnost, takže
+    // by se rozsahy překrývaly a adresa by dostala cizí region.
+    const ranges6 = (raw.ranges6 || [])
+      .map((r) => ({ ...r, s: BigInt(`0x${r.s6}`), e: BigInt(`0x${r.e6}`) }))
+      .sort((a, b) => (a.s < b.s ? -1 : (a.s > b.s ? 1 : 0)));
+
+    data = {
+      generatedAt: raw.generatedAt || null,
+      sources: raw.sources || [],
+      ranges,
+      ranges6,
+    };
   } catch {
     // Chybějící nebo poškozený snímek není chyba běhu — jen o zdroj míň.
   }
@@ -156,10 +247,17 @@ export function clearCache() {
  *            service: string|null, prefix: string, anycast: boolean}|null}
  */
 export function lookupCloudIp(ip, file = RANGES_FILE) {
-  const n = ipv4ToInt(ip);
+  const snimek = loadRanges(file);
+
+  // IPv4 i IPv6 se hledají stejným postupem, jen v jiném poli a jiným
+  // číselným typem. Sloučit je do jednoho pole nejde: `Number` a `BigInt`
+  // se v JavaScriptu nedají porovnávat relačními operátory bez převodu
+  // a převod na `Number` by u 128 bitů zahodil přesnost.
+  const jeV6 = String(ip || '').includes(':');
+  const n = jeV6 ? ipv6ToBigInt(ip) : ipv4ToInt(ip);
   if (n === null) return null;
 
-  const { ranges } = loadRanges(file);
+  const ranges = jeV6 ? snimek.ranges6 : snimek.ranges;
   if (ranges.length === 0) return null;
 
   // Binární vyhledání první položky, jejíž začátek je za adresou.
@@ -225,6 +323,26 @@ export function lookupCloudIp(ip, file = RANGES_FILE) {
 
 /** Datum snímku a zdroje — pro doložitelnost v reportu. */
 export function rangesSnapshot(file = RANGES_FILE) {
-  const { generatedAt, sources, ranges } = loadRanges(file);
-  return { generatedAt, sources, count: ranges.length };
+  const { generatedAt, sources, ranges, ranges6 } = loadRanges(file);
+  return {
+    generatedAt,
+    sources,
+    count: ranges.length,
+    count6: ranges6.length,
+  };
+}
+
+/**
+ * Obsahuje snímek vůbec nějaké rozsahy IPv6?
+ *
+ * Rozhoduje o tom, co se smí říct o adrese IPv6, kterou jsme nenašli.
+ * Když snímek IPv6 nezná, „nenalezeno" neznamená „není to cloud" — znamená
+ * to, že jsme se nedívali. Spolehnout se v takovém případě na geolokační
+ * databázi by vrátilo přesně tu chybu, kvůli které tenhle modul vznikl:
+ * server v Azure Sweden Central hlášený jako Spojené státy.
+ *
+ * Kód volající se tak nemusí ptát na verzi souboru ani na datum snímku.
+ */
+export function maIpv6Rozsahy(file = RANGES_FILE) {
+  return loadRanges(file).ranges6.length > 0;
 }

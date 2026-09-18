@@ -26,6 +26,7 @@ import fs from 'fs';
 import path from 'path';
 import { PROJECT_ROOT } from '../paths.js';
 import { regionCountry } from '../cloud-regions.js';
+import { cidr6ToRange, bigIntNaHex } from '../cloud-ranges.js';
 
 const OUT = path.join(PROJECT_ROOT, 'data', 'cloud-ranges.json');
 
@@ -69,6 +70,7 @@ function poslednPondelky(pocet = 6) {
 }
 
 const ranges = [];
+const ranges6 = [];
 const sources = [];
 /** Regiony, které jsme v datech potkali, ale neumíme převést na zemi. */
 const neznameRegiony = new Set();
@@ -76,8 +78,42 @@ const neznameRegiony = new Set();
 /** Zahozené položky — poskytovatel může poslat i nesmysl. */
 const zahozeno = [];
 
+/**
+ * IPv6 rozsahy.
+ *
+ * Dřív se zahazovaly řádkem `if (!cidr.includes('.')) return; // jen IPv4`.
+ * To omezení ale není neutrální: prohlížeč na dvoustohovém stroji volí
+ * IPv6, takže se u takového zákazníka rozsahy poskytovatele nepoužily
+ * vůbec a verdikt spadl na geolokační databázi — tedy na zdroj, jehož
+ * selhávání u cloudových adres je důvodem existence celého modulu.
+ *
+ * Rozbor a maskování dělá `cidr6ToRange` ze `cloud-ranges.js`, aby
+ * zapisující skript a čtoucí modul nemohly mít každý jinou představu
+ * o tom, kde rozsah začíná.
+ */
+function pridej6({ provider, cidr, region, service }) {
+  const rozsah = cidr6ToRange(cidr);
+  if (!rozsah) { zahozeno.push({ provider, cidr, duvod: 'nečitelný zápis IPv6' }); return; }
+
+  if (region && !regionCountry(provider, region)) neznameRegiony.add(`${provider}:${region}`);
+
+  ranges6.push({
+    p: provider,
+    cidr,
+    s6: bigIntNaHex(rozsah.start),
+    e6: bigIntNaHex(rozsah.end),
+    b: rozsah.bits,
+    r: region || '',
+    svc: service || '',
+  });
+}
+
 function pridej({ provider, cidr, region, service }) {
-  if (!cidr || !cidr.includes('.')) return; // jen IPv4
+  if (!cidr) return;
+  // Podle tvaru zápisu, ne podle tečky: `::ffff:1.2.3.4` tečku obsahuje
+  // a IPv4 to není.
+  if (cidr.includes(':')) return pridej6({ provider, cidr, region, service });
+  if (!cidr.includes('.')) return;
 
   // Přísný rozbor, ne `Number()` nad čímkoli.
   //
@@ -122,6 +158,9 @@ if (aws?.prefixes) {
   for (const p of aws.prefixes) {
     pridej({ provider: 'aws', cidr: p.ip_prefix, region: p.region, service: p.service });
   }
+  for (const p of aws.ipv6_prefixes || []) {
+    pridej({ provider: 'aws', cidr: p.ipv6_prefix, region: p.region, service: p.service });
+  }
   sources.push({ provider: 'aws', url: AWS_URL, snapshot: aws.createDate || null });
 }
 
@@ -130,7 +169,8 @@ const GCP_URL = 'https://www.gstatic.com/ipranges/cloud.json';
 const gcp = await stahni(GCP_URL, 'Google Cloud');
 if (gcp?.prefixes) {
   for (const p of gcp.prefixes) {
-    pridej({ provider: 'gcp', cidr: p.ipv4Prefix, region: p.scope, service: p.service });
+    // Google dává v jedné položce buď `ipv4Prefix`, nebo `ipv6Prefix`.
+    pridej({ provider: 'gcp', cidr: p.ipv4Prefix || p.ipv6Prefix, region: p.scope, service: p.service });
   }
   sources.push({ provider: 'gcp', url: GCP_URL, snapshot: gcp.creationTime || null });
 }
@@ -213,16 +253,21 @@ try {
 }
 
 ranges.sort((a, b) => a.s - b.s);
+// Řetězce pevné šířky se dají řadit jako text — právě proto se ukládají
+// doplněné nulami na 32 znaků.
+ranges6.sort((a, b) => (a.s6 < b.s6 ? -1 : (a.s6 > b.s6 ? 1 : 0)));
 
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, JSON.stringify({
   generatedAt: new Date().toISOString(),
   sources,
   ranges,
+  ranges6,
 }), 'utf8');
 
 console.log('');
-console.log(`Zapsáno ${ranges.length} rozsahů do ${path.relative(PROJECT_ROOT, OUT)}`);
+console.log(`Zapsáno ${ranges.length} rozsahů IPv4 a ${ranges6.length} IPv6 `
+  + `do ${path.relative(PROJECT_ROOT, OUT)}`);
 console.log(`Velikost: ${(fs.statSync(OUT).size / 1024 / 1024).toFixed(1)} MB`);
 for (const s of sources) {
   console.log(`  ${s.provider.padEnd(6)} snímek: ${s.snapshot ?? 'neuveden'}`);
