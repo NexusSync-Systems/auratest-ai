@@ -14,6 +14,7 @@
  *
  * https://sustainablewebdesign.org/digital-carbon-ratings/
  */
+import { sberObjemu } from '../green-mereni.js';
 import {
   INTENZITA_CELKEM_KWH_NA_GB,
   EMISNI_FAKTOR_G_NA_GB,
@@ -212,27 +213,29 @@ describe('měřicí cesta', () => {
     };
   }
 
-  /** Kopie měřicí logiky z `auditGreenAndResidency`. */
+  /**
+   * SKUTEČNÁ měřicí logika, ne její opis.
+   *
+   * Tady dřív stála KOPIE smyčky z `auditGreenAndResidency`, označená
+   * komentářem „Kopie měřicí logiky". Testovala tedy sama sebe: všech
+   * pět testů kolem `sizes()` mohlo zůstat zelených i po tom, co by se
+   * skutečné měření rozbilo. Zrovna u tohohle kódu to není teoretické —
+   * jednou už vrátil „změřeno 0, nezměřeno 140" a report z toho vydal
+   * známku. Logika je proto v `green-mereni.js` a volá ji agent i test.
+   */
   function sber(context) {
-    let totalBytes = 0;
-    let zmerenych = 0;
-    let nezmerenych = 0;
-    const mereni = [];
-    context.on('requestfinished', (request) => {
-      mereni.push((async () => {
-        try {
-          const sizes = await request.sizes();
-          const prenos = sizes?.responseBodySize;
-          if (!Number.isFinite(prenos) || prenos <= 0) { nezmerenych += 1; return; }
-          totalBytes += prenos;
-          zmerenych += 1;
-        } catch { nezmerenych += 1; }
-      })());
-    });
-    context.on('requestfailed', () => { nezmerenych += 1; });
+    const s = sberObjemu(context);
     return {
-      mereni,
-      vysledek: () => ({ totalBytes, zmerenych, nezmerenych }),
+      mereni: s.mereni,
+      // Testy čtou jen tři pole; rozdělení podle domén má vlastní soubor.
+      vysledek: () => {
+        const v = s.vysledek();
+        return {
+          totalBytes: v.totalBytes,
+          zmerenych: v.zmerenychPozadavku,
+          nezmerenych: v.nezmerenychPozadavku,
+        };
+      },
     };
   }
 
