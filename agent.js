@@ -47,6 +47,7 @@ import { lookupCloudIp, rangesSnapshot, maIpv6Rozsahy } from './cloud-ranges.js'
 import { hasNosniff, framingProtected, referrerProtected } from './header-values.js';
 import { classifyActionFailure, zkratCallLog } from './action-failure.js';
 import { jeHlaskaBezObsahu, poznamkaBezObsahu } from './console-obsah.js';
+import { doplnZnameZneni, klicVyjimky } from './minified-errors.js';
 import { auditCsp } from './csp-audit.js';
 import { assessDisclosurePlacement } from './disclosure-placement.js';
 import { inspectImageBytes, summarizeC2pa } from './c2pa.js';
@@ -1606,8 +1607,25 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
   // Sady pro O(1) deduplikaci — dřív se používalo bugs.includes() v handleru
   // volaném na každou console/response událost, tedy O(n²).
   const seenFindings = new Set();
-  const addFinding = (collection, message) => {
-    if (seenFindings.has(message)) return;
+  /**
+   * @param {string[]} collection
+   * @param {string} message
+   * @param {string|null} [klic]  volitelný klíč totožnosti
+   *
+   * TOTÉŽ DVAKRÁT JINÝMI SLOVY.
+   * Deduplikace podle celého řetězce nestačí: jednu výjimku ohlásí
+   * prohlížeč do konzole A Playwright zvlášť jako `pageerror`, pokaždé
+   * v jiné obálce. Ostrý běh proti cloudflare.com z toho měl dva nálezy
+   * o jedné vadě — a ve spisu pro úřad se počet nálezů takhle nafukuje.
+   *
+   * Klíč se předává jen tam, kde k tomu opravdu dochází. Zavést ho
+   * plošně by riskovalo opak: dva různé nálezy slepené do jednoho.
+   */
+  const addFinding = (collection, message, klic = null) => {
+    const identita = klic || message;
+    if (seenFindings.has(identita)) return;
+    seenFindings.add(identita);
+    // Zapamatuje se obojí, ať doslovné opakování chytne i bez klíče.
     seenFindings.add(message);
     collection.push(message);
   };
@@ -1625,7 +1643,17 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     consoleLogs.push({ type, text, timestamp: new Date().toISOString() });
 
     if (text.startsWith('[AuraAuraGuard-')) {
-      addFinding(WARNING_PREFIXES.some((p) => text.startsWith(p)) ? warnings : bugs, text);
+      // TŘETÍ cesta k téže výjimce. Hlášku vyrábí náš vlastní posluchač
+      // `window.onerror` ve stránce, takže má prefix a jde sem — mimo
+      // obě větve níž. Ostrý běh proti cloudflare.com měl proto nález
+      // „Běhová chyba: … #418" a vedle něj „Neošetřená výjimka: … #418",
+      // tedy jednu vadu započítanou dvakrát.
+      const jeChyba = !WARNING_PREFIXES.some((p) => text.startsWith(p));
+      addFinding(
+        jeChyba ? bugs : warnings,
+        jeChyba ? doplnZnameZneni(text) : text,
+        jeChyba ? klicVyjimky(text) : null
+      );
     } else if (type === 'error') {
       // Hlášení prohlížeče o selhaném zdroji NENÍ chyba aplikace: je to
       // druhé znění téhož faktu, který už nese posluchač odpovědí —
@@ -1660,14 +1688,20 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         addFinding(warnings, poznamkaBezObsahu(text));
         return;
       }
-      addFinding(bugs, consoleFinding(text));
+      const obohacene = doplnZnameZneni(text);
+      addFinding(bugs, consoleFinding(obohacene), klicVyjimky(text));
     }
   });
 
   // Listen to unhandled exceptions via Playwright
   if (trackExceptions) {
     page.on('pageerror', (exception) => {
-      addFinding(bugs, `[AuraAuraGuard-Error] Neošetřená výjimka: ${exception.message}\nStack: ${exception.stack || 'Žádný stack trace'}`);
+      const zprava = doplnZnameZneni(exception.message);
+      addFinding(
+        bugs,
+        `[AuraAuraGuard-Error] Neošetřená výjimka: ${zprava}\nStack: ${exception.stack || 'Žádný stack trace'}`,
+        klicVyjimky(exception.message)
+      );
     });
   }
 
