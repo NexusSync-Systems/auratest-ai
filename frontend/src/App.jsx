@@ -29,6 +29,7 @@ import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
 import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel, ekoTridaLabel, ekoTridaColor, ekoHodnoty, ekoPuvod, popisUmisteni } from './lib/compliance.js';
+import { popisStavuSite } from './lib/grid-status.js';
 import { execSummary } from './lib/exec-summary.js';
 import HistoryList from './components/HistoryList.jsx';
 import VersionBadge from './components/VersionBadge.jsx';
@@ -1619,14 +1620,30 @@ export default function App() {
             )}
 
             {/* Grid-Aware Status Widget */}
-            {gridStatus && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '20px', background: gridStatus.status === 'LOW_CARBON' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)', border: `1px solid ${gridStatus.status === 'LOW_CARBON' ? '#10b981' : '#f59e0b'}` }} title={gridStatus.recommendation}>
-                <Zap size={16} color={gridStatus.status === 'LOW_CARBON' ? '#10b981' : '#f59e0b'} />
-                <span style={{ fontSize: '0.85rem', color: gridStatus.status === 'LOW_CARBON' ? '#10b981' : '#f59e0b', fontWeight: 'bold' }}>
-                  EU Grid: {gridStatus.renewablePercentage}% Zelené (Eco {gridStatus.status === 'LOW_CARBON' ? 'ON' : 'OFF'})
-                </span>
-              </div>
-            )}
+            {/* Číslo je SIMULACE, ne měření — a musí to být vidět.
+                Backend to poctivě hlásí (`simulated: true`, `disclaimer`),
+                UI z toho dřív nepoužilo nic a tisklo zeleně „EU Grid: 65 %
+                Zelené (Eco ON)". Viz `lib/grid-status.js`. */}
+            {(() => {
+              const s = popisStavuSite(gridStatus);
+              if (!s) return null;
+              return (
+                <div
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    padding: '6px 12px', borderRadius: '20px',
+                    background: 'rgba(148, 163, 184, 0.08)',
+                    border: `1px solid ${s.barva}`,
+                  }}
+                  title={s.title}
+                >
+                  <Zap size={16} color={s.barva} />
+                  <span style={{ fontSize: '0.85rem', color: s.barva, fontWeight: s.simulace ? 'normal' : 'bold' }}>
+                    {s.text}
+                  </span>
+                </div>
+              );
+            })()}
             <div className="status-badge" role="status" aria-live="polite" title={runState.title}>
               <span className={`status-dot ${runState.state}`} aria-hidden="true" />
               <span>{runState.label}</span>
