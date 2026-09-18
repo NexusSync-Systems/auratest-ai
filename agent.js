@@ -46,6 +46,7 @@ import { lookupCloudIp, rangesSnapshot, maIpv6Rozsahy } from './cloud-ranges.js'
 // samostatně — a tak se netestovaly vůbec.
 import { hasNosniff, framingProtected, referrerProtected } from './header-values.js';
 import { classifyActionFailure, zkratCallLog } from './action-failure.js';
+import { jeHlaskaBezObsahu, poznamkaBezObsahu } from './console-obsah.js';
 import { auditCsp } from './csp-audit.js';
 import { assessDisclosurePlacement } from './disclosure-placement.js';
 import { inspectImageBytes, summarizeC2pa } from './c2pa.js';
@@ -1650,6 +1651,13 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
           // Bez stavového kódu (přerušené spojení, DNS) nevíme, čí to je.
           addFinding(warnings, `Prohlížeč ohlásil selhání zdroje bez stavového kódu: ${zdroj}`);
         }
+        return;
+      }
+      // Hláška složená jen z formátování není zjištění o webu — nemá
+      // obsah, se kterým by šlo něco dělat. Netvrdí se tím, že závada
+      // není; tvrdí se, že tohle o ní nic neříká. Viz `console-obsah.js`.
+      if (jeHlaskaBezObsahu(text)) {
+        addFinding(warnings, poznamkaBezObsahu(text));
         return;
       }
       addFinding(bugs, consoleFinding(text));
