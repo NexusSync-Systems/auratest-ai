@@ -44,7 +44,7 @@ import { lookupCloudIp, rangesSnapshot, maIpv6Rozsahy } from './cloud-ranges.js'
 // Dokud to byly regulární výrazy uvnitř `analyzeNis2`, nešlo je otestovat
 // samostatně — a tak se netestovaly vůbec.
 import { hasNosniff, framingProtected, referrerProtected } from './header-values.js';
-import { classifyActionFailure } from './action-failure.js';
+import { classifyActionFailure, zkratCallLog } from './action-failure.js';
 import { auditCsp } from './csp-audit.js';
 import { assessDisclosurePlacement } from './disclosure-placement.js';
 import { inspectImageBytes, summarizeC2pa } from './c2pa.js';
@@ -1914,8 +1914,6 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         // někdo NAVRHL, i kdyby spadl.
         stepData.provedeno = true;
       } catch (actionErr) {
-        console.error(`Akce '${actionResponse.action}' na prvek [data-qa-id="${actionResponse.target}"] selhala:`, actionErr.message);
-
         // Vlastní bezpečnostní politika ani cizí překryvná vrstva nejsou
         // chybou testované aplikace — nesmí shodit `success` ani se hlásit
         // jako bug. Rozhodování je v `action-failure.js`, aby šlo testovat
@@ -1924,6 +1922,20 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
           actionResponse.action,
           currentStep,
           actionErr.message
+        );
+
+        // DO LOGU JEN ZKRÁCENĚ.
+        //
+        // `actionErr.message` u timeoutu nese celý call log Playwrightu —
+        // čtyřicet řádků „retrying click action - waiting 500ms" ke KAŽDÉMU
+        // zvládnutému selhání. Report proti tomu chráněný byl
+        // (`zkratCallLog`), konzole ne, takže výstup smoke testu byl
+        // nečitelný a skutečný problém se v něm ztrácel. Zařazení
+        // (`failure.kind`) je navíc užitečnější než ten výpis.
+        console.error(
+          `Akce '${actionResponse.action}' na prvek `
+          + `[data-qa-id="${actionResponse.target}"] selhala `
+          + `(${failure.kind}): ${zkratCallLog(actionErr.message)}`
         );
         addFinding(failure.isAppFault ? bugs : warnings, failure.message);
         stepData.provedeno = false;

@@ -1,4 +1,4 @@
-import { classifyActionFailure } from '../action-failure.js';
+import { classifyActionFailure, zkratCallLog } from '../action-failure.js';
 
 /**
  * Čí je to chyba, když agentovi selže akce.
@@ -251,5 +251,53 @@ describe('timeout bez vodítka je neprůkazný, ne nález', () => {
     const mimo = classifyActionFailure('click', 1,
       'page.click: Timeout 5000ms exceeded.\nCall log:\n  - element is outside of the viewport');
     expect(mimo.kind).toBe('viewport');
+  });
+});
+
+/**
+ * CALL LOG NEPATŘÍ ANI DO KONZOLE.
+ *
+ * Report proti němu chráněný byl, výstup běhu ne: `console.error` tiskl
+ * `actionErr.message`, tedy u timeoutu čtyřicet řádků „retrying click
+ * action - waiting 500ms" ke KAŽDÉMU zvládnutému selhání. Smoke test se
+ * tím stal nečitelným — a v důkazním nástroji je to vada: skutečný
+ * problém se v tom výpisu ztratí.
+ */
+describe('zkrácení call logu', () => {
+  const skutecny = `page.click: Timeout 5000ms exceeded.
+Call log:
+  - waiting for locator('[data-qa-id="37"]')
+    - locator resolved to <a data-qa-id="37" href="/plans#sase">…</a>
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+    - retrying click action
+      - waiting 500ms`;
+
+  test('zůstane příčina, zmizí opakované pokusy', () => {
+    const k = zkratCallLog(skutecny);
+    expect(k).toBe('page.click: Timeout 5000ms exceeded.');
+    expect(k).not.toMatch(/retrying click action/);
+    expect(k).not.toMatch(/waiting 500ms/);
+  });
+
+  test('krátká hláška bez call logu se nekomolí', () => {
+    expect(zkratCallLog('Target page has been closed'))
+      .toBe('Target page has been closed');
+  });
+
+  test('dlouhá hláška bez call logu se ustřihne, ne zahodí', () => {
+    const dlouha = `Chyba: ${'x'.repeat(500)}`;
+    const k = zkratCallLog(dlouha);
+    expect(k.length).toBeLessThanOrEqual(300);
+    expect(k).toMatch(/^Chyba: x+…$/);
+  });
+
+  test('hláška složená jen z call logu se nezahodí do prázdna', () => {
+    // `split` by dal prázdný začátek — zbylo by prázdno místo důvodu.
+    const k = zkratCallLog('Call log:\n  - waiting for locator');
+    expect(k.length).toBeGreaterThan(0);
   });
 });

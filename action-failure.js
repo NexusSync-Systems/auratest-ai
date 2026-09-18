@@ -85,7 +85,7 @@ const TIMEOUT_PATTERN = /Timeout \d+ms exceeded/i;
  * úřad z toho byla stránka vnitřního výpisu nástroje, ve které se skutečná
  * příčina ztratila. Zůstane první věta a důvod, zbytek se ustřihne.
  */
-function zkratCallLog(text) {
+export function zkratCallLog(text) {
   const bezLogu = text.split(/\s*Call log:/i)[0].trim();
   if (bezLogu.length === 0) return text.slice(0, 200);
   return bezLogu.length > 300 ? `${bezLogu.slice(0, 297)}…` : bezLogu;
