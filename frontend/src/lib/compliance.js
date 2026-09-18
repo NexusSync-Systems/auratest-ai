@@ -238,3 +238,54 @@ export function ekoPuvod(green) {
     dolniMez: green.uplne === false,
   };
 }
+
+/**
+ * Jak popsat umístění jedné domény.
+ *
+ * DVA NÁLEZY V JEDNÉ VĚTĚ
+ *
+ * 1) `isEU: null` NENÍ „mimo EU". Na obrazovce stálo
+ *
+ *        {loc.isEU ? 'EU/EEA' : 'Mimo EU'}
+ *
+ *    a `null` je falsy, takže KAŽDÁ neposouzená doména se uživateli
+ *    vypsala jako „Mimo EU" — tedy jako doložené porušení GDPR — zatímco
+ *    verdikt kousek nad tím správně hlásil „neprůkazné". U ukázkového
+ *    skenu se to týkalo všech pěti domén. Tiskový report tuhle opravu
+ *    dostal dřív; obrazovka ne.
+ *
+ * 2) ZEMĚ SE NETISKNE HOLÁ. Vypadalo to takhle:
+ *
+ *        www.cloudflare.com (US) — za CDN, umístění dat z IP určit nelze
+ *
+ *    Jedna věta uvede zemi a hned vedle řekne, že zemi z IP určit nelze.
+ *    Čtenáři zůstane „US". To „US" přitom pochází z geolokační databáze,
+ *    tedy ze zdroje, který u adres za CDN sami prohlašujeme za
+ *    nespolehlivý. Údaj se proto neskrývá, ale pojmenuje se, odkud je
+ *    a co znamená.
+ *
+ * Společná funkce pro obrazovku i tisk, aby se příště neopravovalo
+ * jedno místo ze dvou.
+ *
+ * @param {object} loc položka z `residency.locations`
+ * @returns {{domena: string, popis: string, stav: boolean|null}}
+ */
+export function popisUmisteni(loc) {
+  const domena = loc?.domain || 'neznámá doména';
+  const stav = loc?.isEU === true ? true : (loc?.isEU === false ? false : null);
+
+  if (stav === true) return { domena, stav, popis: `EU/EHP (${loc.country})` };
+  if (stav === false) return { domena, stav, popis: `mimo EU/EHP (${loc.country})` };
+
+  if (loc?.onCdn) {
+    const kdo = loc.cdnProvider || 'neurčený poskytovatel';
+    // Zemi z geolokace uvádíme JEN s tím, co doopravdy znamená:
+    // adresu nejbližšího uzlu, ne místo uložení dat.
+    const zGeo = loc.country
+      ? ` Geolokace ukazuje na ${loc.country}, což je nejbližší uzel sítě, ne místo uložení dat.`
+      : '';
+    return { domena, stav, popis: `za CDN (${kdo}) — umístění dat z IP určit nelze.${zGeo}` };
+  }
+
+  return { domena, stav, popis: 'umístění se nepodařilo určit' };
+}

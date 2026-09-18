@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { IMPACT_TRANSLATIONS, RULE_TRANSLATIONS, TEST_TYPES } from '../../constants/testTypes.js';
-import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel, odolnostLabel, odolnostBadgeClass, ekoTridaLabel, ekoTridaBadgeClass, ekoHodnoty, ekoPuvod } from '../../lib/compliance.js';
+import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel, odolnostLabel, odolnostBadgeClass, ekoTridaLabel, ekoTridaBadgeClass, ekoHodnoty, ekoPuvod, popisUmisteni } from '../../lib/compliance.js';
 import { execSummary, stavTrida } from '../../lib/exec-summary.js';
 
 /**
@@ -709,20 +709,21 @@ export default function PrintReport({
               u domény za CDN i u adresy, kterou databáze neumístila —
               přesně to, co oprava rezidence odstranila o patro níž. */}
           <ul style={{ marginTop: '15px', paddingLeft: '20px' }}>
-            {greenResult.residency.locations.map((loc, i) => (
-              <li key={i} style={{ marginBottom: '4px' }}>
-                <strong>{loc.domain}</strong>
-                {loc.country ? ` (${loc.country})` : ''}
-                {' — '}
-                {loc.isEU === true
-                  ? 'EU/EHP'
-                  : loc.isEU === false
-                    ? 'mimo EU/EHP'
-                    : loc.onCdn
-                      ? `za CDN (${loc.cdnProvider || 'neurčeno'}), umístění dat z IP určit nelze`
-                      : 'umístění se nepodařilo určit'}
-              </li>
-            ))}
+            {/* Země se NETISKNE HOLÁ vedle věty, že ji určit nelze.
+                Dřív tu stálo „www.cloudflare.com (US) — za CDN, umístění
+                dat z IP určit nelze": jedna věta uvede zemi a hned vedle
+                řekne, že zemi z IP určit nelze, takže čtenáři zůstane
+                „US". To „US" je přitom z geolokační databáze, tedy ze
+                zdroje, který u adres za CDN sami prohlašujeme za
+                nespolehlivý. Znění je teď společné s obrazovkou. */}
+            {greenResult.residency.locations.map((loc, i) => {
+              const u = popisUmisteni(loc);
+              return (
+                <li key={i} style={{ marginBottom: '4px' }}>
+                  <strong>{u.domena}</strong>{' — '}{u.popis}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

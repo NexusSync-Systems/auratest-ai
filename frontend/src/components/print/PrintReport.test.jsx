@@ -834,3 +834,38 @@ describe('příznaky cookies v tištěném dokumentu', () => {
     expect(s.getByText(/Příznaky cookies \[Neprůkazné\]/i)).toBeInTheDocument();
   });
 });
+
+/**
+ * REZIDENCE V TIŠTĚNÉM DOKUMENTU.
+ *
+ * Doména za CDN se tiskla jako „www.cloudflare.com (US) — za CDN,
+ * umístění dat z IP určit nelze": jedna věta uvede zemi a hned vedle
+ * řekne, že zemi z IP určit nelze. Čtenáři zůstane „US" — a to „US" je
+ * z geolokační databáze, tedy ze zdroje, který u adres za CDN sami
+ * prohlašujeme za nespolehlivý.
+ */
+describe('rezidence — země se netiskne holá', () => {
+  const sRezidenci = (locations) => ({
+    greenResult: {
+      green: { rating: 'F', measured: true, totalMb: 1, co2Grams: 0.1 },
+      residency: { isEUCompliant: null, warning: 'Neprůkazné.', locations },
+    },
+  });
+
+  test('u domény za CDN je země jen s vysvětlením', () => {
+    vykresli(sRezidenci([{
+      domain: 'www.cloudflare.com', country: 'US', isEU: null,
+      onCdn: true, cdnProvider: 'Cloudflare',
+    }]));
+    const s = sekce(/Green Deal/);
+    expect(s.getByText(/nejbližší uzel sítě, ne místo uložení dat/)).toBeInTheDocument();
+    // Holé „(US)" hned za doménou tam být nesmí.
+    expect(s.queryByText(/www\.cloudflare\.com \(US\)/)).toBeNull();
+  });
+
+  test('neposouzená doména se netiskne jako mimo EU', () => {
+    vykresli(sRezidenci([{ domain: 'x.cz', country: 'US', isEU: null, onCdn: false }]));
+    const s = sekce(/Green Deal/);
+    expect(s.queryByText(/mimo EU/i)).toBeNull();
+  });
+});

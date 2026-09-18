@@ -28,7 +28,7 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, on
 import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
-import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel, ekoTridaLabel, ekoTridaColor, ekoHodnoty, ekoPuvod } from './lib/compliance.js';
+import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel, ekoTridaLabel, ekoTridaColor, ekoHodnoty, ekoPuvod, popisUmisteni } from './lib/compliance.js';
 import { execSummary } from './lib/exec-summary.js';
 import HistoryList from './components/HistoryList.jsx';
 import VersionBadge from './components/VersionBadge.jsx';
@@ -2269,9 +2269,19 @@ export default function App() {
                            </strong>
                          </div>
                          <ul style={{ color: 'var(--text-secondary)', paddingLeft: '20px' }}>
-                           {greenResult.residency.locations.map((loc, i) => (
-                             <li key={i}>{loc.domain} ({loc.country}) - {loc.isEU ? 'EU/EEA' : 'Mimo EU'}</li>
-                           ))}
+                           {/* `isEU: null` NENÍ „mimo EU". Ternární výraz z toho
+                               dělal doložené porušení GDPR u každé neposouzené
+                               domény — u ukázkového skenu u všech pěti. Znění
+                               je společné s tiskovým reportem (`popisUmisteni`),
+                               aby se příště neopravovalo jedno místo ze dvou. */}
+                           {greenResult.residency.locations.map((loc, i) => {
+                             const u = popisUmisteni(loc);
+                             return (
+                               <li key={i} style={{ color: complianceColor(u.stav) }}>
+                                 <strong>{u.domena}</strong> — {u.popis}
+                               </li>
+                             );
+                           })}
                          </ul>
                          <ScanRecord record={greenResult.record} />
                        </div>
