@@ -10,6 +10,8 @@
  * skenerů do každého procesu, který by chtěl jen vytisknout stránku.
  */
 
+import { vynutHeadless } from './agent-limits.js';
+
 /**
  * Argumenty navíc pro Chromium, z konfigurace serveru.
  *
@@ -27,7 +29,30 @@ export function browserArgs() {
     .filter(Boolean);
 }
 
-/** Volby pro `chromium.launch()`. */
+/**
+ * Volby pro `chromium.launch()`.
+ *
+ * HEADLESS SE V PRODUKCI VYNUCUJE TADY, NE JEN U VOLAJÍCÍCH.
+ *
+ * Dřív stačilo `{ headless: true, ...extra }` — tedy `extra` přebilo
+ * výchozí hodnotu a `headless: false` prošlo i v produkci. `server.js`
+ * to na obou svých vstupech ošetřuje (`vynutHeadless`), jenže
+ * `runAutonomousTest` je exportovaná: zavolat ji jde i mimo ně, třeba
+ * ze skriptu nebo z CLI. Pak by se na serveru bez obrazovky spustil
+ * prohlížeč s hlavou a běh by spadl na nesrozumitelné chybě — nebo,
+ * hůř, doběhl v prostředí, o kterém report nic neříká.
+ *
+ * Je to stejná mezera jako ta, kterou měl tisk spisu u hlídače
+ * navigace: ošetřeno všude kromě jednoho místa. Pravidlo proto stojí
+ * tam, kudy prochází KAŽDÉ spuštění prohlížeče.
+ *
+ * Mimo produkci se `headless: false` respektuje — ladit s viditelným
+ * oknem je legitimní.
+ */
 export function launchOptions(extra = {}) {
-  return { headless: true, ...extra, args: [...browserArgs(), ...(extra.args || [])] };
+  return {
+    ...extra,
+    headless: vynutHeadless(extra.headless),
+    args: [...browserArgs(), ...(extra.args || [])],
+  };
 }
