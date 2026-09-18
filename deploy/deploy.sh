@@ -233,14 +233,36 @@ fi
 # shodil web. Jen upozorní, když se obsah liší.
 CADDY_LIVE=/etc/caddy/Caddyfile
 if [[ -f "$CADDY_LIVE" ]]; then
-    # Porovnává se bez řádku s doménou, ten se při instalaci mění sedem.
+    # POROVNÁNÍ MUSÍ JÍT UMLČET SPRÁVNÝM NASAZENÍM.
+    #
+    # Dřív se filtroval jen řádek začínající `auraguard.`, tedy samotný blok
+    # webu. Jenže `auraguard.example.com` je v předloze i v KOMENTÁŘI na
+    # řádku 9, uvnitř ukázkového `sed` příkazu — a instalační `sed` přepíše
+    # i ten. Po správném nasazení se tak soubory navždy lišily o ten
+    # komentář a varování hlásilo rozdíl pořád. Varování, které nejde
+    # umlčet, se přestane číst; příště se v něm ztratí skutečná změna.
+    #
+    # Normalizuje se proto CELÝ hostname, ať je kdekoli na řádku. Ověřeno
+    # oběma směry: po `sed` na jinou doménu kontrola projde, a změna
+    # kterékoli direktivy se pořád nahlásí.
+    NORM='s/auraguard\.[A-Za-z0-9.-]+/DOMENA/g'
     if ! diff -q \
-        <(grep -v '^auraguard\.' deploy/Caddyfile) \
-        <(grep -v '^auraguard\.' "$CADDY_LIVE") >/dev/null 2>&1; then
+        <(sed -E "$NORM" deploy/Caddyfile) \
+        <(sed -E "$NORM" "$CADDY_LIVE") >/dev/null 2>&1; then
         warn "deploy/Caddyfile se liší od nasazeného /etc/caddy/Caddyfile."
-        echo "      Nasadíte ho takto (doménu si sed doplní podle .env):"
+        # Doména se ČTE z nasazeného souboru, nehádá se.
+        #
+        # Předchozí znění slibovalo, že „doménu si sed doplní podle .env" —
+        # jenže žádná doména v .env není a v příkazu se tiskl zástupný
+        # `VASE.DOMENA`. Slib, který skript neplní.
+        LIVE_DOMAIN="$(grep -oE '^auraguard\.[A-Za-z0-9.-]+' "$CADDY_LIVE" | head -1 || true)"
         echo "        sudo cp deploy/Caddyfile $CADDY_LIVE"
-        echo "        sudo sed -i 's/auraguard.example.com/VASE.DOMENA/' $CADDY_LIVE"
+        if [[ -n "$LIVE_DOMAIN" ]]; then
+            echo "        sudo sed -i 's/auraguard.example.com/${LIVE_DOMAIN}/' $CADDY_LIVE"
+        else
+            echo "      (doménu se z nasazeného souboru vyčíst nepodařilo — doplň ji)"
+            echo "        sudo sed -i 's/auraguard.example.com/VASE.DOMENA/' $CADDY_LIVE"
+        fi
         echo "        sudo caddy validate --config $CADDY_LIVE && sudo systemctl reload caddy"
     else
         ok "Caddyfile odpovídá nasazenému"
