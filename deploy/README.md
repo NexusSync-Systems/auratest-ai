@@ -195,7 +195,12 @@ sudo systemctl start auraguard-ranges.service
 journalctl -u auraguard-ranges.service -n 20 --no-pager
 ```
 
-- [ ] Zkontrolovat stáří snímku kdykoli později:
+- [ ] Zkontrolovat stáří snímku kdykoli později. **Pozor, co ten příkaz
+      měří:** spouští nový proces, který soubor přečte z disku. Do opravy
+      z 19. 9. 2026 proto dával uklidňující odpověď o svěžím souboru,
+      zatímco běžící server měl v paměti starý. Dnes se cache klíčuje
+      časem změny souboru, takže se obojí shoduje — a stárnoucí snímek
+      se navíc ozve sám při startu serveru (varuje po 30 dnech):
 
 ```bash
 cd ~/auratest-ai && docker compose exec auratest-ai node -e "
@@ -207,8 +212,15 @@ import('./cloud-ranges.js').then(m=>console.log('stáří:', m.stariSnimkuDnu(),
 > kopii dál — svazek ji vždy zastíní, takže v provozu přes compose
 > rozhoduje soubor na hostiteli.
 >
-> Aby to viděla i **běžící** aplikace, drží `loadRanges` cache podle času
-> změny souboru. Do opravy z 19. 9. 2026 se snímek načetl při prvním
+> **Živý snímek není verzovaný.** V gitu je jen
+> `data/cloud-ranges.vychozi.json` pro čerstvý klon; `loadRanges` na něj
+> spadne, dokud živý soubor neexistuje. Kdyby byl verzovaný ten živý,
+> byla by pracovní kopie na produkci po první obnově trvale špinavá,
+> `git pull` by odmítl přepsat 15MB lokální změnu a obvyklá reakce
+> (`git checkout -- data/`) by potichu vrátila STARŠÍ snímek.
+>
+> Aby obnovu viděla i **běžící** aplikace, drží `loadRanges` cache podle
+> času změny souboru. Do opravy z 19. 9. 2026 se snímek načetl při prvním
 > skenu a držel se do restartu procesu — týdenní obnova tím byla
 > k ničemu a příkaz na zjištění stáří (spouští nový proces) dával
 > uklidňující odpověď, která o stavu serveru nevypovídala.

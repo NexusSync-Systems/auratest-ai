@@ -3,6 +3,7 @@ import http from 'http';
 import { randomUUID, timingSafeEqual } from 'crypto';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
+import { zkontrolujStariSnimku } from './cloud-ranges.js';
 import path from 'path';
 import fs from 'fs';
 import { runAutonomousTest, comparePages, auditTranslations, extractInternalLinks, analyzeSecurityVulnerabilities, auditAccessibility, auditNIS2AndPQC, auditGreenAndResidency, generateAutoHealPatch, auditCRA_SBOM, runChaosTest, getGridEnergyStatus, auditAIAct, auditStrictCookies, auditCRAVulnerabilities, checkPage, checkForm } from './agent.js';
@@ -2849,6 +2850,16 @@ if (process.env.NODE_ENV !== 'test') {
     // Neomezený přístup se musí ozvat. Tichá otevřenost je horší než
     // hlučná — provozovatel jinak netuší, že si účet může založit kdokoli.
     accessWarnings().forEach((line) => console.warn(`  ${line}`));
+
+    // Stárnoucí snímek IP rozsahů se musí ozvat TADY.
+    //
+    // `auraguard-ranges.timer` má `Persistent=true`, takže po chybě tiše
+    // zkusí znovu za týden. Unita skončí nenulovým kódem, ale nikde není
+    // `OnFailure=` ani napojení na hlášení — viditelný důsledek by přišel
+    // až po 90 dnech, a i to jen jako CHYBĚJÍCÍ výsledek u rezidence.
+    // Log kontejneru se archivuje jinam než záznam, takže je to správné
+    // místo: je to stav NAŠÍ instalace, ne tvrzení o auditovaném webu.
+    zkontrolujStariSnimku();
   });
 }
 

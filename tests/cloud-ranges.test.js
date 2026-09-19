@@ -4,7 +4,7 @@ import path from 'path';
 import {
   ipv4ToInt, cidrToRange, lookupCloudIp, rangesSnapshot, clearCache,
   ipv6ToBigInt, cidr6ToRange, bigIntNaHex, maIpv6Rozsahy,
-  stariSnimkuDnu, jeSnimekZastaraly, SNIMEK_MAX_STARI_DNU, odmapujIpv4, loadRanges,
+  stariSnimkuDnu, jeSnimekZastaraly, SNIMEK_MAX_STARI_DNU, odmapujIpv4, loadRanges, RANGES_FALLBACK, zkontrolujStariSnimku,
 } from '../cloud-ranges.js';
 import { regionCountry, knownRegionCount } from '../cloud-regions.js';
 
@@ -586,5 +586,104 @@ describe('cache snímku respektuje změnu souboru', () => {
     clearCache();
     const prvni = loadRanges(soubor);
     expect(loadRanges(soubor)).toBe(prvni); // TOTOŽNÝ objekt, ne kopie
+  });
+});
+
+/**
+ * VÝCHOZÍ vs. ŽIVÝ SNÍMEK.
+ *
+ * Živý snímek přepisuje týdenní obnova, takže verzovaný být nesmí:
+ * pracovní kopie na produkci by byla trvale špinavá, `git pull` by
+ * odmítl přepsat lokální změnu a obvyklá reakce (`git checkout -- data/`)
+ * by potichu vrátila STARŠÍ commitnutý snímek. Verzovaný je proto jen
+ * výchozí snímek, aby čerstvý klon nezůstal bez rozsahů.
+ */
+describe('zdroj snímku', () => {
+  it('čerstvý klon má rozsahy z výchozího snímku', () => {
+    // Na čerstvém klonu živý soubor neexistuje. Tady sáhneme po tom,
+    // co v repozitáři JE, a ověříme, že se z něj dá číst.
+    clearCache();
+    expect(fs.existsSync(RANGES_FALLBACK)).toBe(true);
+    const zRepozitare = rangesSnapshot(RANGES_FALLBACK);
+    expect(zRepozitare.count).toBeGreaterThan(1000);
+    expect(zRepozitare.generatedAt).toBeTruthy();
+  });
+
+  it('výchozí snímek NENÍ prázdný ani zkušební', () => {
+    // Kdyby se do repozitáře dostal osekaný soubor, čerstvý klon by
+    // mlčky spadl na geolokaci — tedy na zdroj, kvůli kterému tenhle
+    // modul vznikl.
+    clearCache();
+    expect(lookupCloudIp('4.223.166.194', RANGES_FALLBACK)?.country).toBe('SE');
+  });
+
+  it('když živý snímek existuje, má přednost', () => {
+    // Nelze to zkoušet přes RANGES_FILE (závisí na stroji), takže se
+    // testuje pravidlo: explicitně zadaná cesta se respektuje.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auraguard-zdroj-'));
+    const zivy = path.join(dir, 'cloud-ranges.json');
+    fs.writeFileSync(zivy, JSON.stringify({
+      generatedAt: '2026-09-19T00:00:00.000Z', sources: [],
+      ranges: [rozsah('aws', '52.30.0.0/16', 'eu-west-1', 'EC2')],
+    }), 'utf8');
+    clearCache();
+    expect(rangesSnapshot(zivy).count).toBe(1);
+  });
+});
+
+/**
+ * VAROVÁNÍ O STÁRNOUCÍM SNÍMKU.
+ *
+ * Na selhání týdenní obnovy se jinak nepřijde: timer má
+ * `Persistent=true`, takže po chybě tiše zkusí znovu, a v repozitáři
+ * není `OnFailure=` ani napojení na hlášení. Viditelný důsledek by
+ * přišel až po 90 dnech, a i to jen jako CHYBĚJÍCÍ výsledek u rezidence.
+ * Nález z kontrolní vlny.
+ */
+describe('varování o stárnoucím snímku', () => {
+  const snimekSDatem = (isoDatum) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auraguard-vek-'));
+    const soubor = path.join(dir, 'cloud-ranges.json');
+    fs.writeFileSync(soubor, JSON.stringify({
+      generatedAt: isoDatum, sources: [],
+      ranges: [rozsah('aws', '52.30.0.0/16', 'eu-west-1', 'EC2')],
+    }), 'utf8');
+    clearCache();
+    return soubor;
+  };
+  const dnuZpet = (n) => new Date(Date.now() - n * 86400000).toISOString();
+
+  it('čerstvý snímek mlčí', () => {
+    const hlasky = [];
+    expect(zkontrolujStariSnimku((m) => hlasky.push(m), snimekSDatem(dnuZpet(3))))
+      .toBe('v-poradku');
+    expect(hlasky).toHaveLength(0);
+  });
+
+  it('po 30 dnech se ozve, i když verdikt ještě platí', () => {
+    // Čtyři zmeškané obnovy. Na výpadek jednoho týdne to nereaguje,
+    // na rozbitou úlohu ano — a zbývá dvouměsíční rezerva.
+    const hlasky = [];
+    expect(zkontrolujStariSnimku((m) => hlasky.push(m), snimekSDatem(dnuZpet(45))))
+      .toBe('stárne');
+    expect(hlasky[0]).toMatch(/45 dnů/);
+    expect(hlasky[0]).toMatch(/auraguard-ranges\.timer/);
+  });
+
+  it('po prahu řekne, že rezidence UŽ nevychází', () => {
+    const hlasky = [];
+    expect(zkontrolujStariSnimku((m) => hlasky.push(m), snimekSDatem(dnuZpet(120))))
+      .toBe('zastaraly');
+    expect(hlasky[0]).toMatch(/UŽ NEVYCHÁZÍ/);
+  });
+
+  it('snímek bez data se taky ozve', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auraguard-vek2-'));
+    const soubor = path.join(dir, 'cloud-ranges.json');
+    fs.writeFileSync(soubor, JSON.stringify({ sources: [], ranges: [] }), 'utf8');
+    clearCache();
+    const hlasky = [];
+    expect(zkontrolujStariSnimku((m) => hlasky.push(m), soubor)).toBe('bez-data');
+    expect(hlasky[0]).toMatch(/neuvádí datum/);
   });
 });

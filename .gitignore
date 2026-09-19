@@ -23,3 +23,16 @@ generated-scripts/
 # do repozitáře nepatří a při klonování by se nesměl přepsat. Zálohuje se
 # spolu s ostatními daty instalace.
 ledger/
+
+# Živý snímek IP rozsahů poskytovatelů cloudu. Přepisuje ho týdenní
+# obnova (`auraguard-ranges.timer`), takže by pracovní kopie na produkci
+# byla po prvním běhu trvale špinavá — a `git pull` by odmítl přepsat
+# lokální změnu v 15MB souboru. Obvyklá reakce (`git checkout -- data/`,
+# `git reset --hard`) by potichu vrátila STARŠÍ commitnutý snímek místo
+# svěžího, tedy přesně tu tichou regresi, proti které tenhle celý
+# mechanismus vznikl.
+#
+# V repozitáři je proto `data/cloud-ranges.vychozi.json` — výchozí snímek
+# pro čerstvý klon. Živý soubor se z něj nekopíruje: `loadRanges` na něj
+# spadne, dokud živý neexistuje.
+data/cloud-ranges.json

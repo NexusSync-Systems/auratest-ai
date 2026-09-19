@@ -51,8 +51,30 @@ import path from 'path';
 import { PROJECT_ROOT } from './paths.js';
 import { regionCountry } from './cloud-regions.js';
 
-/** Kde leží snímek rozsahů. Obnovuje `scripts/update-cloud-ranges.mjs`. */
+/** Kde leží živý snímek rozsahů. Obnovuje `scripts/update-cloud-ranges.mjs`. */
 export const RANGES_FILE = path.join(PROJECT_ROOT, 'data', 'cloud-ranges.json');
+
+/**
+ * Výchozí snímek z repozitáře. Čte se, dokud živý neexistuje.
+ *
+ * PROČ DVA SOUBORY
+ * Živý snímek přepisuje týdenní obnova, takže kdyby byl verzovaný,
+ * pracovní kopie na produkci by byla po prvním běhu trvale špinavá
+ * a `git pull` by odmítl přepsat lokální změnu v 15MB souboru. Obvyklá
+ * reakce (`git checkout -- data/`) by potichu vrátila STARŠÍ commitnutý
+ * snímek — tedy tichou regresi, proti které celý tenhle mechanismus
+ * vznikl. Nález z kontrolní vlny.
+ *
+ * Verzovaný je proto jen výchozí snímek, aby čerstvý klon nezůstal bez
+ * rozsahů. Nekopíruje se — čte se přímo, dokud obnova nevytvoří živý.
+ */
+export const RANGES_FALLBACK = path.join(PROJECT_ROOT, 'data', 'cloud-ranges.vychozi.json');
+
+/** Živý snímek, a když není, výchozí z repozitáře. */
+function skutecnyZdroj(file) {
+  if (file !== RANGES_FILE) return file;
+  return fs.existsSync(RANGES_FILE) ? RANGES_FILE : RANGES_FALLBACK;
+}
 
 /**
  * Služby, jejichž adresy jsou anycast.
@@ -217,7 +239,8 @@ export function cidr6ToRange(cidr) {
  * Chybějící snímek znamená, že se rozsahy nepoužijí; sken pak spadne zpět
  * na geolokaci a řekne to.
  */
-export function loadRanges(file = RANGES_FILE) {
+export function loadRanges(zadany = RANGES_FILE) {
+  const file = skutecnyZdroj(zadany);
   // CACHE SE DRŽÍ PODLE ČASU ZMĚNY SOUBORU, NE NA CELÝ ŽIVOT PROCESU.
   //
   // Nález z kontrolní vlny. Cache byla klíčovaná jen jménem souboru,
@@ -427,6 +450,52 @@ export function rangesSnapshot(file = RANGES_FILE) {
  * zapomnělo, ne trestat týden zpoždění.
  */
 export const SNIMEK_MAX_STARI_DNU = 90;
+
+/**
+ * Kdy se začít ozývat, ještě než snímek přestane platit.
+ *
+ * NA SELHÁNÍ OBNOVY SE JINAK NEPŘIJDE. `auraguard-ranges.timer` má
+ * `Persistent=true`, takže po chybě tiše zkusí znovu za týden. Unita
+ * skončí kódem 1 (`update-cloud-ranges.mjs` to dělá správně), ale
+ * nikdo se to nedozví — v repozitáři není `OnFailure=` ani napojení na
+ * hlášení. Viditelný důsledek by přišel až po 90 dnech, a i to jen jako
+ * CHYBĚJÍCÍ výsledek, ne jako upozornění. Nález z kontrolní vlny.
+ *
+ * Třicet dnů je čtyři zmeškané obnovy: na výpadek jednoho týdne to
+ * nereaguje, na rozbitou úlohu ano — a zbývá ještě dvouměsíční rezerva,
+ * než snímek přestane nést verdikt.
+ */
+export const SNIMEK_VAROVAT_PO_DNECH = 30;
+
+/**
+ * Hlásí do logu, že snímek stárne. Volá se při startu serveru.
+ *
+ * Do logu, ne do reportu: o auditovaném webu to nevypovídá nic, je to
+ * stav NAŠÍ instalace. Log kontejneru se archivuje jinam než záznam.
+ */
+export function zkontrolujStariSnimku(log = console.warn, file = RANGES_FILE) {
+  const dnu = stariSnimkuDnu(file);
+  if (dnu === null) {
+    log('[AuraGuard] Snímek IP rozsahů neuvádí datum — z rozsahů se '
+      + 'nebude určovat země. Spusťte `npm run update:cloud-ranges`.');
+    return 'bez-data';
+  }
+  if (dnu > SNIMEK_MAX_STARI_DNU) {
+    log(`[AuraGuard] Snímek IP rozsahů je ${dnu} dnů starý (práh `
+      + `${SNIMEK_MAX_STARI_DNU}) — rezidence dat z rozsahů UŽ NEVYCHÁZÍ. `
+      + 'Obnova zřejmě neběží: zkontrolujte `systemctl status '
+      + 'auraguard-ranges.timer`.');
+    return 'zastaraly';
+  }
+  if (dnu > SNIMEK_VAROVAT_PO_DNECH) {
+    log(`[AuraGuard] Snímek IP rozsahů je ${dnu} dnů starý. Týdenní `
+      + `obnova zřejmě neběží — po ${SNIMEK_MAX_STARI_DNU} dnech přestane `
+      + 'rezidence z rozsahů vycházet. Zkontrolujte '
+      + '`systemctl status auraguard-ranges.timer`.');
+    return 'stárne';
+  }
+  return 'v-poradku';
+}
 
 /**
  * Stáří snímku ve dnech, nebo `null` když snímek nemá datum.
