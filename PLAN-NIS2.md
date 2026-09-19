@@ -135,6 +135,10 @@ a zákazník to musí mít tak jako tak.
 
 ## 3. Rozhodnutí, která zbývají
 
+> Rozbor R1, R2 a R5 — co se každou z nich volí, co která odpověď stojí
+> a v jakém pořadí se mají rozhodovat — je v **`ROZHODNUTI-NIS2.md`**.
+> R2 je nadřazená zbylým dvěma.
+
 | # | Otázka | Stav |
 |---|---|---|
 | R1 | Cílíme na vyšší, nebo nižší režim? | **Otevřené.** Nižší režim má 13 opatření místo 25 a hlásí méně incidentů — nižší laťka, širší trh. Doporučuju začít tam. |
@@ -220,6 +224,12 @@ sítí, aplikační bezpečnost, kryptografické algoritmy.
 ---
 
 ## 5. Milníky
+
+> **Tahle tabulka je zastaralá.** Epic D (D1–D5) i Epic S (S1–S4) jsou
+> mezitím hotové a nasazené, takže M2 a M5 odpadají a zbývající práce je
+> zhruba o 6 týdnů kratší, než je tu napsáno. Přepočet je v sekci 0
+> dokumentu `ROZHODNUTI-NIS2.md`. Tabulku níž nechávám v původním znění
+> jako záznam původního odhadu.
 
 | Milník | Obsah | Kumulativně |
 |---|---|---|
