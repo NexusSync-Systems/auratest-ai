@@ -62,6 +62,26 @@ function info(msg) {
   console.log(`     ${msg}`);
 }
 
+/**
+ * CÍL NEODPOVĚDĚL — to není chyba nástroje.
+ *
+ * Smoke test běží proti CIZÍMU webu, který nemáme pod kontrolou.
+ * Jednorázově neúspěšný požadavek (výpadek, rate limit, DNS) se dřív
+ * hlásil jako `❌` a celý běh skončil verdiktem „nástroj má chybu —
+ * opravte ji před nasazením". Ověřeno: hned následující volání
+ * `checkPage` vrátilo u téže adresy HTTP 200.
+ *
+ * Je to táž záměna, kterou nástroj sám nesmí dělat u auditovaných webů,
+ * jen obrácená: chyba MĚŘENÍ vydaná za vadu — tady za vadu nástroje.
+ * Test nástroje, který padá po cizím výpadku, navíc učí čtenáře ❌
+ * ignorovat, a tím zneplatní i skutečné nálezy.
+ *
+ * Do exit kódu se to nepočítá; vidět to zůstává.
+ */
+function prostredi(name, detail) {
+  console.log(`  ⚠️  ${name} — NEZMĚŘENO: ${detail}`);
+}
+
 console.log(`\n🔍 Smoke test proti ${TARGET}`);
 console.log('   ✅/❌ = kontrola nástroje   ⚠️/· = nález na testovaném webu\n');
 
@@ -506,7 +526,21 @@ console.log('\n7) HTTP monitor');
 try {
   const page = await checkPage({ url: TARGET, name: 'smoke' });
   check('checkPage vrací durationMs', typeof page.durationMs === 'number', `${page.durationMs} ms`);
-  check('stránka odpovídá', page.ok === true, `HTTP ${page.status}`);
+
+  // Co se tady OPRAVDU testuje: že `checkPage` vrátí použitelný výsledek,
+  // ne že cizí web zrovna odpovídá. Nedostupnost cíle je okolnost běhu.
+  check(
+    'checkPage vrací tříhodnotový výsledek, ne výjimku',
+    typeof page.ok === 'boolean' && (page.status === null || typeof page.status === 'number'),
+    `ok=${page.ok}, status=${page.status}`
+  );
+  if (page.ok === true) {
+    check('stránka odpovídá', true, `HTTP ${page.status}`);
+  } else {
+    // Chybu VYPISUJEME. Dřív se tiskl jen „HTTP null", takže se bez
+    // druhého běhu nedalo poznat, co se stalo.
+    prostredi('stránka neodpověděla', `${page.error || 'bez udání důvodu'} (HTTP ${page.status})`);
+  }
 } catch (err) {
   check('checkPage doběhl', false, err.message);
 }
