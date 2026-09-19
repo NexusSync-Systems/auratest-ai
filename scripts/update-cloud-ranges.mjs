@@ -258,12 +258,25 @@ ranges.sort((a, b) => a.s - b.s);
 ranges6.sort((a, b) => (a.s6 < b.s6 ? -1 : (a.s6 > b.s6 ? 1 : 0)));
 
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
-fs.writeFileSync(OUT, JSON.stringify({
+// ZÁPIS PŘES DOČASNÝ SOUBOR A `rename`, NE NA MÍSTO.
+//
+// Soubor má 15 MB a čte z něj běžící aplikace. Kdyby si ho načítala
+// zrovna během zápisu, `JSON.parse` spadne, `catch` v `loadRanges` to
+// pohltí („poškozený snímek není chyba běhu — jen o zdroj míň") a
+// aplikace by pracovala s PRÁZDNÝM snímkem, tedy bez rozsahů
+// poskytovatelů. Rezidence by u zákazníků na Azure a AWS začala vycházet
+// neprůkazně bez zjevné příčiny.
+//
+// `rename` v rámci téhož svazku je atomický: čtenář uvidí buď starý
+// soubor celý, nebo nový celý. Nález z kontrolní vlny.
+const TMP = `${OUT}.tmp`;
+fs.writeFileSync(TMP, JSON.stringify({
   generatedAt: new Date().toISOString(),
   sources,
   ranges,
   ranges6,
 }), 'utf8');
+fs.renameSync(TMP, OUT);
 
 console.log('');
 console.log(`Zapsáno ${ranges.length} rozsahů IPv4 a ${ranges6.length} IPv6 `

@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { IMPACT_TRANSLATIONS, RULE_TRANSLATIONS, TEST_TYPES } from '../../constants/testTypes.js';
-import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel, odolnostLabel, odolnostBadgeClass, ekoTridaLabel, ekoTridaBadgeClass, ekoHodnoty, ekoPuvod, popisUmisteni } from '../../lib/compliance.js';
+import { complianceBadgeClass, complianceLabel, obligationLabel, pqcLabel, odolnostLabel, odolnostBadgeClass, ekoTridaLabel, ekoTridaBadgeClass, ekoHodnoty, ekoPuvod, popisUmisteni, headerStateLabel } from '../../lib/compliance.js';
 import { execSummary, stavTrida } from '../../lib/exec-summary.js';
 
 /**
@@ -14,31 +14,6 @@ import { execSummary, stavTrida } from '../../lib/exec-summary.js';
  * Nově je to samostatná komponenta načítaná přes React.lazy — do hlavního
  * bundlu se nedostane vůbec.
  */
-/**
- * Stav jedné bezpečnostní hlavičky slovy.
- *
- * `agent.js` vrací u `hsts` a `csp` TROJSTAV — `true` / `false` / `null` —
- * a u `null` výslovně zdůvodňuje proč: na nešifrovaném spojení prohlížeč
- * HSTS ignoruje, takže její absence není volbou provozovatele a nálezem
- * být nemůže. Tiskový report to zplošťoval ternárním operátorem
- * `hsts ? 'Aktivní' : 'Chybí'`; `null` je falsy, takže v dokumentu pro
- * úřad stálo „Chybí" o hlavičce, kterou nikdo neměřil.
- *
- * `false` navíc znamená dvě různé věci: hlavička chybí, nebo je přítomná
- * a nechrání (`Referrer-Policy: unsafe-url`, CSP s `unsafe-inline`).
- * Agent to rozlišuje v `weakHeaders`; report to má tisknout taky, protože
- * provozovatel podle toho ví, jestli hlavičku doplnit, nebo opravit.
- */
-function headerStateLabel(ok, label, nis2) {
-  if (ok === true) return 'Aktivní';
-  if (ok === null || ok === undefined) return 'Nelze posoudit';
-  if (nis2?.weakHeaders?.includes(label)) return 'Přítomná, ale nechrání';
-  if (nis2?.missingHeaders?.includes(label)) return 'Chybí';
-  // Starší uložený běh nová pole nemá. „Chybí" by pak bylo tvrzení
-  // o webu, který hlavičku klidně má — jen ji má neúčinnou. Neutrální
-  // znění říká jen to, co `false` skutečně znamená.
-  return 'Nesplněno';
-}
 
 
 /**

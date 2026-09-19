@@ -218,7 +218,28 @@ export function cidr6ToRange(cidr) {
  * na geolokaci a řekne to.
  */
 export function loadRanges(file = RANGES_FILE) {
-  if (cache && cache.file === file) return cache.data;
+  // CACHE SE DRŽÍ PODLE ČASU ZMĚNY SOUBORU, NE NA CELÝ ŽIVOT PROCESU.
+  //
+  // Nález z kontrolní vlny. Cache byla klíčovaná jen jménem souboru,
+  // takže se snímek načetl při prvním skenu a držel se do restartu.
+  // Týdenní obnova (`auraguard-ranges.timer`) tím byla k ničemu: soubor
+  // na disku byl svěží, ale běžící kontejner (`restart: unless-stopped`)
+  // pracoval dál se starým. Tři komentáře — v `docker-compose.yml`,
+  // v unitě a v `deploy/README` — přitom tvrdily, že „běžící aplikace
+  // ho vidí hned, bez rebuildu".
+  //
+  // Horší bylo, že i ověřovací příkaz z README dával uklidňující
+  // odpověď: `docker compose exec node -e …` spustí NOVÝ proces, který
+  // si soubor přečte z disku. Vypsal tedy stáří svěžího snímku,
+  // zatímco server měl v paměti starý. A stejnou cestou šla i
+  // devadesátidenní pojistka — rozhodovala se podle zastaralé hodnoty.
+  let mtime = null;
+  try {
+    mtime = fs.statSync(file).mtimeMs;
+  } catch {
+    // Soubor není. `cache` se pak založí z prázdného fallbacku níž.
+  }
+  if (cache && cache.file === file && cache.mtime === mtime) return cache.data;
   let data = { generatedAt: null, sources: [], ranges: [], ranges6: [] };
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -242,7 +263,7 @@ export function loadRanges(file = RANGES_FILE) {
   } catch {
     // Chybějící nebo poškozený snímek není chyba běhu — jen o zdroj míň.
   }
-  cache = { file, data };
+  cache = { file, mtime, data };
   return data;
 }
 

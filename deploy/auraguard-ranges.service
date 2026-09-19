@@ -12,8 +12,10 @@ WorkingDirectory=/home/nexus/auratest-ai
 
 # Node je jen v kontejneru, na hostiteli není. Skript proto běží uvnitř,
 # ale zapisuje do `data/`, což je bind svazek z hostitele — nový snímek
-# tedy zůstane i po zahození kontejneru a běžící aplikace ho vidí hned,
-# bez rebuildu obrazu.
+# tedy zůstane i po zahození kontejneru. Běžící aplikace ho vidí bez
+# restartu proto, že `loadRanges` drží cache podle času změny souboru;
+# samotný svazek by na to nestačil (do opravy z 19. 9. 2026 se snímek
+# načetl jednou a držel se do restartu procesu).
 #
 # `run --rm` místo `exec`: `exec` vyžaduje běžící kontejner a při
 # restartu aplikace by úloha selhala.

@@ -176,3 +176,28 @@ describe('SampleReport — hlavičky ve třech stavech', () => {
     expect(screen.queryByText('Nepodařilo se posoudit')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * JMENOVATEL U REZIDENCE.
+ *
+ * V nasazené ukázce stálo „Servery mimo EU/EHP: 0 z 5", zatímco
+ * `measuredDomains` bylo 0 — posouzená nebyla ani jedna doména. Čte se
+ * to jako „pět zkontrolováno, žádný mimo EU", a veřejná ukázka je místo,
+ * kde se číslo čte nejpovrchněji. Nález z kontrolní vlny.
+ */
+describe('rezidence ve veřejné ukázce', () => {
+  test('neposouzené domény se nevydávají za zkontrolované', async () => {
+    // POZOR: první verze tohohle testu prošla, i když oprava v komponentě
+    // NEBYLA zapsaná — `render` bez čekání nic nevykreslí, protože data
+    // se načítají přes `fetch`. Test, který nic nevykreslí, nic netestuje.
+    const data = sampleReport.sections.green.data;
+    expect(data.residency.measuredDomains).toBe(0);
+    expect(data.residency.totalDomains).toBe(5);
+
+    render(<SampleReport />);
+    // Až se sekce objeví, teprve pak se dá tvrdit, co v ní je.
+    expect(await screen.findByText(/Servery mimo EU\/EHP/)).toBeInTheDocument();
+    expect(screen.getByText(/neposouzeno ani jedno/)).toBeInTheDocument();
+    expect(screen.queryByText(/^0 z 5$/)).toBeNull();
+  });
+});

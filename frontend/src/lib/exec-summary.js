@@ -100,6 +100,36 @@ const OBLASTI = [
     },
   },
   {
+    // PŘÍZNAKY COOKIES JSOU SAMOSTATNÉ PRAVIDLO, NE SOUČÁST TRACKERŮ.
+    //
+    // Nález z kontrolní vlny. `audit-scope.js` u cookie auditu vede DVĚ
+    // pravidla — `gdpr.cookies.pre-consent` a `appsec.cookies.flags` —
+    // a do shrnutí se dostalo jen to první. Sken, kde relační cookie
+    // nemá `HttpOnly` (závažnost `high`), proto vyrobil první stranu
+    // dokumentu s větou „Ve všech posuzovaných oblastech bez nálezu.",
+    // zatímco neměnný záznam u téhož běhu držel `ok: false` a nález byl
+    // vytištěný o dvě stránky dál.
+    //
+    // Je to tentýž rozpor report vs. spis jako u úkolů #36 a #51, jen
+    // z druhé strany: shrnutí tvrdilo MÉNĚ nálezů, než záznam dokládá.
+    klic: 'cookieResult',
+    nazev: 'Příznaky cookies (§ 14 aplikační bezpečnost)',
+    nosny: (r) => Boolean(r.cookieFlags),
+    verdikt: (r) => r.cookieFlags?.ok ?? null,
+    duvod: (r) => {
+      const f = r.cookieFlags;
+      if (f?.ok === null || f?.ok === undefined) {
+        return f?.total === 0
+          ? 'nebyla nastavena žádná cookie, není co posoudit'
+          : 'příznaky vlastních cookies nebylo na čem posoudit';
+      }
+      const zavazne = (f.findings || []).filter((x) => x.severity === 'high').length;
+      return zavazne > 0
+        ? `${zavazne} ${vet(zavazne, 'závažný nedostatek', 'závažné nedostatky', 'závažných nedostatků')} v příznacích`
+        : `zkontrolováno ${f.firstParty} ${vet(f.firstParty, 'vlastní cookie', 'vlastní cookies', 'vlastních cookies')}, bez závažného nedostatku`;
+    },
+  },
+  {
     klic: 'greenResult',
     nazev: 'Umístění dat (GDPR)',
     nosny: (r) => Boolean(r.residency),

@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'vitest';
-import { popisUmisteni } from './compliance.js';
+import { readFileSync } from 'fs';
+import { popisUmisteni, headerStateLabel } from './compliance.js';
 
 /**
  * POPIS UMÍSTĚNÍ DOMÉNY.
@@ -53,5 +54,57 @@ describe('popisUmisteni', () => {
     const u = popisUmisteni(null);
     expect(u.stav).toBeNull();
     expect(u.domena).toBe('neznámá doména');
+  });
+});
+
+/**
+ * STAV BEZPEČNOSTNÍ HLAVIČKY — čtyři stavy, ne dva.
+ *
+ * Nález z kontrolní vlny: obrazovka tiskla `{nis2.hsts ? 'Aktivní' :
+ * 'Chybí'}`. `hsts` je trojstav a `agent.js:2723` ho u nedostupné
+ * stránky nastavuje na `null`, takže web za bot-ochranou i každý web na
+ * `http://` dostal červené „HSTS: Chybí" — tvrzení, které nikdo neměřil.
+ */
+describe('headerStateLabel', () => {
+  const nis2 = {
+    weakHeaders: ['Content-Security-Policy'],
+    missingHeaders: ['Strict-Transport-Security'],
+  };
+
+  test('null je „Nelze posoudit", ne „Chybí"', () => {
+    expect(headerStateLabel(null, 'Strict-Transport-Security', nis2)).toBe('Nelze posoudit');
+    expect(headerStateLabel(undefined, 'Strict-Transport-Security', nis2)).toBe('Nelze posoudit');
+  });
+
+  test('rozliší chybějící hlavičku od neúčinné', () => {
+    // „Chybí" a „je tam, ale nechrání" vedou k jiné opravě.
+    expect(headerStateLabel(false, 'Strict-Transport-Security', nis2)).toBe('Chybí');
+    expect(headerStateLabel(false, 'Content-Security-Policy', nis2)).toBe('Přítomná, ale nechrání');
+  });
+
+  test('true je aktivní', () => {
+    expect(headerStateLabel(true, 'Strict-Transport-Security', nis2)).toBe('Aktivní');
+  });
+
+  test('starší běh bez seznamů netvrdí „Chybí"', () => {
+    // Bez `missingHeaders`/`weakHeaders` nevíme, co `false` znamená.
+    expect(headerStateLabel(false, 'Strict-Transport-Security', {})).toBe('Nesplněno');
+  });
+});
+
+/**
+ * ZAPOJENÍ, na které statický hlídač trojstavu NEDOSÁHNE.
+ *
+ * `trojstav.test.js` hledá `\.hsts ?`. Oprava výš ale ternár nahradila
+ * voláním nad LOKÁLNÍ proměnnou z `map`, takže by vrácení chyby
+ * (`{stav ? 'Aktivní' : 'Chybí'}`) hlídač NEODHALIL — ověřeno mutací.
+ * To je slepé místo, o kterém je lepší vědět než mu věřit.
+ */
+describe('obrazovka používá headerStateLabel', () => {
+  test('NIS2 blok v App.jsx nerozhoduje o hlavičkách sám', () => {
+    const zdroj = readFileSync(`${process.cwd()}/src/App.jsx`, 'utf8');
+    expect(zdroj).toMatch(/headerStateLabel\(stav, hlavicka, nis2Result\.nis2\)/);
+    // A zpátky se nesmí vrátit binární znění.
+    expect(zdroj).not.toMatch(/stav \? 'Aktivní' : 'Chybí'/);
   });
 });

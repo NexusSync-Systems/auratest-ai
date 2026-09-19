@@ -4,7 +4,7 @@ import path from 'path';
 import {
   ipv4ToInt, cidrToRange, lookupCloudIp, rangesSnapshot, clearCache,
   ipv6ToBigInt, cidr6ToRange, bigIntNaHex, maIpv6Rozsahy,
-  stariSnimkuDnu, jeSnimekZastaraly, SNIMEK_MAX_STARI_DNU, odmapujIpv4,
+  stariSnimkuDnu, jeSnimekZastaraly, SNIMEK_MAX_STARI_DNU, odmapujIpv4, loadRanges,
 } from '../cloud-ranges.js';
 import { regionCountry, knownRegionCount } from '../cloud-regions.js';
 
@@ -537,5 +537,54 @@ describe('IPv4 mapovaná do IPv6', () => {
     // Opačný směr téže chyby.
     expect(lookupCloudIp('2603:1020:1000::5', SNIMEK).provider).toBe('azure');
     expect(lookupCloudIp('2a05:d018::1', SNIMEK).country).toBe('IE');
+  });
+});
+
+/**
+ * OBNOVA SNÍMKU MUSÍ BÝT VIDĚT BEZ RESTARTU.
+ *
+ * Nález z kontrolní vlny. Cache byla klíčovaná jen jménem souboru,
+ * takže se snímek načetl při prvním skenu a držel se do restartu
+ * procesu. Týdenní obnova přes systemd timer tím byla k ničemu: soubor
+ * na disku svěží, běžící kontejner pracoval se starým. Tři komentáře
+ * přitom tvrdily, že „běžící aplikace ho vidí hned".
+ */
+describe('cache snímku respektuje změnu souboru', () => {
+  it('novější soubor se načte znovu, ne z paměti', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auraguard-cache-'));
+    const soubor = path.join(dir, 'cloud-ranges.json');
+    const zapis = (ranges) => fs.writeFileSync(soubor, JSON.stringify({
+      generatedAt: '2026-09-19T00:00:00.000Z', sources: [], ranges,
+    }), 'utf8');
+
+    clearCache();
+    zapis([rozsah('aws', '52.30.0.0/16', 'eu-west-1', 'EC2')]);
+    expect(rangesSnapshot(soubor).count).toBe(1);
+
+    // Obnova: jiný obsah, novější čas změny. BEZ clearCache().
+    zapis([
+      rozsah('aws', '52.30.0.0/16', 'eu-west-1', 'EC2'),
+      rozsah('azure', '4.223.0.0/16', 'swedencentral', 'AzureCloud'),
+    ]);
+    const pozdeji = new Date(Date.now() + 2000);
+    fs.utimesSync(soubor, pozdeji, pozdeji);
+
+    expect(rangesSnapshot(soubor).count).toBe(2);
+    // A nová adresa se skutečně najde — nejen že se změnil počet.
+    expect(lookupCloudIp('4.223.1.1', soubor).region).toBe('swedencentral');
+  });
+
+  it('nezměněný soubor se ze souboru nečte znovu', () => {
+    // Cache má pořád smysl: snímek má 15 MB a čte se při každém skenu.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auraguard-cache2-'));
+    const soubor = path.join(dir, 'cloud-ranges.json');
+    fs.writeFileSync(soubor, JSON.stringify({
+      generatedAt: '2026-09-19T00:00:00.000Z', sources: [],
+      ranges: [rozsah('aws', '52.30.0.0/16', 'eu-west-1', 'EC2')],
+    }), 'utf8');
+
+    clearCache();
+    const prvni = loadRanges(soubor);
+    expect(loadRanges(soubor)).toBe(prvni); // TOTOŽNÝ objekt, ne kopie
   });
 });

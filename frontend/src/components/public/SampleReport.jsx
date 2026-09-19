@@ -197,9 +197,22 @@ function Green({ data }) {
           {ekoHodnoty(green).emise}{' '}
           <span className="sample-dim">(eko třída {ekoTridaLabel(green.rating, green)})</span>
         </dd>
+        {/* JMENOVATEL JE POČET POSOUZENÝCH, NE VŠECH DOMÉN.
+            V nasazené ukázce je `measuredDomains: 0`, `nonEULocations: []`
+            a `totalDomains: 5`, takže tady stálo „0 z 5" — a to se čte
+            jako „pět serverů zkontrolováno, žádný mimo EU". Posouzená
+            nebyla ANI JEDNA (čtyři za CDN, jedna bez záznamu v databázi).
+            Sám `agent.js` to formuluje opatrně: „… z N POSOUZENÝCH
+            serverů". Nález z kontrolní vlny; na veřejné ukázce se navíc
+            číslo čte nejpovrchněji. */}
         <dt>Servery mimo EU/EHP</dt>
         <dd>
-          {residency.nonEULocations?.length ?? 0} z {residency.totalDomains}
+          {residency.measuredDomains > 0
+            ? `${residency.nonEULocations?.length ?? 0} z ${residency.measuredDomains} posouzených`
+            : 'neposouzeno ani jedno'}
+          {residency.totalDomains > (residency.measuredDomains ?? 0)
+            ? ` (z ${residency.totalDomains} domén celkem)`
+            : ''}
         </dd>
       </dl>
       <Note>{residency.warning}</Note>

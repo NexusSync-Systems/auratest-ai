@@ -28,7 +28,7 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, on
 import { doc, setDoc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { firebaseAuth, firebaseDb } from './lib/firebase.js';
 import { formatRedactedText, getDomain } from './lib/format.jsx';
-import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel, ekoTridaLabel, ekoTridaColor, ekoHodnoty, ekoPuvod, popisUmisteni } from './lib/compliance.js';
+import { complianceColor, complianceLabel, obligationColor, obligationLabel, pqcColor, pqcLabel, ekoTridaLabel, ekoTridaColor, ekoHodnoty, ekoPuvod, popisUmisteni, headerStateLabel } from './lib/compliance.js';
 import { popisStavuSite } from './lib/grid-status.js';
 import { execSummary } from './lib/exec-summary.js';
 import HistoryList from './components/HistoryList.jsx';
@@ -2167,12 +2167,17 @@ export default function App() {
                        <div>
                          <h3 style={{ color: 'var(--accent)', marginTop: 0 }}>Evropský bezpečnostní audit (NIS2)</h3>
                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-                           <div style={{ padding: '12px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', borderLeft: `4px solid ${nis2Result.nis2.hsts ? '#10b981' : '#ef4444'}` }}>
-                             <strong>HSTS</strong>: {nis2Result.nis2.hsts ? 'Aktivní' : 'Chybí'}
-                           </div>
-                           <div style={{ padding: '12px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', borderLeft: `4px solid ${nis2Result.nis2.csp ? '#10b981' : '#ef4444'}` }}>
-                             <strong>CSP</strong>: {nis2Result.nis2.csp ? 'Aktivní' : 'Chybí'}
-                           </div>
+                           {/* Trojstav. `hsts` i `csp` jsou `null`, když se stránka
+                               nenačetla (agent.js:2723) — a `null` je falsy, takže
+                               web za bot-ochranou dostával červené „HSTS: Chybí",
+                               tedy tvrzení, které nikdo neměřil. Tiskový report
+                               tuhle funkci měl, obrazovka ne. */}
+                           {[['HSTS', 'Strict-Transport-Security', nis2Result.nis2.hsts],
+                             ['CSP', 'Content-Security-Policy', nis2Result.nis2.csp]].map(([zkratka, hlavicka, stav]) => (
+                             <div key={zkratka} style={{ padding: '12px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', borderLeft: `4px solid ${complianceColor(stav)}` }}>
+                               <strong>{zkratka}</strong>: {headerStateLabel(stav, hlavicka, nis2Result.nis2)}
+                             </div>
+                           ))}
                          </div>
 
                          {/* Rozbor obsahu politiky.

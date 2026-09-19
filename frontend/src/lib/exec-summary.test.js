@@ -42,11 +42,25 @@ describe('rozsah shrnutí', () => {
       cookieResult: { gdpr: { isCompliant: false, suspiciousItems: ['x', 'y'] } },
       greenResult: { residency: { isEUCompliant: null, warning: 'za CDN' } },
     });
-    expect(s.celkem).toBe(4);
+    // ČTYŘI VSTUPY, ale PĚT oblastí: cookie audit nese dvě pravidla
+    // (trackery před souhlasem a příznaky cookies), takže se do shrnutí
+    // hlásí zvlášť.
+    //
+    // Tenhle test dřív očekával 4 a tím cementoval stav, kdy příznaky
+    // cookies ve shrnutí CHYBĚLY — sken s relační cookie bez HttpOnly
+    // vyrobil první stranu dokumentu s „bez nálezu", zatímco záznam
+    // držel nález. Nález z kontrolní vlny.
+    //
+    // `cookieFlags` tu není předaný, takže ta oblast NENÍ nosná a dostane
+    // „neprůkazné". Nezmizí — nenosná oblast se podle návrhu shrnutí
+    // hlásí jako neposouditelná, právě aby tiše nezmizela.
+    expect(s.celkem).toBe(5);
     expect(s.splneno + s.nesplneno + s.neprukazne).toBe(s.celkem);
-    expect(s.splneno).toBe(2);
-    expect(s.nesplneno).toBe(1);
-    expect(s.neprukazne).toBe(1);
+    expect(s.splneno).toBe(2);       // přístupnost, hlavičky
+    expect(s.nesplneno).toBe(1);     // trackery před souhlasem
+    // DVĚ neprůkazné: rezidence (za CDN) a příznaky cookies, které
+    // v tomhle vstupu nejsou předané.
+    expect(s.neprukazne).toBe(2);
   });
 });
 
@@ -271,5 +285,59 @@ describe('řádek bez odpovídající sekce v dokumentu nevznikne', () => {
       expect(s.polozky[0].stav).toBe('inconclusive');
       expect(s.polozky[0].duvod).toBe('výsledek se nepodařilo přečíst');
     }
+  });
+});
+
+/**
+ * SHRNUTÍ NESMÍ TVRDIT MÉNĚ NÁLEZŮ, NEŽ ZÁZNAM DOKLÁDÁ.
+ *
+ * Nález z kontrolní vlny. Cookie audit nese DVĚ pravidla
+ * (`gdpr.cookies.pre-consent` a `appsec.cookies.flags`), ale do shrnutí
+ * se dostalo jen to první. Sken s relační cookie bez `HttpOnly` — tedy
+ * nálezem závažnosti `high` — proto vyrobil první stranu dokumentu
+ * s větou „Ve všech posuzovaných oblastech bez nálezu.", zatímco
+ * neměnný záznam u téhož běhu držel `ok: false` a nález byl vytištěný
+ * o dvě stránky dál.
+ */
+describe('příznaky cookies ve shrnutí', () => {
+  const sPriznaky = (cookieFlags) => execSummary({
+    cookieResult: {
+      gdpr: { isCompliant: true, suspiciousItems: [], rating: 'BEZ NÁLEZU' },
+      cookieFlags,
+    },
+  });
+
+  test('závažný nedostatek v příznacích se NEZTRATÍ', () => {
+    const s = sPriznaky({
+      ok: false, total: 1, firstParty: 1, thirdParty: 0,
+      findings: [{ severity: 'high', id: 'cookie.httponly.missing', cookie: 'PHPSESSID', message: '…' }],
+    });
+    expect(s.nesplneno).toBeGreaterThan(0);
+    // Pozor na příliš širokou podmínku: fráze „bez nálezu" patří
+    // legitimně DRUHÉ oblasti (trackery). Hlídá se ta věta, která byla
+    // nepravdivá — souhrnné „ve všech oblastech bez nálezu".
+    expect(s.zaver).not.toMatch(/[Vv]e všech posuzovaných oblastech bez nálezu/);
+    expect(JSON.stringify(s)).toMatch(/Příznaky cookies/);
+  });
+
+  test('neprůkazné příznaky blokují kladný závěr', () => {
+    const s = sPriznaky({ ok: null, total: 0, firstParty: 0, thirdParty: 0, findings: [] });
+    expect(s.neprukazne).toBeGreaterThan(0);
+    expect(s.nesplneno).toBe(0);
+  });
+
+  test('bez závažného nedostatku se nález nevyrábí', () => {
+    const s = sPriznaky({
+      ok: true, total: 2, firstParty: 2, thirdParty: 0,
+      findings: [{ severity: 'medium', id: 'cookie.secure.missing', cookie: 'x', message: '…' }],
+    });
+    expect(s.nesplneno).toBe(0);
+  });
+
+  test('starší běh bez cookieFlags shrnutí nerozbije', () => {
+    const s = execSummary({
+      cookieResult: { gdpr: { isCompliant: true, suspiciousItems: [], rating: 'BEZ NÁLEZU' } },
+    });
+    expect(s).toBeTruthy();
   });
 });

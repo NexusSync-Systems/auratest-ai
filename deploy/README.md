@@ -202,10 +202,16 @@ cd ~/auratest-ai && docker compose exec auratest-ai node -e "
 import('./cloud-ranges.js').then(m=>console.log('stáří:', m.stariSnimkuDnu(), 'dnů | zastaralý:', m.jeSnimekZastaraly()));"
 ```
 
-> `data/` je od téhle změny **bind svazek**, ne součást obrazu. Bez toho
-> by obnova zapsala do zahozeného kontejneru a běžící aplikace by dál
-> četla starou kopii — snímek by tiše stárnul a po 90 dnech by rezidence
-> přestala fungovat, aniž by kdo tušil proč.
+> `data/` se montuje jako **bind svazek**, takže nový snímek zůstane
+> i po zahození kontejneru. Obraz si přes `COPY data ./data` nese vlastní
+> kopii dál — svazek ji vždy zastíní, takže v provozu přes compose
+> rozhoduje soubor na hostiteli.
+>
+> Aby to viděla i **běžící** aplikace, drží `loadRanges` cache podle času
+> změny souboru. Do opravy z 19. 9. 2026 se snímek načetl při prvním
+> skenu a držel se do restartu procesu — týdenní obnova tím byla
+> k ničemu a příkaz na zjištění stáří (spouští nový proces) dával
+> uklidňující odpověď, která o stavu serveru nevypovídala.
 
 ---
 
