@@ -491,7 +491,9 @@ const RULE_LIST = [
       'průběžně a rozsah mohl mezitím přejít do jiného regionu, takže by ' +
       'z něj vyšla cizí země s plnou jistotou. Zpracovávají se adresy ' +
       'IPv4 i IPv6; která z nich se naměří, závisí na tom, po kterém ' +
-      'protokolu se prohlížeč k webu skutečně připojil.',
+      'protokolu se prohlížeč k webu skutečně připojil. Adresa IPv4 ' +
+      'zapsaná v podobě mapované do IPv6 (`::ffff:1.2.3.4`) se posuzuje ' +
+      'jako IPv4, protože jde o téhož hostitele.',
     changelog: {
       4:
         'Verze 3 zpracovávala jen adresy IPv4. Prohlížeč přitom na '

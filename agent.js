@@ -3024,7 +3024,7 @@ export async function auditNIS2AndPQC(url) {
  * ani do `locations`. Verdikt pak vyšel „splněno" i tehdy, když se
  * z osmi domén posoudila jedna, a nikde to nebylo vidět.
  */
-function residencyVerdict(measured, nonEULocations, originMeasured) {
+export function residencyVerdict(measured, nonEULocations, originZmeren) {
   if (nonEULocations.length > 0) return false;
   // Kladný verdikt smí stát JEN na doméně auditovaného webu.
   //
@@ -3033,7 +3033,10 @@ function residencyVerdict(measured, nonEULocations, originMeasured) {
   // třeba widget nebo písmo — a sken by prohlásil rezidenci za v pořádku.
   // Tvrzení o umístění dat provozovatele opřené o cizí server je přesně
   // ten druh závěru, který tenhle nástroj dělat nesmí.
-  if (!originMeasured) return null;
+  // Sem se dostaneme jen s prázdnými `nonEULocations`, takže „změřeno"
+  // tu znamená totéž co „změřeno a v EU" — doména mimo EU by verdikt
+  // ukončila výš. Parametr proto stačí jeden.
+  if (!originZmeren) return null;
   if (measured.length === 0) return null;
   return true;
 }
@@ -3082,7 +3085,7 @@ function residencyWarning(totalDomains, measured, nonEULocations, cdnDomains, un
 }
 
 /** Doplňková věta, když se nepodařilo umístit doménu auditovaného webu. */
-function originNote(originMeasured, originHost, snapshot) {
+export function originNote(originZmeren, originHost, snapshot) {
   let chybiSnimek = '';
   if (!snapshot?.generatedAt) {
     chybiSnimek = ' Snímek IP rozsahů poskytovatelů cloudu není k dispozici, takže se '
@@ -3099,7 +3102,7 @@ function originNote(originMeasured, originHost, snapshot) {
       + 'rozsahy se mezitím mohly přeřadit. Obnovte ho příkazem '
       + '`npm run update:cloud-ranges`.';
   }
-  if (originMeasured) return chybiSnimek;
+  if (originZmeren) return chybiSnimek;
   return ` Doménu auditovaného webu (${originHost || 'neznámá'}) se umístit `
     + 'nepodařilo, takže o rezidenci dat provozovatele tenhle sken neříká nic '
     + '— posouzené domény patří jiným službám.' + chybiSnimek;
@@ -3113,18 +3116,12 @@ export async function auditGreenAndResidency(url) {
     await guardNavigation(context);
     const page = await context.newPage();
     
-    // Objem se měří na DRÁTĚ, ne po dekompresi.
-    //
-    // Dřív se sčítalo `content-length`, a kde chybělo, tak
-    // `(await response.body()).length`. To je ale velikost PO rozbalení —
-    // `content-length` je před ním. Součet tedy míchal dvě různé veličiny
-    // a každá odpověď bez `content-length` (chunked přenos, HTTP/2, kde
-    // se hlavička běžně neposílá) vstupovala nafouknutá.
-    //
-    // `request.sizes()` vrací `responseBodySize` výslovně dokumentovaný
-    // jako „(encoded)", tedy bajty na drátě, a k tomu velikost hlaviček.
-    // Hlavičky se počítají taky — přenesly se.
-    //
+    // Objem se měří na DRÁTĚ, ne po dekompresi. Celé zdůvodnění i to,
+    // co se do součtu POČÍTÁ a co ne, je v `green-mereni.js` — tady by
+    // se to jen rozešlo. (Stalo se: po vytažení té smyčky do modulu
+    // zůstal na tomhle místě komentář tvrdící „Hlavičky se počítají
+    // taky", zatímco kód `responseHeadersSize` výslovně NEPŘIČÍTÁ.
+    // Dvě protichůdná zdůvodnění u čísla, které nese známku v reportu.)
     const objemMereni = sberObjemu(context);
     const { mereni } = objemMereni;
 
@@ -3229,7 +3226,17 @@ export async function auditGreenAndResidency(url) {
     // Doména auditovaného webu — na ní verdikt stojí.
     let originHost = null;
     try { originHost = new URL(page.url() || url).hostname; } catch { originHost = null; }
-    let originMeasured = false;
+    // ZMĚŘENO ≠ ZMĚŘENO A V EU.
+    //
+    // Dřív se tahle proměnná jmenovala `originMeasured` a nastavovala se
+    // jen při `jeOrigin && isEU`. Pro verdikt to stačilo (doména mimo EU
+    // skončí v `nonEULocations` a verdikt je `false` dřív), ale `originNote`
+    // ji čte jako „podařilo se změřit doménu webu" — a u zákazníka, jehož
+    // server vyšel MIMO EU, proto do dokumentu pro úřad přilepila větu
+    // „Doménu auditovaného webu se umístit nepodařilo, takže o rezidenci
+    // dat provozovatele tenhle sken neříká nic". To je nepravda o měření,
+    // která navíc OMLOUVÁ skutečný nález — a dokument si sám protiřečí.
+    let originZmeren = false;
 
     // Jednou pro celý sken — `loadRanges` sice cachuje, ale volat to
     // v cyklu by znamenalo číst datum u každé domény znovu.
@@ -3285,8 +3292,15 @@ export async function auditGreenAndResidency(url) {
         unlocatedDomains.push({
           domain,
           ip,
-          reason: `snímek rozsahů poskytovatelů je ${stariSnimku} dnů starý `
-            + `(práh ${SNIMEK_MAX_STARI_DNU}) — rozsah se mezitím mohl přeřadit`,
+          // Stáří může být `null` — snímek s rozsahy, ale bez data, je
+          // taky zastaralý. Bez téhle podmínky se do spisu vytisklo
+          // doslova „je null dnů starý". `originNote` tuhle kombinaci
+          // ošetřenou má, cyklus ne: „všude kromě jednoho místa".
+          reason: stariSnimku === null
+            ? 'snímek rozsahů poskytovatelů neuvádí datum, takže ho nelze '
+              + 'posoudit — a neposouditelný podklad nenese tvrzení o zemi'
+            : `snímek rozsahů poskytovatelů je ${stariSnimku} dnů starý `
+              + `(práh ${SNIMEK_MAX_STARI_DNU}) — rozsah se mezitím mohl přeřadit`,
         });
         locations.push({ domain, ip, country: null, isEU: null, onCdn: false });
         continue;
@@ -3304,7 +3318,7 @@ export async function auditGreenAndResidency(url) {
         };
         locations.push(locInfo);
         measured.push(locInfo);
-        if (jeOrigin && isEU) originMeasured = true;
+        if (jeOrigin) originZmeren = true;
         if (!isEU) {
           nonEULocations.push(locInfo);
           if (cloud.country === 'US') usesUSServers = true;
@@ -3379,7 +3393,7 @@ export async function auditGreenAndResidency(url) {
       };
       locations.push(locInfo);
       measured.push(locInfo);
-      if (jeOrigin && isEU) originMeasured = true;
+      if (jeOrigin) originZmeren = true;
 
       if (!isEU) {
         nonEULocations.push(locInfo);
@@ -3433,11 +3447,11 @@ export async function auditGreenAndResidency(url) {
         // bez něj je tvrzení o umístění serveru nepřezkoumatelné.
         cloudRangesSnapshot: rangesSnapshot(),
         originHost,
-        originMeasured,
-        isEUCompliant: residencyVerdict(measured, nonEULocations, originMeasured),
+        originMeasured: originZmeren,
+        isEUCompliant: residencyVerdict(measured, nonEULocations, originZmeren),
         warning: residencyWarning(
           domainToIp.size, measured, nonEULocations, cdnDomains, unlocatedDomains
-        ) + originNote(originMeasured, originHost, rangesSnapshot())
+        ) + originNote(originZmeren, originHost, rangesSnapshot())
       }
     };
   } catch (err) {

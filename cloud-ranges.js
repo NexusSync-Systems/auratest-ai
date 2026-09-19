@@ -252,6 +252,27 @@ export function clearCache() {
 }
 
 /**
+ * Z `::ffff:1.2.3.4` udělá `1.2.3.4`; ostatní adresy nechá být.
+ *
+ * Prefix `::ffff:/96` je podle RFC 4291 §2.5.5.2 vyhrazený pro adresy
+ * IPv4 mapované do IPv6 — jde o TÉHOŽ hostitele, ne o adresu v prostoru
+ * IPv6. Rozpoznává se i šestnáctkový zápis téhož (`::ffff:401:dfa2`),
+ * protože oba tvary znamenají totéž.
+ */
+export function odmapujIpv4(ip) {
+  const text = String(ip || '').trim();
+  const n = ipv6ToBigInt(text);
+  if (n === null) return text;
+
+  // Horních 80 bitů nulových a následuje 0xffff → mapovaná adresa IPv4.
+  const MASKA_96 = (1n << 32n) - 1n;
+  if (n >> 32n !== 0xffffn) return text;
+
+  const v4 = Number(n & MASKA_96);
+  return [v4 >>> 24, (v4 >>> 16) & 255, (v4 >>> 8) & 255, v4 & 255].join('.');
+}
+
+/**
  * Ve kterém cloudu a regionu adresa leží?
  *
  * Vrací nejužší rozsah, který adresu obsahuje. Poskytovatelé publikují
@@ -268,8 +289,23 @@ export function lookupCloudIp(ip, file = RANGES_FILE) {
   // číselným typem. Sloučit je do jednoho pole nejde: `Number` a `BigInt`
   // se v JavaScriptu nedají porovnávat relačními operátory bez převodu
   // a převod na `Number` by u 128 bitů zahodil přesnost.
-  const jeV6 = String(ip || '').includes(':');
-  const n = jeV6 ? ipv6ToBigInt(ip) : ipv4ToInt(ip);
+  //
+  // ADRESA IPv4 ZAPSANÁ JAKO IPv6 PATŘÍ NA CESTU IPv4.
+  //
+  // `::ffff:4.223.166.194` je tentýž server jako `4.223.166.194`, jen
+  // v zápisu podle RFC 4291 §2.5.5.2. Podle dvojtečky by šel hledat mezi
+  // rozsahy IPv6, kde ale prefixy `::ffff:/96` nikdo nepublikuje —
+  // výsledek by byl `null` a adresa by spadla na geolokační databázi,
+  // tedy na zdroj, kvůli kterému tenhle modul vznikl. Ověřeno: vlastní
+  // server v Azure Sweden Central vyjde přes `4.223.166.194` správně,
+  // přes `::ffff:4.223.166.194` jako nenalezený.
+  //
+  // Jestli Chromium takový zápis ve `serverAddr().ipAddress` skutečně
+  // vrací, jsem neověřil — adresy IPv4 normalizuje na tečkový zápis.
+  // Je to tedy obrana do hloubky, ne dnešní chyba. Stojí jednu podmínku.
+  const cistaIp = odmapujIpv4(ip);
+  const jeV6 = String(cistaIp || '').includes(':');
+  const n = jeV6 ? ipv6ToBigInt(cistaIp) : ipv4ToInt(cistaIp);
   if (n === null) return null;
 
   const ranges = jeV6 ? snimek.ranges6 : snimek.ranges;

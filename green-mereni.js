@@ -92,13 +92,28 @@ export function sberObjemu(context) {
         zmerenychPozadavku += 1;
         try {
           const domena = new URL(request.url()).hostname;
+
+          // PRÁZDNÝ HOSTNAME SE PŘESKOČÍ, NE ZAPÍŠE.
+          //
+          // `new URL('data:image/png;base64,…')` NEVYHODÍ výjimku — vrátí
+          // prázdný hostname. Komentář v `catch` níž slibuje, že se taková
+          // adresa do rozdělení nezařadí, ale `catch` se vůbec nespustí:
+          // do mapy se zapsala fantomová doména `''`, kterou
+          // `rozdelPodlePuvodu` počítá jako CIZÍ. Report pak hlásil
+          // o jednu cizí domény víc, než jich na webu je.
+          //
+          // Našel to test doplněný po kontrolní vlně — ta si všimla, že
+          // celý blok není pokrytý, a při doplnění testu tohle vypadlo.
+          if (!domena) return;
+
           const zaznam = bajtuPodleDomen.get(domena) || { bajtu: 0, pozadavku: 0 };
           zaznam.bajtu += prenos;
           zaznam.pozadavku += 1;
           bajtuPodleDomen.set(domena, zaznam);
         } catch {
-          // Adresa bez použitelného hostname (blob:, data:) — do součtu
-          // patří, do rozdělení podle domén se zařadit nedá.
+          // Nerozebratelná adresa. `data:` a `blob:` sem NEPADAJÍ —
+          // `new URL` je rozebere a vrátí prázdný hostname, který
+          // odchytává podmínka výš.
         }
       } catch {
         // `sizes()` vyhodí, když je kontext už zavřený.

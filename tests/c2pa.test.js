@@ -1,5 +1,5 @@
 import slovnik from './fixtures/iptc-digitalsourcetype.json';
-import { inspectImageBytes, summarizeC2pa, SOURCE_TYPE } from '../c2pa.js';
+import { inspectImageBytes, summarizeC2pa, SOURCE_TYPE, POSUZOVANE_ID } from '../c2pa.js';
 
 /**
  * Čtení Content Credentials.
@@ -187,13 +187,23 @@ describe('typy zdroje proti slovníku IPTC', () => {
     }
   );
 
-  test('slovník ve fixtuře je úplný proti tomu, co kód umí', () => {
-    // Kdyby někdo přidal marker do kódu a zapomněl na fixturu, tenhle
-    // test to řekne — a naopak.
+  test('fixtura a kód se kryjí OBOUSMĚRNĚ', () => {
+    // TENHLE TEST DŘÍV NIC NEHLÍDAL v jednom ze dvou směrů. Porovnával
+    // fixturu se sebou a s magickým `toBe(17)`. Kontrolní vlna ověřila,
+    // že přidání `digitalArt` do `SOURCE_MARKERS` — tedy hodnoty, kterou
+    // IPTC VYŘADILO a fixtura ji má v `neposuzujeme` — projde bez jediného
+    // červeného testu. Do reportu by se tak dala propašovat kategorizace
+    // „není to AI" u identifikátoru, který se posuzovat nemá.
     const vFixture = new Set(slovnik.hodnoty.map((h) => h.id));
-    const neposuzujeme = new Set(slovnik.neposuzujeme.map((h) => h.id));
-    for (const id of vFixture) expect(neposuzujeme.has(id)).toBe(false);
-    expect(vFixture.size).toBe(17);
+    const vKodu = new Set(POSUZOVANE_ID);
+
+    // Směr fixtura → kód: co slovník uvádí, musí kód posuzovat.
+    for (const id of vFixture) expect(vKodu.has(id)).toBe(true);
+    // Směr kód → fixtura: co kód posuzuje, musí být ve slovníku.
+    for (const id of vKodu) expect(vFixture.has(id)).toBe(true);
+
+    // A vyřazené hodnoty se posuzovat NESMÍ.
+    for (const h of slovnik.neposuzujeme) expect(vKodu.has(h.id)).toBe(false);
   });
 
   test('hodnota mimo slovník je NEPRŮKAZNÁ, ne „není to AI"', () => {
@@ -263,5 +273,32 @@ describe('odůvodnění čl. 50 odst. 2 nerozhodné přiznává', () => {
     });
     expect(ob.rationale).toMatch(/u 2 typ zdroje chybí nebo o generativní AI nerozhoduje/);
     expect(ob.rationale).not.toMatch(/Žádný z nich se ale nehlásí/);
+  });
+});
+
+/**
+ * SOUČET MUSÍ VYJÍT.
+ *
+ * `ALGORITHMIC` nepadal do žádné kolonky rozpadu, takže obrázek s tímhle
+ * pověřením se objevil v `withManifest`, ale nikde jinde — čtenář reportu
+ * si součet neuzavřel. Nález z kontrolní vlny.
+ */
+describe('rozpad pokrývá všechny stavy', () => {
+  test('každý typ zdroje padne do některé kolonky', () => {
+    const vzorek = [
+      { hasManifest: true, sourceType: SOURCE_TYPE.AI_GENERATED },
+      { hasManifest: true, sourceType: SOURCE_TYPE.AI_COMPOSITE },
+      { hasManifest: true, sourceType: SOURCE_TYPE.CAPTURE },
+      { hasManifest: true, sourceType: SOURCE_TYPE.NOT_AI },
+      { hasManifest: true, sourceType: SOURCE_TYPE.ALGORITHMIC },
+      { hasManifest: true, sourceType: SOURCE_TYPE.AMBIGUOUS },
+      { hasManifest: true, sourceType: SOURCE_TYPE.UNKNOWN },
+    ];
+    const s = summarizeC2pa(vzorek, 7);
+
+    const soucetKolonek = s.declaredAi + s.declaredCapture + s.declaredNotAi
+      + s.declaredAlgorithmic + s.declaredAmbiguous + s.unknownSource;
+    expect(s.withManifest).toBe(7);
+    expect(soucetKolonek).toBe(s.withManifest);
   });
 });

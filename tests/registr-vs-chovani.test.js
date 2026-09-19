@@ -1,7 +1,6 @@
 import { getRule } from '../rule-registry.js';
 import { SNIMEK_MAX_STARI_DNU } from '../cloud-ranges.js';
-import { SOURCE_TYPE } from '../c2pa.js';
-import slovnikIptc from './fixtures/iptc-digitalsourcetype.json';
+import { SOURCE_TYPE, SOURCE_MARKERS } from '../c2pa.js';
 
 /**
  * REGISTR PRAVIDEL MUSÍ ODPOVÍDAT CHOVÁNÍ.
@@ -47,9 +46,12 @@ describe('označení syntetického obsahu: text pravidla vs. slovník', () => {
     // Tady je ta vazba nejcennější: kdo přidá do `c2pa.js` další
     // nerozhodnou hodnotu a nezmíní ji tady, změní tím, co se počítá
     // mezi „nehlásí se jako AI" — a v registru to nebude.
-    const nerozhodne = slovnikIptc.hodnoty
-      .filter((h) => h['očekáváme'] === SOURCE_TYPE.AMBIGUOUS)
-      .map((h) => h.id);
+    // Z KÓDU, ne z fixtury. Kontrolní vlna našla, že tahle vazba vedla
+    // na fixturu — tedy na soubor, který se mění spolu s testem, ne na
+    // tabulku, podle které se rozhoduje.
+    const nerozhodne = SOURCE_MARKERS
+      .filter(([, typ]) => typ === SOURCE_TYPE.AMBIGUOUS)
+      .map(([id]) => id);
 
     expect(nerozhodne.length).toBeGreaterThan(0);
     for (const id of nerozhodne) {

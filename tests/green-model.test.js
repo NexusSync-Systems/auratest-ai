@@ -245,7 +245,15 @@ describe('měřicí cesta', () => {
    * cementoval pole, které Playwright nevrací — a přesně na tom
    * ostrý běh ztroskotal: „změřeno 0 požadavků, nezměřeno 140".
    */
-  const req = (responseBodySize) => ({
+  const req = (responseBodySize, url = 'https://example.com/a.js') => ({
+    // `url()` MUSÍ být.
+    //
+    // Bez něj vyhodí `new URL(request.url())` v `sberObjemu` u KAŽDÉHO
+    // požadavku `TypeError`, který spolkne vnitřní `catch` určený pro
+    // `blob:` a `data:` adresy. `bajtuPodleDomen` pak zůstala při všech
+    // testech prázdná a nepokrytá jediným assertem — kontrolní vlna to
+    // ověřila mutací: `zaznam.bajtu += 0` prošlo 158 testů zeleně.
+    url: () => url,
     sizes: async () => ({
       requestBodySize: 0,
       requestHeadersSize: 400,
@@ -336,4 +344,59 @@ describe('měřicí cesta', () => {
     expect(v.co2Grams).toBeNull();
     expect(v.duvod).toMatch(/ani jeden dokončený požadavek/);
   });
+
+  /**
+   * OBJEM PO DOMÉNÁCH.
+   *
+   * Z rozdělení „vlastní vs. cizí" se v reportu tiskne věta o tom, kolik
+   * si web dělá sám. Kontrolní vlna zjistila, že tahle část `sberObjemu`
+   * neměla ani jeden assert: napodobenina požadavku neměla `url()`, takže
+   * `new URL()` vyhodilo výjimku a vnitřní `catch` ji spolkl. Mutace
+   * `zaznam.bajtu += 0` prošla 158 testů zeleně — a v reportu by zmizelo
+   * celé rozdělení, protože `rozdelPodlePuvodu` u prázdné mapy vrací
+   * `rozdeleno: false` a UI tu sekci skryje. Tichá degradace.
+   */
+  describe('rozdělení objemu po doménách', () => {
+    test('bajty se sčítají ke správné doméně', async () => {
+      const ctx = fakeContext();
+      const s = sberObjemu(ctx);
+      ctx.emit('requestfinished', req(1000, 'https://example.com/a.js'));
+      ctx.emit('requestfinished', req(2000, 'https://example.com/b.js'));
+      ctx.emit('requestfinished', req(500, 'https://cdn.jiny.cz/x.png'));
+      await Promise.allSettled(s.mereni);
+
+      const mapa = s.vysledek().bajtuPodleDomen;
+      expect(mapa.get('example.com')).toEqual({ bajtu: 3000, pozadavku: 2 });
+      expect(mapa.get('cdn.jiny.cz')).toEqual({ bajtu: 500, pozadavku: 1 });
+    });
+
+    test('nezměřený požadavek se do rozdělení nepočítá', async () => {
+      // Jinak by doména vyšla s menším objemem, než jaký přenesla — a to
+      // je horší než ji nevypsat, protože číslo vypadá jako změřené.
+      const ctx = fakeContext();
+      const s = sberObjemu(ctx);
+      ctx.emit('requestfinished', req(0, 'https://example.com/cache.js'));
+      ctx.emit('requestfinished', req(-312, 'https://example.com/cache2.js'));
+      await Promise.allSettled(s.mereni);
+      expect(s.vysledek().bajtuPodleDomen.size).toBe(0);
+    });
+
+    test('adresa bez hostname součet nerozbije', async () => {
+      // `blob:` a `data:` do součtu patří, do rozdělení podle domén se
+      // zařadit nedají. Tohle je ten případ, pro který vnitřní `catch`
+      // skutečně je — a dosud ho zastiňovala chybějící `url()`.
+      const ctx = fakeContext();
+      const s = sberObjemu(ctx);
+      ctx.emit('requestfinished', req(700, 'data:image/png;base64,iVBOR'));
+      ctx.emit('requestfinished', req(300, 'https://example.com/a.js'));
+      await Promise.allSettled(s.mereni);
+
+      const v = s.vysledek();
+      expect(v.totalBytes).toBe(1000);
+      expect(v.zmerenychPozadavku).toBe(2);
+      expect(v.bajtuPodleDomen.size).toBe(1);
+      expect(v.bajtuPodleDomen.get('example.com').bajtu).toBe(300);
+    });
+  });
 });
+

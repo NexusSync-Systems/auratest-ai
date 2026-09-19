@@ -277,6 +277,10 @@ export function evaluateSyntheticMarkingObligation(signals) {
     imagesDeclaredCapture: c2pa?.declaredCapture ?? null,
     imagesDeclaredAmbiguous: c2pa?.declaredAmbiguous ?? null,
     imagesUnknownSource: c2pa?.unknownSource ?? null,
+    // Dvě kolonky, které se počítaly, ale do spisu nešly — čtenář si pak
+    // součet obrázků s manifestem neuzavřel.
+    imagesDeclaredNotAi: c2pa?.declaredNotAi ?? null,
+    imagesDeclaredAlgorithmic: c2pa?.declaredAlgorithmic ?? null,
     imagesUnsampled: c2pa?.unsampled ?? null,
   };
 

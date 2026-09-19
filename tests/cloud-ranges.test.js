@@ -4,7 +4,7 @@ import path from 'path';
 import {
   ipv4ToInt, cidrToRange, lookupCloudIp, rangesSnapshot, clearCache,
   ipv6ToBigInt, cidr6ToRange, bigIntNaHex, maIpv6Rozsahy,
-  stariSnimkuDnu, jeSnimekZastaraly, SNIMEK_MAX_STARI_DNU,
+  stariSnimkuDnu, jeSnimekZastaraly, SNIMEK_MAX_STARI_DNU, odmapujIpv4,
 } from '../cloud-ranges.js';
 import { regionCountry, knownRegionCount } from '../cloud-regions.js';
 
@@ -501,5 +501,41 @@ describe('stáří snímku', () => {
     const ted = kdy('2026-01-01T00:00:00Z');
     expect(stariSnimkuDnu(SNIMEK, ted)).toBe(0);
     expect(jeSnimekZastaraly(SNIMEK, ted)).toBe(false);
+  });
+});
+
+/**
+ * ADRESA IPv4 ZAPSANÁ JAKO IPv6.
+ *
+ * `::ffff:4.223.166.194` je podle RFC 4291 §2.5.5.2 tentýž hostitel jako
+ * `4.223.166.194`. Podle dvojtečky by se ale hledala mezi rozsahy IPv6,
+ * kde prefixy `::ffff:/96` nikdo nepublikuje — výsledek `null`, a adresa
+ * by spadla na geolokační databázi, tedy na zdroj, kvůli kterému tenhle
+ * modul vznikl. Nález z kontrolní vlny.
+ */
+describe('IPv4 mapovaná do IPv6', () => {
+  it('tečkový i šestnáctkový zápis vedou na týž region', () => {
+    // 4.223.166.194 = 0x04DFA6C2
+    const tecka = lookupCloudIp('4.223.166.194', SNIMEK);
+    expect(tecka.region).toBe('swedencentral');
+    expect(lookupCloudIp('::ffff:4.223.166.194', SNIMEK).region).toBe('swedencentral');
+    expect(lookupCloudIp('::ffff:4df:a6c2', SNIMEK).region).toBe('swedencentral');
+  });
+
+  it('odmapuje jen prefix ::ffff:/96, nic jiného', () => {
+    expect(odmapujIpv4('::ffff:4.223.166.194')).toBe('4.223.166.194');
+    expect(odmapujIpv4('::ffff:4df:a6c2')).toBe('4.223.166.194');
+    // Sousední prefix NENÍ mapovaná adresa.
+    expect(odmapujIpv4('::fff0:1')).toBe('::fff0:1');
+    // Skutečná adresa IPv6 se nemění.
+    expect(odmapujIpv4('2603:1020:1000::5')).toBe('2603:1020:1000::5');
+    // Tečkový zápis projde beze změny.
+    expect(odmapujIpv4('4.223.166.194')).toBe('4.223.166.194');
+  });
+
+  it('skutečná adresa IPv6 se nesmí hledat mezi rozsahy IPv4', () => {
+    // Opačný směr téže chyby.
+    expect(lookupCloudIp('2603:1020:1000::5', SNIMEK).provider).toBe('azure');
+    expect(lookupCloudIp('2a05:d018::1', SNIMEK).country).toBe('IE');
   });
 });

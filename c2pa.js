@@ -67,7 +67,7 @@ export const SOURCE_TYPE = {
  * `composite` je podřetězcem `compositeSynthetic` i `compositeCapture`.
  * Proto se dlouhé zkoušejí první a `composite` je až úplně poslední.
  */
-const SOURCE_MARKERS = [
+export const SOURCE_MARKERS = [
   // Generativní AI — o tyhle jde v čl. 50 odst. 2.
   ['compositeWithTrainedAlgorithmicMedia', SOURCE_TYPE.AI_COMPOSITE],
   ['compositeSynthetic', SOURCE_TYPE.AI_COMPOSITE],
@@ -98,6 +98,19 @@ const SOURCE_MARKERS = [
   ['virtualRecording', SOURCE_TYPE.AMBIGUOUS],
   ['composite', SOURCE_TYPE.AMBIGUOUS],
 ];
+
+/**
+ * Identifikátory, které kód posuzuje — jen ty, nic navíc.
+ *
+ * Exportuje se, aby šlo OBOUSMĚRNĚ porovnat s fixturou slovníku IPTC.
+ * Test to dřív dělal jen jedním směrem (fixtura → kód) a druhý směr
+ * hlídal `expect(vFixture.size).toBe(17)`, tedy magické číslo. Kontrolní
+ * vlna ověřila, že přidání `digitalArt` (hodnota, kterou IPTC VYŘADILO
+ * a fixtura ji má v `neposuzujeme`) do tabulky projde bez jediného
+ * červeného testu — do reportu by se tak dala propašovat kategorizace
+ * „není to AI" u identifikátoru, který se posuzovat nemá.
+ */
+export const POSUZOVANE_ID = Object.freeze(SOURCE_MARKERS.map(([id]) => id));
 
 /**
  * Obal, ve kterém manifest leží (JUMBF).
@@ -176,6 +189,11 @@ export function summarizeC2pa(results, totalImages) {
     declaredCapture: list.filter((r) => r.sourceType === SOURCE_TYPE.CAPTURE).length,
     // Typ zdroje je přečtený a generativní AI to není.
     declaredNotAi: list.filter((r) => r.sourceType === SOURCE_TYPE.NOT_AI).length,
+    // Bez téhle kolonky nepadl `ALGORITHMIC` do ŽÁDNÉ: obrázek se objevil
+    // ve `withManifest`, ale v žádném rozpadu, takže si čtenář reportu
+    // součet neuzavřel. Algoritmus bez trénování (render, matematická
+    // formule) není generativní AI, ale je to vlastní kategorie slovníku.
+    declaredAlgorithmic: list.filter((r) => r.sourceType === SOURCE_TYPE.ALGORITHMIC).length,
     // Typ zdroje je přečtený, ale o AI nerozhoduje — IPTC u něj sám říká
     // „may or may not be generative AI". Do „nehlásí se jako AI" tyhle
     // položky NEPATŘÍ.
