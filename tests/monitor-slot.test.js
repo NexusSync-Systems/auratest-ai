@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 import { jest } from '@jest/globals';
-import { posudRezervaci, STAV_SLOTU } from '../monitor-slot.js';
+import { posudRezervaci, jakoCislo, STAV_SLOTU } from '../monitor-slot.js';
 
 /**
  * Rezervace slotu pro běh monitoru.
@@ -75,5 +75,112 @@ describe('posudRezervaci — rozhodnutí uvnitř transakce', () => {
   it('existuje: true s prázdnými daty se bere jako smazaný', () => {
     expect(posudRezervaci({ existuje: true, data: undefined, ocekavanyLastRun: 0 }).stav)
       .toBe(STAV_SLOTU.SMAZANO);
+  });
+});
+
+/**
+ * Zámek běhu.
+ *
+ * Nález z kontrolní vlny: samotné porovnej-a-zapiš překrývající se běhy
+ * NEŘEŠÍ, i když to komentář tvrdil. `lastRunTime` se zapíše při rezervaci
+ * a na konci běhu se už neaktualizuje, takže monitor s intervalem 1 minuta
+ * a desetiminutovým během se po minutě spustí podruhé — a CAS to korektně
+ * propustí, protože se opravdu nic nezměnilo.
+ */
+describe('posudRezervaci — zámek běhu', () => {
+  const ted = 1_000_000;
+
+  it('živý zámek předchozího běhu druhý běh nepustí', () => {
+    const v = posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 0, bezimDo: ted + 60_000 },
+      ocekavanyLastRun: 0,
+      ted,
+    });
+    expect(v.stav).toBe(STAV_SLOTU.BEZI);
+    expect(v.duvod).toContain('60');
+  });
+
+  it('vypršelý zámek běh pustí', () => {
+    // Jinak by pád procesu umlčel monitor navždy — proto je zámek časový,
+    // ne booleovský.
+    expect(posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 0, bezimDo: ted - 1 },
+      ocekavanyLastRun: 0,
+      ted,
+    }).stav).toBe(STAV_SLOTU.REZERVOVANO);
+  });
+
+  it('zámek přesně na hranici běh pustí', () => {
+    expect(posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 0, bezimDo: ted },
+      ocekavanyLastRun: 0,
+      ted,
+    }).stav).toBe(STAV_SLOTU.REZERVOVANO);
+  });
+
+  it('chybějící bezimDo neblokuje (monitory z doby před zámkem)', () => {
+    expect(posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 0 },
+      ocekavanyLastRun: 0,
+      ted,
+    }).stav).toBe(STAV_SLOTU.REZERVOVANO);
+  });
+
+  it('vypnutý monitor se posoudí dřív než zámek', () => {
+    // Pořadí má význam: u vypnutého monitoru nezajímá, jestli něco běží.
+    expect(posudRezervaci({
+      existuje: true,
+      data: { active: false, bezimDo: ted + 60_000 },
+      ocekavanyLastRun: 0,
+      ted,
+    }).stav).toBe(STAV_SLOTU.NEAKTIVNI);
+  });
+});
+
+/**
+ * Převod hodnot z databáze.
+ *
+ * Nález z kontrolní vlny: `|| 0` řešilo jen chybějící pole. Dokument
+ * s `lastRunTime` jako Timestamp nebo řetězec by přísné `!==` proti číslu
+ * vyhodnotilo vždycky jako různé → monitor navždy `obsazeno`, tichá smrt
+ * s falešnou stopou v logu („lastRunTime se změnil").
+ */
+describe('jakoCislo', () => {
+  it('číslo projde beze změny', () => {
+    expect(jakoCislo(1234)).toBe(1234);
+  });
+
+  it('Firestore Timestamp se převede přes toMillis', () => {
+    expect(jakoCislo({ toMillis: () => 5000 })).toBe(5000);
+  });
+
+  it('číselný řetězec se převede', () => {
+    expect(jakoCislo('1234')).toBe(1234);
+  });
+
+  it('datum v ISO se převede', () => {
+    expect(jakoCislo('2026-01-01T00:00:00.000Z')).toBe(Date.parse('2026-01-01T00:00:00.000Z'));
+  });
+
+  it.each([[undefined], [null], [NaN], [Infinity], ['nesmysl'], [{}], [[]]])(
+    'nepřevoditelná hodnota (%p) se bere jako 0, ne jako věčné obsazeno', (v) => {
+      expect(jakoCislo(v)).toBe(0);
+    });
+
+  it('vadný dokument se rezervací sám uzdraví', () => {
+    // Obě strany jdou přes stejný převod, takže vyjdou stejně, rezervace
+    // projde a zapíše se číslo. Cena je nanejvýš jeden běh navíc —
+    // alternativou byl monitor, který mlčí napořád.
+    const vadny = { toMillis: () => NaN };
+    expect(posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: vadny },
+      ocekavanyLastRun: vadny,
+      ted: 1000,
+    }).stav).toBe(STAV_SLOTU.REZERVOVANO);
   });
 });

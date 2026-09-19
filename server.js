@@ -1339,6 +1339,7 @@ async function provedBehMonitoru({ monitor, sessionId, sessionData, llmConfig },
     oznam = oznamMonitory,
     zapisDoZaznamu = recordInLedger,
     tepStop = prestanTepat,
+    uvolniZamek = db.uvolniZamekMonitoru,
     uvolniSlot = () => browserSlots.release(),
     broadcastKrok = broadcastToSession,
     pauza = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t.unref) t.unref(); }),
@@ -1441,6 +1442,18 @@ async function provedBehMonitoru({ monitor, sessionId, sessionData, llmConfig },
     } catch (e) {
       console.error(`Zastavení tepu ${sessionId} selhalo:`, e.message);
     }
+    // Zámek běhu se uvolňuje tady, ne až vypršením platnosti: běh, který
+    // trval deset sekund, nemá držet monitor půl hodiny. Vlastní try/catch
+    // jako všechno ostatní ve `finally` — výjimka odtud by přeskočila
+    // uvolnění slotu prohlížeče pod tím.
+    //
+    // Když tenhle zápis selže, zámek dožije sám. To je horší než uvolnit
+    // ho hned, ale pořád konečné — proto stačí zalogovat a jít dál.
+    try {
+      await uvolniZamek(monitor.id);
+    } catch (e) {
+      console.error(`Uvolnění zámku monitoru ${monitor.id} selhalo:`, e.message);
+    }
     // Uvolnění slotu jako POSLEDNÍ a vždy: bez něj se monitoring po
     // několika bězích zasekne na vyčerpaném limitu prohlížečů.
     try {
@@ -1476,10 +1489,13 @@ async function oznamMonitory(userId) {
 // 60 s (getAllActiveMonitors + N síťových updateMonitor), spustil se další
 // paralelně. Teď se další tik plánuje až po dokončení předchozího.
 //
-// Pozn.: plánovač běží v každé instanci procesu. Rezervace přes lastRunTime
-// (read-then-write) není atomická, takže při víc instancích může monitor
-// naskočit dvakrát. Pro víceinstanční nasazení je potřeba Firestore
-// transakce nebo externí scheduler — viz TODO níž.
+// Pozn.: plánovač běží v každé instanci procesu. Souběh řeší rezervace
+// slotu porovnej-a-zapiš ve Firestore transakci (`db.rezervujSlotMonitoru`)
+// plus časově omezený zámek `bezimDo`, který drží po dobu běhu.
+//
+// Tenhle komentář tvrdil pravý opak ještě dlouho po tom, co transakce
+// vznikla — odkazoval i na TODO, které už neexistovalo. Čtenář o sedmdesát
+// řádků níž tak dostával jinou informaci než kód.
 // ─────────────────────────────────────────────────────────────────────────────
 const SCHEDULER_TICK_MS = 60000;
 let schedulerTimer = null;
@@ -1550,7 +1566,16 @@ async function schedulerTick() {
         // v cyklu o svůj běh nepřijdou kvůli jednomu nedostupnému zápisu.
         let rezervace;
         try {
-          rezervace = await db.rezervujSlotMonitoru(monitor.id, monitor.lastRunTime || 0, now);
+          rezervace = await db.rezervujSlotMonitoru(
+            monitor.id,
+            monitor.lastRunTime || 0,
+            now,
+            // Zámek platí stejně dlouho, jako pojistka nechá běh držet slot
+            // prohlížeče. Kratší zámek by pustil druhý běh k ještě živému
+            // prvnímu; delší by po pádu procesu umlčel monitor na dobu,
+            // kterou nic jiného v systému nevymáhá.
+            now + BROWSER_SLOT_MAX_HOLD_MS,
+          );
         } catch (err) {
           console.error(`[AuraGuard] Rezervace slotu monitoru ${monitor.id} selhala:`, err.message);
           continue;
@@ -1616,7 +1641,29 @@ async function schedulerTick() {
           //
           // Vypnutý monitor se tím zároveň nevzkřísí: `posudRezervaci`
           // vrátí `neaktivni` a nezapíše se nic.
-          await db.rezervujSlotMonitoru(monitor.id, now, lastRun).catch(() => {});
+          //
+          // Výsledek se MUSÍ přečíst. Předchozí verze měla
+          // `.catch(() => {})` a návratovou hodnotu zahazovala — když se
+          // vrácení nepovedlo, zůstal `lastRunTime` na `now`, monitor byl
+          // tiše mimo provoz celý interval a jediná stopa (odložená
+          // session) tvrdila pouze „nebyl volný prohlížeč". Neúspěch
+          // zápisu, který mění chování měření, se nesmí ztratit.
+          //
+          // Zámek se vrací na nulu: běh se nekonal, není co držet.
+          try {
+            const vraceni = await db.rezervujSlotMonitoru(monitor.id, now, lastRun, 0);
+            if (vraceni.stav !== STAV_SLOTU.REZERVOVANO) {
+              console.warn(
+                `[AuraGuard] Rezervaci monitoru ${monitor.id} se nepodařilo vrátit ` +
+                `(${vraceni.stav}): ${vraceni.duvod}. Monitor počká celý interval.`
+              );
+            }
+          } catch (err) {
+            console.error(
+              `[AuraGuard] Vrácení rezervace monitoru ${monitor.id} selhalo: ${err.message}. ` +
+              'Monitor počká celý interval.'
+            );
+          }
           continue;
         }
 
@@ -2909,4 +2956,10 @@ export { app };
 // `schedulerTick` je tu proto, že rezervace slotu je rozhodnutí, které
 // se nedá otestovat zvenčí jinak. Bez něj by platilo totéž co u minulých
 // nálezů: vytažená funkce (`posudRezervaci`) otestovaná, volající kód ne.
-export const __test__ = { doucistiZaseknuteBehy, beziciBehy, zacniTepat, prestanTepat, provedBehMonitoru, oznamMonitory, schedulerTick };
+// `browserSlots` je tu proto, že je to GLOBÁLNÍ STAV sdílený mezi testy.
+// Běh monitoru je plovoucí promise, kterou test nemá jak dočkat; když
+// nedoběhne, drží slot i do dalšího testu. Osmý test v řadě pak žádný
+// slot nedostal a spadl na tvrzení o něčem úplně jiném — sám o sobě
+// přitom procházel. Bez možnosti stav mezi testy vynulovat se to dá jen
+// doufat, ne zaručit.
+export const __test__ = { doucistiZaseknuteBehy, beziciBehy, zacniTepat, prestanTepat, provedBehMonitoru, oznamMonitory, schedulerTick, browserSlots };

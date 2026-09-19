@@ -4,7 +4,7 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { zapisPokudExistuje } from './firestore-errors.js';
-import { posudRezervaci, STAV_SLOTU } from './monitor-slot.js';
+import { teloRezervace } from './monitor-slot.js';
 
 const __dirname = path.resolve();
 const credentialsPath = path.join(__dirname, 'firebase-credentials.json');
@@ -140,22 +140,22 @@ export async function updateMonitorIfExists(monitorId, updateData) {
  * @param {number} novyCas čas, který se zapíše při úspěchu
  * @returns {Promise<{stav: string, duvod: string}>} viz `STAV_SLOTU`
  */
-export async function rezervujSlotMonitoru(monitorId, ocekavanyLastRun, novyCas) {
+export async function rezervujSlotMonitoru(monitorId, ocekavanyLastRun, novyCas, zamekDo = 0) {
   const docRef = firestore.collection('monitors').doc(monitorId);
+  return firestore.runTransaction(
+    (t) => teloRezervace(t, docRef, { ocekavanyLastRun, novyCas, zamekDo, ted: Date.now() })
+  );
+}
 
-  return firestore.runTransaction(async (t) => {
-    const snap = await t.get(docRef);
-    const vysledek = posudRezervaci({
-      existuje: snap.exists,
-      data: snap.exists ? snap.data() : undefined,
-      ocekavanyLastRun,
-    });
-
-    if (vysledek.stav === STAV_SLOTU.REZERVOVANO) {
-      t.update(docRef, { lastRunTime: novyCas });
-    }
-    return vysledek;
-  });
+/**
+ * Uvolnění zámku po doběhnutí monitoru.
+ *
+ * Bez něj by monitor čekal na vypršení celé platnosti zámku, i kdyby běh
+ * trval deset sekund. Zámek je pojistka pro pád procesu, ne plánovací
+ * nástroj.
+ */
+export async function uvolniZamekMonitoru(monitorId) {
+  return updateMonitorIfExists(monitorId, { bezimDo: 0 });
 }
 
 export async function deleteMonitor(monitorId) {

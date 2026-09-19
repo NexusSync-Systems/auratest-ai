@@ -53,6 +53,7 @@ jest.mock('../db.js', () => {
     getProjects: jest.fn(async () => []),
     getAuraGuardEvents: jest.fn(async () => []),
     updateMonitorIfExists: jest.fn(async () => ({ id: 'm1' })),
+    uvolniZamekMonitoru: jest.fn(async () => ({ id: 'm1' })),
     // Prázdné: co plánovač uvidí, nastavuje každý test v `beforeEach`.
     // Tovární funkce `jest.mock` nesmí sáhnout ven na `monitor()`.
     getAllActiveMonitors: jest.fn(async () => []),
@@ -93,13 +94,29 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockDb.getAllActiveMonitors.mockResolvedValue([monitor()]);
   mockDb.saveSession.mockResolvedValue(true);
+  // Sloty prohlížečů jsou globální stav. Nedoběhlý běh z předchozího
+  // testu drží slot dál a další test pak `tryAcquire()` neprojde — běh
+  // se vůbec nespustí a test spadne na tvrzení o něčem jiném, přestože
+  // sám o sobě prochází. Nulování je tu proto, aby izolace testů byla
+  // vynucená, ne doufaná.
+  __test__.browserSlots.inUse = 0;
 });
 
 // Plánovač spouští běh jako plovoucí promise, na kterou `schedulerTick`
-// schválně nečeká. Bez dobrání fronty by zápisy z běhu dopadly až do
-// dalšího testu a ovlivnily jeho počty volání.
+// schválně nečeká. Dokud nedoběhne, DRŽÍ SLOT PROHLÍŽEČE — a `browserSlots`
+// je globální stav sdílený všemi testy v souboru.
+//
+// Původní verze tu měla jediný `setImmediate`. To na doběhnutí běhu
+// nestačí (je v něm několik `await`), takže se sloty hromadily: osmý test
+// v pořadí už žádný nedostal, `tryAcquire()` vrátil false, běh se vůbec
+// nespustil a test spadl na tvrzení o něčem úplně jiném. Sám o sobě
+// přitom procházel. Přesně ten druh nestability, který v CI vypadá jako
+// náhodná chyba v kódu.
+//
+// Sto tiků je velkorysá rezerva, ne změřená mez; běh doběhne řádově
+// v jednotkách.
 afterEach(async () => {
-  await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 100; i++) await new Promise((r) => setImmediate(r));
 });
 
 describe('schedulerTick — řídí se výsledkem rezervace', () => {
@@ -126,8 +143,19 @@ describe('schedulerTick — řídí se výsledkem rezervace', () => {
     // a ochrana proti souběhu by byla jen na papíře.
     mockDb.getAllActiveMonitors.mockResolvedValue([monitor({ lastRunTime: 1234 })]);
     await __test__.schedulerTick();
-    expect(mockDb.rezervujSlotMonitoru).toHaveBeenCalledWith('m1', 1234, expect.any(Number));
+    expect(mockDb.rezervujSlotMonitoru).toHaveBeenCalledWith(
+      'm1', 1234, expect.any(Number), expect.any(Number),
+    );
   });
+
+  it('zámek se nastavuje do budoucnosti, ne na nulu', async () => {
+    // Zámek s platností v minulosti (nebo 0) by nezamkl nic a překrývající
+    // se běhy by se vrátily — celý smysl čtvrtého parametru.
+    await __test__.schedulerTick();
+    const [, , cas, zamekDo] = mockDb.rezervujSlotMonitoru.mock.calls[0];
+    expect(zamekDo).toBeGreaterThan(cas);
+  });
+
 
   it('monitor, na který ještě nedošel interval, se o slot vůbec nepokouší', async () => {
     mockDb.getAllActiveMonitors.mockResolvedValue([monitor({ lastRunTime: Date.now() })]);
@@ -149,11 +177,72 @@ describe('schedulerTick — řídí se výsledkem rezervace', () => {
     await expect(__test__.schedulerTick()).resolves.toBeUndefined();
     expect(mockDb.rezervujSlotMonitoru).toHaveBeenCalledTimes(2);
 
-    // Ne `toHaveBeenCalledTimes(1)`: odložený běh (vyčerpané sloty
-    // prohlížečů) dopisuje session podruhé, takže by se tím měřil vedlejší
-    // efekt místo toho, na čem záleží — KTERÝ monitor se založil.
+    // Ne `toHaveBeenCalledTimes(1)`: `provedBehMonitoru` session po
+    // doběhnutí dopisuje, takže počet volání měří vedlejší efekt místo
+    // toho, na čem záleží — KTERÝ monitor se založil.
+    //
+    // Pozn.: původní komentář tu mluvil o odložené větvi při vyčerpaných
+    // slotech prohlížečů. Ta ale v tomhle testu nikdy nenastane (limit
+    // jsou 3 sloty, monitory dva) a kdyby nastala, spadlo by tvrzení
+    // o dvou voláních rezervace o dva řádky výš — vrácení rezervace je
+    // volání třetí. Komentář popisoval chování, které test neprovede.
     const zalozene = mockDb.saveSession.mock.calls.map(([, data]) => data.monitorId);
     expect(zalozene).toContain('zdravy');
     expect(zalozene).not.toContain('rozbity');
+  });
+});
+
+/**
+ * Uvolnění zámku po běhu.
+ *
+ * Míří přímo na `provedBehMonitoru`, ne přes `schedulerTick`. Přes
+ * plánovač to nešlo spolehlivě: běh je plovoucí promise, kterou test nemá
+ * jak dočkat, a v sekvenci uvázne na sdíleném zápisu do řetězu auditů —
+ * test pak procházel sám o sobě a padal v celé sadě. Test, který je
+ * potřeba „dobrat frontou", netestuje to, co si myslí.
+ *
+ * `provedBehMonitoru` bere závislosti parametrem právě kvůli tomuhle.
+ */
+describe('provedBehMonitoru — zámek', () => {
+  const zaklad = () => ({
+    monitor: monitor(),
+    sessionId: 'session_x',
+    sessionData: { id: 'session_x', monitorId: 'm1', bugs: [], steps: [] },
+    llmConfig: { headless: true, maxSteps: 1, mode: 'ai' },
+  });
+
+  const zavislosti = (over = {}) => ({
+    spustTest: jest.fn(async () => ({ steps: [], bugs: [], summary: 'ok' })),
+    saveSession: jest.fn(async () => true),
+    updateMonitorIfExists: jest.fn(async () => ({ id: 'm1' })),
+    oznam: jest.fn(async () => {}),
+    zapisDoZaznamu: jest.fn(async () => {}),
+    tepStop: jest.fn(),
+    uvolniSlot: jest.fn(),
+    broadcastKrok: jest.fn(),
+    pauza: jest.fn(async () => {}),
+    uvolniZamek: jest.fn(async () => {}),
+    ...over,
+  });
+
+  it('po úspěšném běhu se zámek uvolní', async () => {
+    const d = zavislosti();
+    await __test__.provedBehMonitoru(zaklad(), d);
+    expect(d.uvolniZamek).toHaveBeenCalledWith('m1');
+  });
+
+  it('po spadlém běhu se zámek uvolní taky', async () => {
+    // Jinak by monitor po jedné chybě mlčel celou platnost zámku.
+    const d = zavislosti({ spustTest: jest.fn(async () => { throw new Error('prohlížeč spadl'); }) });
+    await __test__.provedBehMonitoru(zaklad(), d);
+    expect(d.uvolniZamek).toHaveBeenCalledWith('m1');
+  });
+
+  it('selhání uvolnění zámku nezabrání uvolnění slotu prohlížeče', async () => {
+    // Výjimka z `finally` by přeskočila zbytek bloku. Několik takových
+    // běhů monitoring zastaví úplně, a přitom nic nehlásí.
+    const d = zavislosti({ uvolniZamek: jest.fn(async () => { throw new Error('Firestore'); }) });
+    await expect(__test__.provedBehMonitoru(zaklad(), d)).resolves.toBeUndefined();
+    expect(d.uvolniSlot).toHaveBeenCalled();
   });
 });
