@@ -288,6 +288,16 @@ docker compose exec auratest-ai node scripts/smoke-test.mjs https://nexus-sync-8
 
 ## Záloha řetězu důkazů
 
+> ### ⚠️ STAV K 19. 9. 2026: PŘIPRAVENO, NENASAZENO
+>
+> Skript, timer i postup obnovy níž existují, ale **na produkci neběží
+> a žádná záloha zatím není**. Chybí rozhodnutí, kam zálohovat; padlo
+> vědomě, ne opomenutím.
+>
+> **Riziko tedy trvá v plné výši:** řetěz důkazů existuje v jediné kopii
+> na disku jedné VM. Dokud se tenhle odstavec nesmaže, neplatí nic
+> z toho, co je napsané dál — je to návod, ne stav.
+
 `ledger/audit-ledger.jsonl` je **jediná kopie doložitelnosti**. Je
 v `.gitignore` a montuje se bind mountem z disku jedné VM. Ztráta toho
 disku znamená ztrátu všeho, čím se dokládá, že audity proběhly — a to je
