@@ -19,7 +19,9 @@
  *    buildu zkracuje úmyslně a plné znění vydává na své stránce.
  *
  * ZNĚNÍ JSOU DOSLOVNÁ, NE MOJE.
- * Staženo z react.dev 18. 9. 2026:
+ * Do reportu jde česká parafráze (`VYSVETLENI`); doslovné anglické znění
+ * (`ZNAMA_ZNENI`) je vedle ní jako doklad, proti kterému se dá ověřit,
+ * že parafráze význam nezkresluje. Staženo z react.dev 18. 9. 2026:
  *   https://react.dev/errors/418
  *   https://react.dev/errors/423
  * Co jsem neověřil, tady není. Neznámé číslo se nepřekládá — zůstane
@@ -34,7 +36,15 @@
  * se jen to, že je čitelný a započítaný jednou.
  */
 
-/** Doslovná znění z react.dev. Klíč je číslo chyby. */
+/**
+ * Doslovná znění z react.dev. Klíč je číslo chyby.
+ *
+ * DO REPORTU NEJDOU — jde tam česká parafráze z `VYSVETLENI`. Tahle
+ * konstanta je doklad, odkud parafráze pochází: kdo bude chtít ověřit,
+ * že jsme význam nezkreslili, porovná ji s react.dev. Kontrolní vlna
+ * správně upozornila, že hlavička modulu zněla, jako by se citace
+ * tiskly; netisknou se.
+ */
 export const ZNAMA_ZNENI = {
   418: 'Hydration failed because the server rendered HTML didn\'t match the client. '
     + 'As a result this tree will be regenerated on the client.',
@@ -88,19 +98,37 @@ export function klicVyjimky(text) {
   const m = CISLO_CHYBY.exec(t);
   if (m) return `react:${m[1]}`;
 
-  // Obecná výjimka: odloupnout naše i prohlížečovy prefixy, zahodit
-  // stack a odkazy, zbytek porovnávat bez ohledu na velikost písmen.
+  // Obecná výjimka: odloupnout naše i prohlížečovy prefixy a stack,
+  // zbytek porovnávat bez ohledu na velikost písmen.
+  //
+  // ADRESY SE NEZAHAZUJÍ. Dřív se odstraňovaly (`replace(/https?:…/)`)
+  // a kontrolní vlna ukázala, k čemu to vede:
+  //
+  //   'TypeError: Failed to fetch https://api.klient.cz/objednavky'
+  //   'TypeError: Failed to fetch https://api.klient.cz/platby'
+  //
+  // dostaly TÝŽ klíč, takže druhý nález `addFinding` zahodil a adresa
+  // druhého rozbitého endpointu se ve spisu neobjevila vůbec. Slučovat
+  // se má jedna věc hlášená víckrát, ne dvě různé věci.
+  //
+  // Odloupne se i koncovka, kterou přidává náš vlastní `window.onerror`
+  // (` v soubor.js:12`) — bez toho dá tatáž výjimka z konzole a
+  // z `pageerror` dva různé klíče a započítá se dvakrát. To je přesně
+  // ten problém, o kterém tvrdil commit „Jedna vada Reactu je jeden
+  // čitelný nález", že je vyřešený; u chyb BEZ čísla Reactu nebyl.
   const jadro = t
     .replace(/^\[AuraGuard-Error\]\s*/, '')
     .replace(/^(Běhová chyba|Neošetřená výjimka|Detekována chyba v konzoli):\s*/, '')
     .replace(/^Uncaught\s+/, '')
     .split(/\nStack:/)[0]
-    .replace(/https?:\/\/\S+/g, '')
+    // ` v https://klient.cz/app.js:12:5` nebo ` v main.js:1` na konci.
+    .replace(/\s+v\s+\S*?:\d+(:\d+)?\s*$/, '')
     .replace(/["\s]+/g, ' ')
     .trim()
     .toLowerCase();
 
   // Krátký zbytek není spolehlivý klíč — radši dva řádky než slepené
-  // dva různé nálezy.
-  return jadro.length >= 20 ? `vyjimka:${jadro.slice(0, 200)}` : null;
+  // dva různé nálezy. Delší se NEZKRACUJE ze stejného důvodu: dvě
+  // výjimky se shodnými prvními 200 znaky se slily v jednu.
+  return jadro.length >= 20 ? `vyjimka:${jadro}` : null;
 }

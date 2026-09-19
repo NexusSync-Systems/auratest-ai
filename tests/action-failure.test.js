@@ -301,3 +301,28 @@ Call log:
     expect(k.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Drobnosti z kontrolní vlny.
+ */
+describe('zkratCallLog: vstup a značení ustřižení', () => {
+  test('nevyhodí na chybějící hlášce', () => {
+    // Volá se s `actionErr.message`. Výjimka bez `.message` by shodila
+    // i zatřídění kroku — ztratil by se celý záznam, ne jen hláška.
+    for (const v of [null, undefined, 0, {}]) {
+      expect(() => zkratCallLog(v)).not.toThrow();
+    }
+  });
+
+  test('hláška složená JEN z call logu se ustřihne se značkou', () => {
+    // Dřív se vrátila bez „…", takže čtenář nepoznal, že text pokračuje.
+    const jenLog = `Call log:\n${'  - waiting for locator\n'.repeat(40)}`;
+    const k = zkratCallLog(jenLog);
+    expect(k.length).toBeLessThanOrEqual(200);
+    expect(k).toMatch(/…$/);
+  });
+
+  test('krátká hláška jen z call logu se neznačí', () => {
+    expect(zkratCallLog('Call log:\n  - waiting')).not.toMatch(/…/);
+  });
+});

@@ -10,7 +10,7 @@ import { vyhodnotFinish, UKONCENI, popisUkonceni } from './finish-policy.js';
 import { popisHttpChyby, popisHttpChybyBehu, navigujAOver } from './http-status.js';
 import {
   zatridSelhani, jeOvereniRobota, poznamkaOvereniRobota,
-  zatridStavKod, poznamkaOPristupu,
+  zatridStavKod, poznamkaOPristupu, zatridOdpoved,
 } from './network-findings.js';
 import { vytvorChaosHandler, vyhodnotChaos } from './chaos-run.js';
 import { bezpecnePrvky, zamlcenychPrvku, vytvorZnacku, obalDataZeStranky, obalStavStranky, pokynKDatumZeStranky } from './prompt-safety.js';
@@ -1640,6 +1640,27 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
   // jenže BEZ ADRESY — dva řádky o jedné věci a ten druhý nepoužitelný.
   const hlasenaSelhani = new Set();
 
+  // NEPRŮKAZNÉ POLOŽKY SE POČÍTAJÍ ZVLÁŠŤ.
+  //
+  // `success` stojí na `bugs.length === 0` a varování do něj záměrně
+  // nevstupují — long task ani pomalé API nejsou vada funkčnosti. Dnešní
+  // demotace tím ale prošly taky: 403 na vlastním API zákazníka, hláška
+  // bez čitelného obsahu jdou do `warnings`, takže `success: true` může
+  // stát vedle selhání, které jsme NEZMĚŘILI.
+  //
+  // Výzva pro roboty a naše vlastní blokace sem NEPATŘÍ: u nich víme,
+  // proč selhaly, takže nejsou neprůkazné — jsou vyloučené s jistotou.
+  //
+  // Význam `success` neměníme (čte ho UI, CLI i uložené běhy) — vedle
+  // něj jde počet neprůkazných, aby si nikdo `true` nepřečetl jako
+  // „všechno v pořádku". Kontrolní vlna na to upozornila správně:
+  // neprůkazné se nesmí tvářit jako splněné.
+  const neprukazne = [];
+  const addNeprukazne = (text) => {
+    addFinding(warnings, text);
+    neprukazne.push(text);
+  };
+
   page.on('console', (msg) => {
     const type = msg.type();
     const text = msg.text();
@@ -1677,7 +1698,11 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
         if (verdikt.nalez) {
           addFinding(bugs, `[AuraGuard-NetworkError] Selhání zdroje: ${zdroj} - HTTP ${stav[1]}`);
         } else if (stav) {
-          addFinding(warnings, poznamkaOPristupu('GET', zdroj, stav[1], verdikt.duvod));
+          // Metoda se NEDOMÝŠLÍ. Konzolová hláška ji neobsahuje a
+          // `network-findings.js` u téhle funkce zdůvodňuje, že se bere
+          // ze skutečného požadavku, ne natvrdo „GET". Selhaný POST by
+          // ve spisu dostal nepravdivý údaj.
+          addNeprukazne(poznamkaOPristupu(null, zdroj, stav[1], verdikt.duvod));
         } else {
           // Bez stavového kódu (přerušené spojení, DNS) nevíme, čí to je.
           addFinding(warnings, `Prohlížeč ohlásil selhání zdroje bez stavového kódu: ${zdroj}`);
@@ -1688,7 +1713,7 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       // obsah, se kterým by šlo něco dělat. Netvrdí se tím, že závada
       // není; tvrdí se, že tohle o ní nic neříká. Viz `console-obsah.js`.
       if (jeHlaskaBezObsahu(text)) {
-        addFinding(warnings, poznamkaBezObsahu(text));
+        addNeprukazne(poznamkaBezObsahu(text));
         return;
       }
       const obohacene = doplnZnameZneni(text);
@@ -1759,34 +1784,30 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
       const method = response.request().method();
 
       if (status >= 400) {
-        // Adresa se zapamatuje, ať ji posluchač konzole nehlásí podruhé.
-        // Prohlížeč totéž selhání ohlásí i do konzole hláškou „Failed to
-        // load resource: the server responded with a status of 403 ()",
-        // ve které navíc adresa CHYBÍ — v reportu z toho byly dva řádky
-        // o jedné věci a ten druhý zákazníkovi neřekl ani co selhalo.
-        hlasenaSelhani.add(url);
+        // Zatřídění je v `network-findings.js` (`zatridOdpoved`), aby
+        // šlo testovat bez prohlížeče. Dřív bylo tady a kontrolní vlna
+        // v tom našla chybu, kterou žádný test chytit nemohl: adresa se
+        // umlčovala PŘED testem „je to kritický zdroj?", takže rozbitý
+        // obrázek nikam nezapsal a konzolovou cestu si umlčel.
+        const z = zatridOdpoved({
+          status,
+          url,
+          resourceType: response.request().resourceType(),
+        });
 
-        const resourceType = response.request().resourceType();
-        const isCritical = ['fetch', 'xhr', 'document', 'script'].includes(resourceType);
-        if (isCritical) {
-          // Druhá cesta k témuž nálezu — a oprava u `requestfailed` jí
-          // chyběla. Ostrý běh vrátil obě znění vedle sebe:
-          // „[NetworkError] Selhání API: GET https://challenges.cloudflare.com/…"
-          // a „Selhal síťový požadavek: GET https://brunhild.challenges…".
-          // „Všude kromě jednoho místa" znovu, tentokrát v jednom souboru.
-          if (jeOvereniRobota(url)) {
+        // Umlčení konzolové cesty JEN tehdy, když zapisujeme tady.
+        if (z.umlcet) hlasenaSelhani.add(url);
+
+        if (z.kam === 'bugs') {
+          addFinding(bugs, `[AuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`);
+        } else if (z.kam === 'warnings') {
+          // Výzva pro roboty NENÍ neprůkazná: víme, proč selhala —
+          // kouká se na stránku automat. Neprůkazné je 401/403/429, kde
+          // z odpovědi o funkčnosti pro oprávněného člověka neplyne nic.
+          if (z.duvod === 'overeni-robota') {
             addFinding(warnings, poznamkaOvereniRobota(method, url, `HTTP ${status}`));
           } else {
-            // 401, 403 a 429 popisují podle RFC 9110 a RFC 6585 ŽADATELE,
-            // ne web. Náš sken je nepřihlášený automat, takže z nich
-            // o funkčnosti pro oprávněného člověka neplyne nic — viz
-            // `zatridStavKod`. Zůstanou vidět jako okolnost běhu.
-            const verdikt = zatridStavKod(status);
-            if (verdikt.nalez) {
-              addFinding(bugs, `[AuraGuard-NetworkError] Selhání API: ${method} ${url} - HTTP ${status}`);
-            } else {
-              addFinding(warnings, poznamkaOPristupu(method, url, status, verdikt.duvod));
-            }
+            addNeprukazne(poznamkaOPristupu(method, url, status, z.duvod));
           }
         }
       }
@@ -2124,7 +2145,12 @@ export async function runAutonomousTest(url, goal, llmConfig, onStepProgress, se
     return {
       // Výkonnostní varování (long tasks, pomalé API) nejsou chyby funkčnosti
       // a do success se nezapočítávají.
+      //
+      // POZOR: `success: true` NEZNAMENÁ „web je v pořádku". Znamená
+      // „měření doběhlo a nenašlo vadu". Co se nepodařilo posoudit, je
+      // v `neprukazne` — viz komentář u `addNeprukazne`.
       success: measured && bugs.length === 0,
+      neprukazne,
       // Proběhlo měření vůbec? Volající z toho odvozuje stav běhu: běh
       // s chybou měření nesmí skončit jako `completed`, protože takový stav
       // znamená „výsledek platí".

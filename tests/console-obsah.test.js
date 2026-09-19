@@ -83,3 +83,35 @@ describe('poznámka zachovává původní znění', () => {
     expect(p).toMatch(/…/);
   });
 });
+
+/**
+ * NÁLEZ Z KONTROLNÍ VLNY: pravidlo spolklo skutečné chybové hlášky.
+ *
+ * Vzor pro deklaraci CSS byl `[a-z-]+\s*:\s*[^;\s]+;?` — což není vzor
+ * CSS, ale vzor „cokoli ve tvaru slovo: hodnota". A tak vypadá chybová
+ * hláška. Stačilo, aby web logoval stylovanou chybu, a skutečná vada
+ * spadla z nálezu na okolnost běhu.
+ *
+ * Moje původní testy to nechytily, protože jsem si do nich dal jen
+ * hlášky BEZ dvojtečky (`%cSELHALO`) — tedy přesně ty, které vzorem
+ * neprocházely.
+ */
+describe('stylovaná CHYBOVÁ hláška zůstává nálezem', () => {
+  test.each([
+    ['%cTypeError: undefined'],
+    ['%s Error: ENOENT'],
+    ['%c%s color:red Error: NETWORK_TIMEOUT'],
+    ['%c Warning: deprecated'],
+    ['%cUncaught RangeError: maximum call stack size exceeded'],
+    // Dvojtečka uvnitř hodnoty, ne vlastnosti.
+    ['%c Platba selhala: kód 402 font-weight:bold'],
+  ])('%s', (hlaska) => {
+    expect(jeHlaskaBezObsahu(hlaska)).toBe(false);
+  });
+
+  test('odstraní se jen POJMENOVANÉ vlastnosti CSS', () => {
+    // `font-size` a `color` ano; `typeerror` ne.
+    expect(jeHlaskaBezObsahu('%c%d font-size:0;color:transparent NaN')).toBe(true);
+    expect(jeHlaskaBezObsahu('%c%d typeerror:0;color:transparent NaN')).toBe(false);
+  });
+});

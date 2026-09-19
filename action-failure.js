@@ -86,8 +86,16 @@ const TIMEOUT_PATTERN = /Timeout \d+ms exceeded/i;
  * příčina ztratila. Zůstane první věta a důvod, zbytek se ustřihne.
  */
 export function zkratCallLog(text) {
-  const bezLogu = text.split(/\s*Call log:/i)[0].trim();
-  if (bezLogu.length === 0) return text.slice(0, 200);
+  // Vstup se koercuje. Volá se s `actionErr.message`, a výjimka bez
+  // `.message` by jinak shodila i zatřídění, které je k ničemu horší:
+  // ztratil by se celý záznam o kroku, ne jen jeho hláška.
+  const t = String(text ?? '');
+  const bezLogu = t.split(/\s*Call log:/i)[0].trim();
+  // Hláška složená JEN z call logu. Ustřižení se značí, aby čtenář
+  // poznal, že text pokračuje — dřív se vrátil bez „…".
+  if (bezLogu.length === 0) {
+    return t.length > 200 ? `${t.slice(0, 197)}…` : t;
+  }
   return bezLogu.length > 300 ? `${bezLogu.slice(0, 297)}…` : bezLogu;
 }
 

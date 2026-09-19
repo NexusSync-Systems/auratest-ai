@@ -41,8 +41,47 @@
 const MA_DIREKTIVU = /%[csdifoO]/;
 const DIREKTIVY = /%[csdifoO]/g;
 
-/** Deklarace CSS — `color:transparent`, `font-size:0`. */
-const CSS_DEKLARACE = /[a-z-]+\s*:\s*[^;\s]+;?/gi;
+/**
+ * Deklarace CSS — a JEN ony.
+ *
+ * NÁLEZ Z KONTROLNÍ VLNY. Dřív tu stálo
+ *
+ *     /[a-z-]+\s*:\s*[^;\s]+;?/gi
+ *
+ * což není vzor CSS, ale vzor „cokoli ve tvaru slovo: hodnota". A přesně
+ * tak vypadá chybová hláška:
+ *
+ *     jeHlaskaBezObsahu('%cTypeError: undefined')            → true
+ *     jeHlaskaBezObsahu('%s Error: ENOENT')                  → true
+ *     jeHlaskaBezObsahu('%c Warning: deprecated')            → true
+ *
+ * Stačilo, aby web logoval stylovanou chybu, a skutečná vada spadla
+ * z nálezu na okolnost běhu. Hlavička tohohle modulu přitom tvrdila
+ * „Chybové hlášky se slovy jimi neprocházejí" — platilo to jen pro
+ * hlášky BEZ dvojtečky, a právě takové jsem si dal do testů.
+ *
+ * Proto výčet skutečných vlastností. Odstraní se jen to, co jde
+ * pojmenovat jako styl; „typeerror" mezi vlastnostmi CSS není, takže
+ * `TypeError: undefined` v hlášce zůstane a hláška je nálezem.
+ *
+ * Neznámá vlastnost (`-webkit-…`, nová norma) znamená, že se banner
+ * vyhodnotí jako hláška s obsahem, tedy jako nález. To je ta chyba,
+ * kterou si smíme dovolit: nález navíc je vidět a dá se posoudit,
+ * zamlčená vada ne. Navíc stylovaný banner SE SLOVY byl nálezem
+ * i předtím, takže to není zhoršení.
+ */
+const CSS_VLASTNOSTI = [
+  'color', 'background', 'background-color', 'background-image',
+  'font', 'font-size', 'font-weight', 'font-family', 'font-style',
+  'padding', 'margin', 'border', 'border-radius', 'border-left',
+  'display', 'line-height', 'letter-spacing', 'text-align',
+  'text-decoration', 'text-transform', 'text-shadow', 'box-shadow',
+  'width', 'height', 'opacity', 'visibility',
+];
+const CSS_DEKLARACE = new RegExp(
+  `\\b(?:${CSS_VLASTNOSTI.join('|')})\\s*:\\s*[^;\\s]+;?`,
+  'gi'
+);
 
 /** Dosazené hodnoty bez vlastního sdělení. */
 const PRAZDNE_HODNOTY = /\b(NaN|undefined|null|true|false|Infinity)\b/g;

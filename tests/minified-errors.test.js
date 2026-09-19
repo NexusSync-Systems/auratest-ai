@@ -76,3 +76,50 @@ describe('jedna výjimka je jeden nález', () => {
     expect(klicVyjimky(null)).toBeNull();
   });
 });
+
+/**
+ * NÁLEZ Z KONTROLNÍ VLNY: klíč slepil dvě RŮZNÉ výjimky.
+ *
+ * `klicVyjimky` zahazoval adresy a zkracoval na 200 znaků. Dvě různá
+ * rozbitá API tak dostala týž klíč, druhý nález `addFinding` zahodil
+ * a adresa druhého endpointu se ve spisu neobjevila vůbec.
+ *
+ * Slučovat se má jedna věc hlášená víckrát, ne dvě různé věci.
+ */
+describe('různé výjimky se neslévají', () => {
+  test('dvě rozbitá API na různých adresách jsou dva nálezy', () => {
+    const a = klicVyjimky('Uncaught TypeError: Failed to fetch https://api.klient.cz/objednavky');
+    const b = klicVyjimky('Uncaught TypeError: Failed to fetch https://api.klient.cz/platby');
+    expect(a).not.toBe(b);
+    // Adresa v klíči ZŮSTÁVÁ — je to jediné, čím se ty dva nálezy liší.
+    expect(a).toMatch(/objednavky/);
+  });
+
+  test('dvě dlouhé výjimky se shodným začátkem jsou dva nálezy', () => {
+    const spolecne = 'TypeError: ' + 'x'.repeat(210);
+    expect(klicVyjimky(`${spolecne} A`)).not.toBe(klicVyjimky(`${spolecne} B`));
+  });
+});
+
+describe('obyčejná výjimka je taky jeden nález', () => {
+  test('znění z window.onerror a z pageerror dají týž klíč', () => {
+    // Tohle commit „Jedna vada Reactu je jeden čitelný nález" prohlašoval
+    // za vyřešené, ale u chyb BEZ čísla Reactu vyřešené nebylo: náš
+    // vlastní hook přidává ` v soubor.js:12`, což dalo jiný klíč.
+    const zHooku = '[AuraGuard-Error] Běhová chyba: Uncaught TypeError: b is not a function v https://klient.cz/app.js:12';
+    const zPageerror = 'TypeError: b is not a function';
+    expect(klicVyjimky(zHooku)).toBe(klicVyjimky(zPageerror));
+  });
+
+  test('relativní jméno souboru taky', () => {
+    expect(klicVyjimky('Běhová chyba: Uncaught TypeError: b is not a function v main.js:1'))
+      .toBe(klicVyjimky('TypeError: b is not a function'));
+  });
+
+  test('dvojtečka s číslem UVNITŘ hlášky se neodřezává', () => {
+    // Odřezává se jen koncovka `… v soubor:číslo`. „kód 402" ani
+    // „řádek 12" uvnitř věty nesmí klíč zkrátit.
+    const k = klicVyjimky('TypeError: platba selhala, kód 402 u zákazníka 9');
+    expect(k).toMatch(/kód 402 u zákazníka 9/);
+  });
+});

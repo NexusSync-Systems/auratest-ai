@@ -1,4 +1,4 @@
-import { jeZruseny, nalezSitoveChyby, poznamkaZruseneho, jeOvereniRobota, poznamkaOvereniRobota, zatridSelhani, zatridStavKod, poznamkaOPristupu,
+import { jeZruseny, nalezSitoveChyby, poznamkaZruseneho, jeOvereniRobota, poznamkaOvereniRobota, zatridSelhani, zatridStavKod, poznamkaOPristupu, zatridOdpoved,
 } from '../network-findings.js';
 import { sanitizeActionResponse } from '../agent.js';
 
@@ -244,5 +244,70 @@ describe('zatřídění stavového kódu', () => {
     // Adresa v poznámce je podstatná: zákazník si to má ověřit
     // přihlášeně, a bez ní nemá co otevřít.
     expect(p).toMatch(/Ověřte přihlášeně/);
+  });
+});
+
+/**
+ * ZATŘÍDĚNÍ ODPOVĚDI 4xx/5xx — a smí se ta adresa umlčet?
+ *
+ * Nález z kontrolní vlny, který žádný test chytit nemohl, protože
+ * rozhodnutí bylo uvnitř posluchače `page.on('response')`:
+ *
+ *   `hlasenaSelhani.add(url)` se provádělo PŘED testem „je to kritický
+ *   zdroj?". U obrázku, stylu nebo fontu se tedy nezapsalo nic (není
+ *   kritický) a konzolová cesta, která je JEDINÁ pokrývá, už byla
+ *   umlčená. Rozbitý obrázek s HTTP 404 z reportu vypadl ÚPLNĚ a běh
+ *   skončil „bez nálezu".
+ *
+ * Komentář o pár řádků níž přitom slibuje pravý opak: „obrázek nebo styl
+ * projde JEN tudy… nesmí se cestou sem ztratit".
+ */
+describe('odpověď se stavem 400+', () => {
+  const o = (p) => zatridOdpoved({ status: 500, url: 'https://klient.cz/api', resourceType: 'fetch', ...p });
+
+  test('rozbitý OBRÁZEK se tady nehlásí, ale ANI SE NEUMLČÍ', () => {
+    // To druhé je ta chyba. Umlčení sebralo konzolovou cestu, která je
+    // u nekritických zdrojů jediná.
+    for (const typ of ['image', 'stylesheet', 'font', 'media']) {
+      const v = o({ status: 404, resourceType: typ });
+      expect(v.kam).toBe('ticho');
+      expect(v.umlcet).toBe(false);
+    }
+  });
+
+  test('kritický zdroj se hlásí a umlčí se', () => {
+    for (const typ of ['fetch', 'xhr', 'document', 'script']) {
+      const v = o({ status: 500, resourceType: typ });
+      expect(v.kam).toBe('bugs');
+      expect(v.umlcet).toBe(true);
+    }
+  });
+
+  test('403 na kritickém zdroji je okolnost, ne nález', () => {
+    const v = o({ status: 403 });
+    expect(v.kam).toBe('warnings');
+    expect(v.umlcet).toBe(true);
+    expect(v.duvod).toMatch(/oprávnění/);
+  });
+
+  test('ochrana proti robotům má vlastní důvod', () => {
+    const v = o({ status: 403, url: 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x' });
+    expect(v.kam).toBe('warnings');
+    expect(v.duvod).toBe('overeni-robota');
+  });
+
+  test('úspěšná odpověď se neřeší', () => {
+    for (const st of [200, 204, 304, 399]) {
+      expect(o({ status: st }).kam).toBe('ticho');
+      expect(o({ status: st }).umlcet).toBe(false);
+    }
+  });
+
+  test('nesmyslný stav nic nehlásí ani neumlčí', () => {
+    for (const st of [null, undefined, NaN, 'text']) {
+      const v = o({ status: st });
+      expect(v.kam).toBe('ticho');
+      expect(v.umlcet).toBe(false);
+    }
   });
 });

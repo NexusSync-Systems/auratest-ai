@@ -78,6 +78,16 @@ export function poznamkaZruseneho(method, url) {
  * Cesta `/cdn-cgi/challenge-platform/` je vyhrazená Cloudflare (prefix
  * `/cdn-cgi/` si rezervuje pro vlastní služby), takže se hodnotí bez
  * ohledu na doménu — výzvu obsluhuje i doména zákazníka.
+ *
+ * TOHLE JEDNO PRAVIDLO JE ZOBECNĚNÍ NAD MĚŘENÍ, a je to jediné místo
+ * v modulu, kde o zatřídění rozhoduje adresa, kterou volí auditovaný web.
+ * Kdyby zákazník měl vlastní API pod `/cdn-cgi/challenge-platform/`,
+ * selhání na něm se nenahlásí jako nález. Nechávám to tak vědomě:
+ * prefix `/cdn-cgi/` si Cloudflare rezervuje, takže kolize je
+ * nepravděpodobná, a kdybych místo toho vyžadoval hlavičku `cf-ray`,
+ * nepoznám výzvu u požadavku, který ji v odpovědi nenese. Kdyby se
+ * kolize někdy ukázala, správná oprava je omezit pravidlo na hosty ze
+ * `VYZVA_HOSTY`. Upozornila na to kontrolní vlna.
  */
 const VYZVA_HOSTY = [
   /(^|\.)challenges\.cloudflare\.com$/i,
@@ -227,4 +237,52 @@ export function zatridStavKod(status) {
 export function poznamkaOPristupu(method, url, status, duvod) {
   return `Server odmítl náš požadavek (${duvod}): ${method || '?'} ${url} `
     + `- HTTP ${status}. Ověřte přihlášeně, jestli stránka funguje.`;
+}
+
+/**
+ * Kam patří odpověď se stavem 400 a víc — a smí se ta adresa umlčet?
+ *
+ * PROČ JE TO TADY A NE V POSLUCHAČI
+ * Bylo to v `page.on('response')` v `agent.js` a kontrolní vlna tam
+ * našla chybu, kterou žádný test nemohl chytit: `hlasenaSelhani.add(url)`
+ * se provádělo PŘED testem „je to kritický zdroj?". U obrázku, stylu
+ * nebo fontu se tedy nezapsalo nic (není kritický) a konzolová cesta,
+ * která je jediná pokrývá, už byla umlčená. Rozbitý obrázek s HTTP 404
+ * z reportu vypadl ÚPLNĚ.
+ *
+ * Posluchač se rozjede jedině se skutečným prohlížečem, takže dokud to
+ * rozhodnutí bylo v něm, testovala se jen `zatridStavKod` vedle něj.
+ * Tenhle vzorec — vytažená funkce otestovaná, volající kód ne — se dnes
+ * objevil třikrát.
+ *
+ * @param {object} p
+ * @param {number} p.status
+ * @param {string} p.url
+ * @param {string} p.resourceType  typ podle Playwrightu
+ * @returns {{kam: 'bugs'|'warnings'|'ticho', umlcet: boolean, duvod: string|null}}
+ *   `umlcet` = zapamatovat adresu, aby ji konzolová cesta nehlásila
+ *   podruhé. Smí se jen tehdy, když ji zapisujeme TADY.
+ */
+const KRITICKE_ZDROJE = new Set(['fetch', 'xhr', 'document', 'script']);
+
+export function zatridOdpoved({ status, url, resourceType }) {
+  if (!Number.isInteger(Number(status)) || Number(status) < 400) {
+    return { kam: 'ticho', umlcet: false, duvod: null };
+  }
+
+  // Nekritický zdroj (obrázek, styl, font) se tady NEHLÁSÍ — pokrývá ho
+  // konzolová cesta, která má k dispozici stav i adresu. Právě proto se
+  // taková adresa nesmí umlčet.
+  if (!KRITICKE_ZDROJE.has(resourceType)) {
+    return { kam: 'ticho', umlcet: false, duvod: null };
+  }
+
+  if (jeOvereniRobota(url)) {
+    return { kam: 'warnings', umlcet: true, duvod: 'overeni-robota' };
+  }
+
+  const verdikt = zatridStavKod(Number(status));
+  return verdikt.nalez
+    ? { kam: 'bugs', umlcet: true, duvod: null }
+    : { kam: 'warnings', umlcet: true, duvod: verdikt.duvod };
 }
