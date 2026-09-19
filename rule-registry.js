@@ -324,7 +324,10 @@ const RULE_LIST = [
   },
   {
     id: 'aiact.cl50.2.synthetic-marking',
-    version: 2,
+    // v3: doplněn celý slovník IPTC. Mění VÝSLEDEK — hodnota
+    // `compositeSynthetic`, tedy podle IPTC „composite including
+    // generative AI elements", se dřív počítala jako nepřečtená.
+    version: 3,
     title: 'Strojově čitelné označení syntetického obsahu (čl. 50 odst. 2)',
     method:
       'Ve vzorku obrázků se stáhne prvních 64 kB souboru a hledá se v nich ' +
@@ -335,14 +338,26 @@ const RULE_LIST = [
       'PODPIS MANIFESTU SE NEOVĚŘUJE. Manifest tvrdí, co tvrdí; jeho pravost ' +
       'by vyžadovala kryptografické ověření proti důvěryhodnému kořeni. ' +
       'Manifest se hledá jen v prvních 64 kB, takže u souborů s velkým ' +
-      'náhledem může typ zdroje ležet mimo načtenou část. Pokryta je jen ' +
-      'část slovníku IPTC — nepřečtený typ se počítá jako NEPRŮKAZNÝ, ' +
-      'nikoli jako „není to AI". ' +
+      'náhledem může typ zdroje ležet mimo načtenou část. Slovník IPTC je ' +
+      'pokrytý celý (stav 18. 9. 2026), ale rozšiřuje se — typ, který ' +
+      'v tabulce není, se počítá jako NEPRŮKAZNÝ, nikoli jako „není to AI". ' +
+      'U části hodnot slovník sám uvádí, že obsah generativní AI zahrnovat ' +
+      'může i nemusí (`composite`, `virtualRecording`); ty se hlásí zvlášť ' +
+      'a do „nehlásí se jako AI" se NEPOČÍTAJÍ. ' +
       'Chybějící manifest neznamená, že obsah je syntetický a neoznačený — ' +
       'většina fotografií žádné pověření nemá. Vzorkuje se jen část obrázků ' +
       'a report uvádí, kolik jich zůstalo neprozkoumaných; obrázky, které ' +
       'se nepodařilo stáhnout, se do vzorku nepočítají.',
     changelog: {
+      3:
+        'Verze 2 pokrývala pět hodnot slovníku IPTC z dvaceti, a mezi '
+        + 'chybějícími byla `compositeSynthetic` — podle IPTC „composite '
+        + 'including generative AI elements, at least one of which is '
+        + 'Generative AI". Obrázek s tímhle pověřením se počítal jako '
+        + 'nepřečtený, takže označený syntetický obsah se nezapočítal, '
+        + 'přestože označení existovalo. Verze 3 pokrývá slovník celý '
+        + 'a navíc odděluje hodnoty, u nichž IPTC sám říká, že o AI '
+        + 'nerozhodují.',
       2:
         'Verze 1 uměla jen zjistit, že pověření existuje. Nově se čte typ ' +
         'zdroje, takže jde rozlišit deklarovaný výstup generativního modelu ' +
@@ -441,10 +456,11 @@ const RULE_LIST = [
   },
   {
     id: 'gdpr.residency.geoip',
-    // v3: přednost dostaly rozsahy zveřejněné poskytovatelem cloudu.
-    // Mění to výsledek u každého webu hostovaného v cloudu, tedy u velké
-    // části trhu — dosud u nich vycházelo neprůkazné.
-    version: 3,
+    // v4: přidány rozsahy IPv6 a zavedena lhůta stárnutí snímku. Obojí
+    // mění VÝSLEDEK, ne jen znění: adresa IPv6 se dřív nedala posoudit
+    // vůbec, a ze snímku starého půl roku se dřív vyslovil verdikt
+    // o zemi se stejnou jistotou jako z čerstvého.
+    version: 4,
     title: 'Rezidence dat podle geolokace serverů',
     method:
       'IP adresy dotčených domén se posuzují ve dvou krocích. Nejdřív se ' +
@@ -469,10 +485,24 @@ const RULE_LIST = [
       'kterou databáze PŘIZNÁ (chybějící město, maximální poloměr, výplňová ' +
       'souřadnice) — tichý omyl u záznamu, kterým si je jistá, ne. ' +
       'Rozsahy poskytovatelů jsou také snímek s datem, které report uvádí; ' +
-      'region, který v převodní tabulce chybí, dává neprůkazné, ne odhad. ' +
-      'Rozsah říká, kde stojí SERVER — kam ten server data ukládá dál, ' +
-      'z toho neplyne nic. Zpracovávají se jen adresy IPv4.',
+      'region, který v převodní tabulce chybí, dává neprůkazné, ne odhad — ' +
+      'a to i tehdy, když název regionu zemi napovídá. Snímek starší než ' +
+      '90 dnů přestane zemi určovat úplně: poskytovatelé rozsahy vydávají ' +
+      'průběžně a rozsah mohl mezitím přejít do jiného regionu, takže by ' +
+      'z něj vyšla cizí země s plnou jistotou. Zpracovávají se adresy ' +
+      'IPv4 i IPv6; která z nich se naměří, závisí na tom, po kterém ' +
+      'protokolu se prohlížeč k webu skutečně připojil.',
     changelog: {
+      4:
+        'Verze 3 zpracovávala jen adresy IPv4. Prohlížeč přitom na '
+        + 'dvoustohovém stroji volí IPv6, takže u takového webu se korekce '
+        + 'podle rozsahů poskytovatele neuplatnila ANI JEDNOU a verdikt '
+        + 'spadl na geolokační databázi — na zdroj, kvůli kterému se '
+        + 'rozsahy zaváděly. Verze 4 čte obě rodiny adres. Zároveň '
+        + 'zavádí lhůtu 90 dnů: hlídala se jen existence snímku, takže ze '
+        + 'snímku starého půl roku se vyslovil verdikt o zemi se stejnou '
+        + 'jistotou jako z čerstvého, ačkoli rozsah mohl mezitím přejít '
+        + 'do jiného regionu.',
       3:
         'Verze 2 uměla jen geolokační databázi, která u cloudových rozsahů '
         + 'selhává — adresa serveru v Azure Sweden Central u ní vycházela '
