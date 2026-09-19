@@ -184,3 +184,72 @@ describe('jakoCislo', () => {
     }).stav).toBe(STAV_SLOTU.REZERVOVANO);
   });
 });
+
+/**
+ * Mezera v měření.
+ *
+ * Nejdůležitější je tu ten druhý test: falešná mezera by do spisu pro
+ * úřad napsala, že se v nějakém okně neměřilo, ačkoli měřilo. To je horší
+ * než mezeru neohlásit — nástroj by tvrdil něco, co není pravda.
+ */
+describe('posudRezervaci — mezera v měření', () => {
+  const ted = 1_000_000;
+
+  it('nedoběhlý běh po vypršení zámku se ohlásí jako mezera', () => {
+    const v = posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 500, bezimDo: ted - 1, bezimSession: 'session_mrtvy' },
+      ocekavanyLastRun: 500,
+      ted,
+    });
+    expect(v.stav).toBe(STAV_SLOTU.REZERVOVANO);
+    expect(v.mezera).toEqual({ sessionId: 'session_mrtvy', od: 500 });
+  });
+
+  it('po řádně doběhnutém běhu ŽÁDNÁ mezera není', () => {
+    // `uvolniZamekMonitoru` nuluje bezimDo i bezimSession. Kdyby nulovalo
+    // jen zámek, hlásila by se mezera po každém úspěšném běhu.
+    const v = posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 500, bezimDo: 0, bezimSession: null },
+      ocekavanyLastRun: 500,
+      ted,
+    });
+    expect(v.stav).toBe(STAV_SLOTU.REZERVOVANO);
+    expect(v.mezera).toBeNull();
+  });
+
+  it('mezeru hlásí jen ten, kdo slot dostal', () => {
+    // Jinak by ji ohlásila každá instance, která o slot marně zabojovala,
+    // a týž nezměřený úsek by byl ve spisu několikrát.
+    const v = posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 999, bezimDo: ted - 1, bezimSession: 'session_mrtvy' },
+      ocekavanyLastRun: 500,
+      ted,
+    });
+    expect(v.stav).toBe(STAV_SLOTU.OBSAZENO);
+    expect(v.mezera).toBeUndefined();
+  });
+
+  it('živý běh mezeru nehlásí — ještě neskončil', () => {
+    const v = posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 500, bezimDo: ted + 60_000, bezimSession: 'session_zivy' },
+      ocekavanyLastRun: 500,
+      ted,
+    });
+    expect(v.stav).toBe(STAV_SLOTU.BEZI);
+    expect(v.mezera).toBeUndefined();
+  });
+
+  it('monitor z doby před zámkem mezeru nehlásí', () => {
+    // Dokumenty založené před touhle změnou pole `bezimSession` nemají.
+    expect(posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 500 },
+      ocekavanyLastRun: 500,
+      ted,
+    }).mezera).toBeNull();
+  });
+});

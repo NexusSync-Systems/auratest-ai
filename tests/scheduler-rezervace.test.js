@@ -144,7 +144,7 @@ describe('schedulerTick — řídí se výsledkem rezervace', () => {
     mockDb.getAllActiveMonitors.mockResolvedValue([monitor({ lastRunTime: 1234 })]);
     await __test__.schedulerTick();
     expect(mockDb.rezervujSlotMonitoru).toHaveBeenCalledWith(
-      'm1', 1234, expect.any(Number), expect.any(Number),
+      'm1', expect.objectContaining({ ocekavanyLastRun: 1234 }),
     );
   });
 
@@ -152,8 +152,10 @@ describe('schedulerTick — řídí se výsledkem rezervace', () => {
     // Zámek s platností v minulosti (nebo 0) by nezamkl nic a překrývající
     // se běhy by se vrátily — celý smysl čtvrtého parametru.
     await __test__.schedulerTick();
-    const [, , cas, zamekDo] = mockDb.rezervujSlotMonitoru.mock.calls[0];
-    expect(zamekDo).toBeGreaterThan(cas);
+    const [, volby] = mockDb.rezervujSlotMonitoru.mock.calls[0];
+    expect(volby.zamekDo).toBeGreaterThan(volby.novyCas);
+    // Bez identifikátoru běhu se mezera v měření nedá poznat.
+    expect(volby.zamekSession).toMatch(/^session_monitor_/);
   });
 
 
@@ -203,6 +205,67 @@ describe('schedulerTick — řídí se výsledkem rezervace', () => {
  *
  * `provedBehMonitoru` bere závislosti parametrem právě kvůli tomuhle.
  */
+/**
+ * Mezera v měření ve spisu.
+ *
+ * Rozhodnutí: vynechaný běh se DO SPISU zapisuje. Bez toho by mezi dvěma
+ * měřeními bylo jen delší ticho a čtenář by nepoznal, jestli se neměřilo,
+ * nebo se měřilo a výsledek se ztratil. To druhé je obvinění, to první
+ * fakt — splývat nesmí.
+ */
+describe('schedulerTick — mezera v měření', () => {
+  const sMezerou = () => ({
+    stav: 'rezervovano',
+    duvod: '',
+    mezera: { sessionId: 'session_mrtvy', od: 1_700_000_000_000 },
+  });
+
+  it('mezera se zapíše jako session se stavem failed a bez nálezů', async () => {
+    mockDb.rezervujSlotMonitoru.mockResolvedValue(sMezerou());
+    await __test__.schedulerTick();
+
+    const zapis = mockDb.saveSession.mock.calls.find(([id]) => id === 'session_mrtvy');
+    expect(zapis).toBeDefined();
+    const [, data] = zapis;
+    // NIKDY `completed`: ten stav ve spisu znamená „výsledek platí".
+    expect(data.status).toBe('failed');
+    // O webu se nezjistilo nic — nálezy musí zůstat prázdné.
+    expect(data.bugs).toEqual([]);
+    // Příčina patří mezi chyby měření, ne mezi nálezy o webu.
+    expect(data.runErrors.join(' ')).toMatch(/nespustil/);
+    // Čas začátku nezměřeného okna, ne čas zápisu — jinak by se mezera
+    // ve spisu vytiskla jinde, než kam patří.
+    expect(data.timestamp).toBe(new Date(1_700_000_000_000).toISOString());
+  });
+
+  it('po mezeře se vlastní běh přesto spustí', async () => {
+    // Nezměřit teď kvůli tomu, že se nepovedlo popsat minulou mezeru,
+    // by mezeru jen prodloužilo.
+    mockDb.rezervujSlotMonitoru.mockResolvedValue(sMezerou());
+    await __test__.schedulerTick();
+    const bezne = mockDb.saveSession.mock.calls.filter(([id]) => id !== 'session_mrtvy');
+    expect(bezne.length).toBeGreaterThan(0);
+  });
+
+  it('selhání zápisu mezery nezabrání běhu', async () => {
+    mockDb.rezervujSlotMonitoru.mockResolvedValue(sMezerou());
+    mockDb.saveSession.mockImplementation(async (id) => {
+      if (id === 'session_mrtvy') throw new Error('Firestore nedostupný');
+      return true;
+    });
+    await expect(__test__.schedulerTick()).resolves.toBeUndefined();
+    const bezne = mockDb.saveSession.mock.calls.filter(([id]) => id !== 'session_mrtvy');
+    expect(bezne.length).toBeGreaterThan(0);
+  });
+
+  it('bez mezery se nic navíc nezapisuje', async () => {
+    mockDb.rezervujSlotMonitoru.mockResolvedValue({ stav: 'rezervovano', duvod: '', mezera: null });
+    await __test__.schedulerTick();
+    const idcka = mockDb.saveSession.mock.calls.map(([id]) => id);
+    expect(new Set(idcka).size).toBe(1);
+  });
+});
+
 describe('provedBehMonitoru — zámek', () => {
   const zaklad = () => ({
     monitor: monitor(),

@@ -663,6 +663,58 @@ function recordInLedger(sessionData, rules = []) {
 }
 
 /**
+ * Zapíše do spisu okno, ve kterém se nezměřilo nic.
+ *
+ * PROČ TO NENÍ JEN ŘÁDEK V LOGU
+ * Spis se staví ze session, ne ze záznamů řetězu. Kdyby mezera existovala
+ * jen v logu, byl by mezi dvěma měřeními prostě delší odstup — a čtenář
+ * by nepoznal, jestli se neměřilo, nebo se měřilo a výsledek se ztratil.
+ * To druhé je obvinění, to první je fakt; splývat nesmí.
+ *
+ * PROČ TO VYPADÁ JAKO BĚH
+ * Protože to běh je — jen nedoběhlý. Použít stejný tvar jako u ostatních
+ * přerušených běhů (`zaznamPrerusenehoBehu`) znamená, že to spis umí
+ * vytisknout bez jediné nové větve, otisk se počítá stejným předpisem
+ * a `overOtisk` najde session v databázi. Vlastní druh záznamu by naopak
+ * skončil jako „session už v databázi není" — tedy jako podezření
+ * z manipulace u něčeho, co je v pořádku. Tuhle chybu už tenhle spis
+ * jednou udělal u 45 ze 48 záznamů.
+ *
+ * `status` NIKDY `completed`: `bugs` zůstávají prázdné, protože o webu
+ * se nezjistilo nic. Věta o příčině jde do `runErrors` — chyby našeho
+ * měření se nikdy nemíchají mezi nálezy o auditovaném webu.
+ */
+async function zapisMezeruVMereni(monitor, mezera) {
+  const od = new Date(mezera.od || Date.now()).toISOString();
+  const sessionData = {
+    id: mezera.sessionId,
+    userId: monitor.userId,
+    url: monitor.url,
+    goal: monitor.goal,
+    // Čas ZAČÁTKU nezměřeného okna, ne čas zápisu. Spis běhy řadí podle
+    // `timestamp`, takže se mezera vytiskne tam, kam patří — mezi měření,
+    // která ji obklopují.
+    timestamp: od,
+    isSynthetic: true,
+    monitorId: monitor.id,
+    steps: [],
+    bugs: [],
+    ...zaznamPrerusenehoBehu({}, 'nespusteno'),
+  };
+
+  await db.saveSession(sessionData.id, sessionData);
+  // Do řetězu stejnou cestou jako každý jiný běh. Mezera, která by
+  // v řetězu chyběla, by se dala nepozorovaně smazat ze session.
+  recordInLedger(sessionData);
+  // Otisk a stav zápisu doplní `recordInLedger` až po prvním uložení.
+  await db.saveSession(sessionData.id, sessionData);
+  console.warn(
+    `[AuraGuard] Mezera v měření monitoru ${monitor.id}: běh ${mezera.sessionId} `
+    + `rezervovaný v ${od} nikdy nezačal měřit. Zapsáno do spisu.`
+  );
+}
+
+/**
  * Ověření neporušenosti záznamu.
  *
  * Dostupné každému přihlášenému záměrně: kdo má důkazy doložit, musí je
@@ -1564,18 +1616,23 @@ async function schedulerTick() {
         //
         // Selhání transakce NESMÍ položit tik: ostatní monitory za tímhle
         // v cyklu o svůj běh nepřijdou kvůli jednomu nedostupnému zápisu.
+        // sessionId vzniká PŘED rezervací, protože se do ní zapisuje:
+        // podle něj se pozná, že běh nikdy neskončil. Musí být
+        // nepredikovatelné — je součástí názvu screenshotů.
+        const sessionId = `session_monitor_${randomUUID()}`;
+
         let rezervace;
         try {
-          rezervace = await db.rezervujSlotMonitoru(
-            monitor.id,
-            monitor.lastRunTime || 0,
-            now,
+          rezervace = await db.rezervujSlotMonitoru(monitor.id, {
+            ocekavanyLastRun: monitor.lastRunTime || 0,
+            novyCas: now,
             // Zámek platí stejně dlouho, jako pojistka nechá běh držet slot
             // prohlížeče. Kratší zámek by pustil druhý běh k ještě živému
             // prvnímu; delší by po pádu procesu umlčel monitor na dobu,
             // kterou nic jiného v systému nevymáhá.
-            now + BROWSER_SLOT_MAX_HOLD_MS,
-          );
+            zamekDo: now + BROWSER_SLOT_MAX_HOLD_MS,
+            zamekSession: sessionId,
+          });
         } catch (err) {
           console.error(`[AuraGuard] Rezervace slotu monitoru ${monitor.id} selhala:`, err.message);
           continue;
@@ -1588,6 +1645,28 @@ async function schedulerTick() {
           continue;
         }
 
+        // Mezera v měření: předchozí rezervace po sobě nechala identifikátor
+        // běhu, který nikdy neskončil — proces zemřel dřív, než stihl cokoli
+        // změřit nebo o sobě něco zapsat.
+        //
+        // Zapisuje se to TEĎ, protože dřív to nešlo: mrtvý proces o sobě nic
+        // neřekne a dokument si předchozí stav nepamatuje. Do spisu to patří,
+        // aby mezi dvěma měřeními nebylo jen ticho, ze kterého čtenář nepozná,
+        // jestli se neměřilo, nebo se měřilo a výsledek se ztratil.
+        //
+        // Selhání tohohle zápisu NESMÍ zabránit vlastnímu běhu — nezměřit
+        // teď kvůli tomu, že se nepovedlo popsat, proč se nezměřilo minule,
+        // by mezeru jen prodloužilo.
+        if (rezervace.mezera) {
+          try {
+            await zapisMezeruVMereni(monitor, rezervace.mezera);
+          } catch (err) {
+            console.error(
+              `[AuraGuard] Zápis mezery v měření monitoru ${monitor.id} selhal:`, err.message
+            );
+          }
+        }
+
         // Strop na souběžné běhy: bez něj znamená 50 aktivních monitorů
         // 50 současně spuštěných Chromium procesů.
         //
@@ -1595,9 +1674,6 @@ async function schedulerTick() {
         // ale mezi tím byl `await db.saveSession(...)` mimo try/finally —
         // selhání zápisu (kvóta, síť) slot NIKDY neuvolnilo a po několika
         // takových chybách se plánovač i audity zablokovaly natrvalo.
-        //
-        // sessionId musí být nepredikovatelné — je součástí názvu screenshotů.
-        const sessionId = `session_monitor_${randomUUID()}`;
         console.log(`[AuraGuard] Spouštím monitor: ${monitor.name} (${monitor.url}) -> ${sessionId}`);
 
         const sessionData = {
@@ -1651,7 +1727,16 @@ async function schedulerTick() {
           //
           // Zámek se vrací na nulu: běh se nekonal, není co držet.
           try {
-            const vraceni = await db.rezervujSlotMonitoru(monitor.id, now, lastRun, 0);
+            const vraceni = await db.rezervujSlotMonitoru(monitor.id, {
+              ocekavanyLastRun: now,
+              novyCas: lastRun,
+              zamekDo: 0,
+              // Identifikátor se musí smazat SPOLU se zámkem. Kdyby zůstal,
+              // příští rezervace by ohlásila mezeru v měření u běhu, který
+              // se jen odložil kvůli vyčerpaným slotům — a do spisu pro
+              // úřad by se zapsalo, že se neměřilo kvůli pádu procesu.
+              zamekSession: null,
+            });
             if (vraceni.stav !== STAV_SLOTU.REZERVOVANO) {
               console.warn(
                 `[AuraGuard] Rezervaci monitoru ${monitor.id} se nepodařilo vrátit ` +

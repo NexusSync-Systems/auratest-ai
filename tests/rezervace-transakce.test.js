@@ -2,7 +2,9 @@
  * @jest-environment node
  */
 import { jest } from '@jest/globals';
-import { teloRezervace, STAV_SLOTU } from '../monitor-slot.js';
+import {
+  teloRezervace, poleProUvolneniZamku, posudRezervaci, STAV_SLOTU,
+} from '../monitor-slot.js';
 
 /**
  * Tělo transakce rezervace.
@@ -43,11 +45,12 @@ describe('teloRezervace', () => {
     // ale nezamčený.
     const { t, update } = transakce({ active: true, lastRunTime: 100 });
     return teloRezervace(t, docRef, {
-      ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, ted: 400,
+      ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, zamekSession: 'session_a', ted: 400,
     }).then((v) => {
       expect(v.stav).toBe(STAV_SLOTU.REZERVOVANO);
       expect(update).toHaveBeenCalledTimes(1);
-      expect(update).toHaveBeenCalledWith(docRef, { lastRunTime: 500, bezimDo: 9999 });
+      expect(update).toHaveBeenCalledWith(docRef,
+        { lastRunTime: 500, bezimDo: 9999, bezimSession: 'session_a' });
     });
   });
 
@@ -58,7 +61,7 @@ describe('teloRezervace', () => {
   ])('při stavu %s NEZAPÍŠE nic', async (_popis, dokument, ocekavanyStav) => {
     const { t, update } = transakce(dokument);
     const v = await teloRezervace(t, docRef, {
-      ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, ted: 400,
+      ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, zamekSession: 'session_a', ted: 400,
     });
     expect(v.stav).toBe(ocekavanyStav);
     expect(update).not.toHaveBeenCalled();
@@ -68,7 +71,7 @@ describe('teloRezervace', () => {
     // `update` na neexistujícím dokumentu by transakci shodil.
     const { t, update } = transakce(null);
     const v = await teloRezervace(t, docRef, {
-      ocekavanyLastRun: 0, novyCas: 500, zamekDo: 9999, ted: 400,
+      ocekavanyLastRun: 0, novyCas: 500, zamekDo: 9999, zamekSession: 'session_a', ted: 400,
     });
     expect(v.stav).toBe(STAV_SLOTU.SMAZANO);
     expect(update).not.toHaveBeenCalled();
@@ -79,7 +82,7 @@ describe('teloRezervace', () => {
     // negarantovalo — Firestore hlídá jen to, co prošlo přes `t.get`.
     const { t } = transakce({ active: true, lastRunTime: 100 });
     await teloRezervace(t, docRef, {
-      ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, ted: 400,
+      ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, zamekSession: 'session_a', ted: 400,
     });
     expect(t.get).toHaveBeenCalledWith(docRef);
   });
@@ -87,7 +90,7 @@ describe('teloRezervace', () => {
   it('vrací výsledek posouzení, ne jen příznak', async () => {
     const { t } = transakce({ active: true, lastRunTime: 777 });
     const v = await teloRezervace(t, docRef, {
-      ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, ted: 400,
+      ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, zamekSession: 'session_a', ted: 400,
     });
     // Bez důvodu se v logu nepozná souběh od vadného typu hodnoty.
     expect(v.duvod).toContain('777');
@@ -96,9 +99,38 @@ describe('teloRezervace', () => {
   it('vrácení rezervace (zámek 0) je tentýž kód, ne druhá cesta', async () => {
     const { t, update } = transakce({ active: true, lastRunTime: 500 });
     const v = await teloRezervace(t, docRef, {
-      ocekavanyLastRun: 500, novyCas: 100, zamekDo: 0, ted: 400,
+      ocekavanyLastRun: 500, novyCas: 100, zamekDo: 0, zamekSession: null, ted: 400,
     });
     expect(v.stav).toBe(STAV_SLOTU.REZERVOVANO);
-    expect(update).toHaveBeenCalledWith(docRef, { lastRunTime: 100, bezimDo: 0 });
+    expect(update).toHaveBeenCalledWith(docRef,
+      { lastRunTime: 100, bezimDo: 0, bezimSession: null });
+  });
+});
+
+/**
+ * Uvolnění zámku.
+ *
+ * Tenhle test vznikl kvůli mutaci, která PŘEŽILA: vynechání
+ * `bezimSession` při uvolnění zámku neshodilo nic, přestože by po každém
+ * úspěšném běhu zapsalo do spisu falešnou mezeru v měření — tedy tvrzení
+ * „v tomhle okně se neměřilo" o běhu, který v pořádku doběhl.
+ */
+describe('poleProUvolneniZamku', () => {
+  it('nuluje zámek i identifikátor běhu', () => {
+    expect(poleProUvolneniZamku()).toEqual({ bezimDo: 0, bezimSession: null });
+  });
+
+  it('uvolněný monitor už mezeru nehlásí', () => {
+    // Test, který drží obě poloviny pohromadě: co se zapíše při uvolnění
+    // musí stačit na to, aby `posudRezervaci` příště mezeru neviděla.
+    const po = poleProUvolneniZamku();
+    const v = posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 500, ...po },
+      ocekavanyLastRun: 500,
+      ted: 1_000_000,
+    });
+    expect(v.stav).toBe(STAV_SLOTU.REZERVOVANO);
+    expect(v.mezera).toBeNull();
   });
 });

@@ -100,6 +100,16 @@ export const DUVODY = {
     + 'už neexistuje.',
   odlozeno: 'Běh se nespustil: v okamžiku spuštění nebyl volný prohlížeč. '
     + 'Nezměřilo se nic.',
+  // Mezera v měření. Zapisuje ji AŽ NÁSLEDUJÍCÍ běh, protože proces,
+  // který měl měřit, už neexistoval a nemohl o sobě nic říct.
+  //
+  // Do spisu to patří: bez tohohle řádku by v něm bylo jen ticho mezi
+  // dvěma měřeními a čtenář by nepoznal, jestli se neměřilo, nebo se
+  // měřilo a výsledek se ztratil. Chybějící důkaz se nesmí tvářit jako
+  // důkaz — ani jako nic.
+  nespusteno: 'Běh se nespustil: proces, který si ho rezervoval, skončil '
+    + 'dřív, než stihl začít měřit (restart serveru nebo pád). V tomhle '
+    + 'okně se nezměřilo nic a chybí i dílčí výsledky.',
 };
 
 export function zaznamPrerusenehoBehu(session, duvod, kdy = new Date().toISOString()) {

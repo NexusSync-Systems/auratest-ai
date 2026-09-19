@@ -4,7 +4,7 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { zapisPokudExistuje } from './firestore-errors.js';
-import { teloRezervace } from './monitor-slot.js';
+import { teloRezervace, poleProUvolneniZamku } from './monitor-slot.js';
 
 const __dirname = path.resolve();
 const credentialsPath = path.join(__dirname, 'firebase-credentials.json');
@@ -134,16 +134,25 @@ export async function updateMonitorIfExists(monitorId, updateData) {
  * Firestore transakci při souběhu sám opakuje, takže z ní vyjde právě
  * jeden vítěz.
  *
+ * Volby jsou pojmenované, ne poziční: `(id, 1234, 5678, 9012, 'session_x')`
+ * je řada čísel, u které se záměna dvou z nich nikde neprojeví jako chyba,
+ * jen jako špatně naplánovaný běh.
+ *
  * @param {string} monitorId
- * @param {number} ocekavanyLastRun hodnota ze snímku, podle které se
+ * @param {object} volby
+ * @param {number} volby.ocekavanyLastRun hodnota ze snímku, podle které se
  *   plánovač rozhodl monitor spustit
- * @param {number} novyCas čas, který se zapíše při úspěchu
- * @returns {Promise<{stav: string, duvod: string}>} viz `STAV_SLOTU`
+ * @param {number} volby.novyCas čas, který se zapíše při úspěchu
+ * @param {number} volby.zamekDo do kdy platí zámek běhu (0 = bez zámku)
+ * @param {string|null} volby.zamekSession identifikátor běhu, podle kterého
+ *   se pozná mezera v měření
+ * @returns {Promise<{stav: string, duvod: string, mezera?: object|null}>}
+ *   viz `STAV_SLOTU`
  */
-export async function rezervujSlotMonitoru(monitorId, ocekavanyLastRun, novyCas, zamekDo = 0) {
+export async function rezervujSlotMonitoru(monitorId, volby = {}) {
   const docRef = firestore.collection('monitors').doc(monitorId);
   return firestore.runTransaction(
-    (t) => teloRezervace(t, docRef, { ocekavanyLastRun, novyCas, zamekDo, ted: Date.now() })
+    (t) => teloRezervace(t, docRef, { ...volby, ted: Date.now() })
   );
 }
 
@@ -155,7 +164,10 @@ export async function rezervujSlotMonitoru(monitorId, ocekavanyLastRun, novyCas,
  * nástroj.
  */
 export async function uvolniZamekMonitoru(monitorId) {
-  return updateMonitorIfExists(monitorId, { bezimDo: 0 });
+  // Pole se berou z `monitor-slot.js`, ne se píšou tady: tenhle soubor
+  // se v testech celý podvrhuje, takže by na vynechání `bezimSession`
+  // žádný test nesáhl — a právě to je z chyb v téhle změně ta nejhorší.
+  return updateMonitorIfExists(monitorId, poleProUvolneniZamku());
 }
 
 export async function deleteMonitor(monitorId) {

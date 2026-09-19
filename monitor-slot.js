@@ -27,19 +27,19 @@
  *
  * Jedno bez druhého nestačí a ani jedno nenahrazuje to druhé.
  *
- * CO ANI JEDNO Z TOHO NEŘEŠÍ — vědomě otevřené
+ * TŘETÍ VĚC: MEZERA V MĚŘENÍ
  * Když instance skončí (SIGTERM při nasazení, OOM) v okně mezi zápisem
- * rezervace a založením session, je `lastRunTime` posunutý, běh se nekonal
+ * rezervace a založením běhu, je `lastRunTime` posunutý, běh se nekonal
  * a session NEEXISTUJE. Hlídač zaseknutých běhů pracuje jen se session
- * v databázi, takže nemá co dopsat: monitor prostě mlčí až do dalšího
- * intervalu — u `24h` celý den — a nikde není stopa, že měření vypadlo.
- * Zámek to nezachrání; ten po pádu vyprší, ale `lastRunTime` už je
- * posunutý. Totéž platí pro spadlý běh: zapíše se `lastRunStatus: 'error'`,
- * ale ne nový čas, takže se opakuje až za celý interval.
+ * v databázi, takže nemá co dopsat: monitor mlčel až do dalšího intervalu
+ * — u `24h` celý den — a nikde nebyla stopa, že měření vypadlo. Pro řetěz
+ * předkládaný úřadu je to chybějící důkaz bez důkazu o tom, že chybí.
  *
- * Pro řetěz předkládaný úřadu je to chybějící záznam bez záznamu o tom,
- * že chybí. Oprava je na samostatný úkol (evidovat vynechaný slot jako
- * `lastRunStatus: 'nespusteno'` a zkrátit čekání), ne na tuhle změnu.
+ * Pozná se to takhle: rezervace si do dokumentu zapíše i identifikátor
+ * běhu (`bezimSession`). Doběhnutý i spadlý běh ho ve svém `finally`
+ * uklidí. Když tedy zámek vypršel a identifikátor v dokumentu pořád je,
+ * znamená to, že ten běh nikdy neskončil — proces zemřel. Rezervace to
+ * ohlásí jako `mezera` a plánovač na to okno založí záznam „nespuštěno".
  *
  * PROČ JE ROZHODNUTÍ TADY A NE V `db.js`
  * Aby se dalo otestovat bez Firestoru — `db.js` tahá firebase-admin, který
@@ -151,6 +151,23 @@ export function posudRezervaci({ existuje, data, ocekavanyLastRun, ted }) {
     };
   }
 
+  // MEZERA V MĚŘENÍ — zámek vypršel, ale identifikátor běhu tu pořád je.
+  //
+  // Doběhnutý i spadlý běh po sobě `bezimSession` uklidí; přežije jen
+  // tehdy, když proces zemřel dřív, než se k tomu dostal. Tohle je jediné
+  // místo, kde se to dá poznat — zpětně už ne, protože dokument si dřívější
+  // stav nepamatuje.
+  //
+  // Mezera NEBRÁNÍ rezervaci. Nový běh se má spustit; jen se k němu
+  // přidá informace, že předchozí okno se nezměřilo.
+  const mezera = data.bezimSession
+    ? {
+      sessionId: String(data.bezimSession),
+      // Čas rezervace, která nikdy nedoběhla — začátek nezměřeného okna.
+      od: jakoCislo(data.lastRunTime),
+    }
+    : null;
+
   // Obě strany přes `jakoCislo`, ne `|| 0` — viz komentář u té funkce.
   const skutecny = jakoCislo(data.lastRunTime);
   const ocekavany = jakoCislo(ocekavanyLastRun);
@@ -159,10 +176,13 @@ export function posudRezervaci({ existuje, data, ocekavanyLastRun, ted }) {
     return {
       stav: STAV_SLOTU.OBSAZENO,
       duvod: `lastRunTime se změnil (${ocekavany} → ${skutecny})`,
+      // Mezeru hlásí JEN ten, kdo slot skutečně dostal. Jinak by ji
+      // ohlásila každá instance, která o slot marně zabojovala, a do spisu
+      // by se týž nezměřený úsek zapsal několikrát.
     };
   }
 
-  return { stav: STAV_SLOTU.REZERVOVANO, duvod: 'slot rezervován' };
+  return { stav: STAV_SLOTU.REZERVOVANO, duvod: 'slot rezervován', mezera };
 }
 
 /**
@@ -182,7 +202,28 @@ export function posudRezervaci({ existuje, data, ocekavanyLastRun, ted }) {
  * @param {{get: Function, update: Function}} t transakce
  * @param {object} docRef odkaz na dokument monitoru
  */
-export async function teloRezervace(t, docRef, { ocekavanyLastRun, novyCas, zamekDo, ted }) {
+/**
+ * Co se zapisuje při uvolnění zámku po doběhnutí běhu.
+ *
+ * Vlastní funkce, a ne dvojice polí přímo v `db.js`, protože `db.js` tahá
+ * firebase-admin a v testech se celý podvrhuje — cokoli v něm je, nikdo
+ * nespustí. Mutační zkouška to ukázala přesně: vynechání `bezimSession`
+ * neshodilo jediný test, přestože je to ze všech možných chyb v téhle
+ * změně ta nejhorší.
+ *
+ * Kdyby se totiž nulovalo jen `bezimDo`, přežil by identifikátor běhu po
+ * KAŽDÉM úspěšném běhu a příští rezervace by po vypršení zámku ohlásila
+ * mezeru v měření. Do spisu pro úřad by se zapsalo „v tomhle okně se
+ * neměřilo" u běhu, který proběhl bez chyby. Nástroj by tvrdil nepravdu
+ * o vlastním měření — horší než mezeru vůbec nehlásit.
+ */
+export function poleProUvolneniZamku() {
+  return { bezimDo: 0, bezimSession: null };
+}
+
+export async function teloRezervace(
+  t, docRef, { ocekavanyLastRun, novyCas, zamekDo, zamekSession = null, ted },
+) {
   const snap = await t.get(docRef);
   const vysledek = posudRezervaci({
     existuje: snap.exists,
@@ -192,9 +233,16 @@ export async function teloRezervace(t, docRef, { ocekavanyLastRun, novyCas, zame
   });
 
   if (vysledek.stav === STAV_SLOTU.REZERVOVANO) {
-    // Zámek se zapisuje TOUTÉŽ transakcí jako `lastRunTime`. Dva zápisy
-    // by znamenaly okno, ve kterém je slot rezervovaný, ale nezamčený.
-    t.update(docRef, { lastRunTime: novyCas, bezimDo: zamekDo });
+    // Všechna tři pole TOUTÉŽ transakcí. Samostatné zápisy by znamenaly
+    // okno, ve kterém je slot rezervovaný, ale nezamčený — nebo zamčený
+    // bez identifikátoru, takže by se mezera nedala poznat.
+    //
+    // `null`, ne `undefined`: Firestore `undefined` odmítá.
+    t.update(docRef, {
+      lastRunTime: novyCas,
+      bezimDo: zamekDo,
+      bezimSession: zamekSession,
+    });
   }
   return vysledek;
 }
