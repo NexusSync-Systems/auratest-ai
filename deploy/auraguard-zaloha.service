@@ -1,0 +1,30 @@
+[Unit]
+Description=AuraGuard — záloha neměnného řetězu důkazů
+Documentation=file:///home/nexus/auratest-ai/deploy/README.md
+After=docker.service
+
+[Service]
+Type=oneshot
+User=nexus
+WorkingDirectory=/home/nexus/auratest-ai
+
+# CÍL MUSÍ LEŽET NA JINÉM SVAZKU než ledger/. Skript to kontroluje a
+# odmítne pracovat — kopie vedle originálu chrání před smazáním omylem,
+# ne před ztrátou disku, a přesně kvůli tomu druhému tahle úloha vznikla.
+#
+# Uprav cestu podle toho, kam je připojený druhý svazek (Azure File Share,
+# připojený disk, NFS…).
+Environment=CIL=/mnt/zalohy/auraguard
+Environment=DRZET=30
+
+ExecStart=/usr/bin/docker compose exec -T auratest-ai \
+  node scripts/zaloha-ledgeru.mjs --cil ${CIL} --drzet ${DRZET}
+
+# Návratový kód 2 znamená „záloha hotová, ale řetěz neprošel kontrolou".
+# Není to selhání úlohy — záloha vznikla a je to důkaz o stavu. Musí ale
+# být vidět, proto se nezamlčuje: systemd to zaznamená jako neúspěch
+# a `systemctl status` to ukáže.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

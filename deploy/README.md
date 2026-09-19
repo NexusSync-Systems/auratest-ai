@@ -283,3 +283,91 @@ docker compose exec auratest-ai node scripts/smoke-test.mjs https://nexus-sync-8
 | Kontejner běží, ale healthcheck selhává | `docker compose logs --tail 40` — obvykle chybí `firebase-credentials.json` |
 | Audit vrací 503 „nemá nakonfigurovaný jazykový model" | Očekávané chování při `ALLOWED_LLM_HOSTS=`. Použij režim monkey nebo smoke_test. |
 | Disk plný | `bash deploy/cleanup-artifacts.sh` a zkontroluj, že timer běží |
+
+---
+
+## Záloha řetězu důkazů
+
+`ledger/audit-ledger.jsonl` je **jediná kopie doložitelnosti**. Je
+v `.gitignore` a montuje se bind mountem z disku jedné VM. Ztráta toho
+disku znamená ztrátu všeho, čím se dokládá, že audity proběhly — a to je
+podle `OVERENI-R2.md` hlavní důvod, proč by si produkt někdo koupil.
+
+**Ukotvení otisku to nezachrání.** Kotva dokazuje, že se řetěz nezměnil.
+Neobnoví ho.
+
+### Instalace
+
+Cíl musí ležet na **jiném svazku** než `ledger/`. Skript to kontroluje
+přes `st_dev` a jinak odmítne pracovat: kopie vedle originálu chrání
+před smazáním omylem, ne před ztrátou disku.
+
+```bash
+# 1) Připoj druhý svazek, např. /mnt/zalohy
+# 2) Uprav Environment=CIL= v auraguard-zaloha.service podle skutečné cesty
+sudo cp deploy/auraguard-zaloha.service /etc/systemd/system/
+sudo cp deploy/auraguard-zaloha.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now auraguard-zaloha.timer
+systemctl list-timers auraguard-zaloha.timer
+```
+
+Ruční spuštění a suchý běh:
+
+```bash
+docker compose exec auratest-ai node scripts/zaloha-ledgeru.mjs --cil /mnt/zalohy/auraguard --suchy
+docker compose exec auratest-ai node scripts/zaloha-ledgeru.mjs --cil /mnt/zalohy/auraguard
+```
+
+### Návratové kódy
+
+| Kód | Význam |
+|---|---|
+| 0 | Záloha hotová, řetěz neporušený |
+| 1 | Chyba: nedostupný cíl, chybějící řetěz, **cíl na stejném svazku** |
+| 2 | Záloha hotová, ale **řetěz neprošel kontrolou** — vyžaduje pozornost |
+
+Kód 2 **není** důvod zálohu zahodit. Porušený řetěz se zálohuje taky,
+protože je to důkaz o tom, že k porušení došlo; výsledek kontroly jde do
+`manifest.json`.
+
+### Obnova
+
+Záloha, kterou nikdo nikdy nezkusil obnovit, není záloha. Postup:
+
+```bash
+# 1) Ověř snímek DŘÍV, než cokoli přepíšeš
+docker compose exec auratest-ai node scripts/zaloha-ledgeru.mjs \
+  --overit /mnt/zalohy/auraguard/auraguard-ledger-2026-09-19T16-07-30-472Z
+
+# 2) Zastav aplikaci, aby do řetězu nikdo nezapisoval
+docker compose stop auratest-ai
+
+# 3) Odlož současný stav — NEPŘEPISUJ ho, může být potřeba
+mv ledger ledger.pred-obnovou-$(date +%F-%H%M)
+
+# 4) Nakopíruj snímek
+mkdir -p ledger
+cp /mnt/zalohy/auraguard/auraguard-ledger-<razitko>/audit-ledger.jsonl ledger/
+cp /mnt/zalohy/auraguard/auraguard-ledger-<razitko>/anchors.jsonl      ledger/ 2>/dev/null || true
+sudo chown -R nexus:nexus ledger
+
+# 5) Nastartuj a ověř řetěz z aplikace
+docker compose start auratest-ai
+curl -s localhost:3001/api/health >/dev/null && echo "běží"
+# v UI: sekce Doložitelnost → ověření řetězu
+```
+
+**Po obnově je řetěz kratší** než před havárií — chybí záznamy pořízené
+mezi poslední zálohou a výpadkem. To se nedá zamluvit a do spisu to patří:
+`manifest.json` nese otisk hlavy a počet záznamů, podle kterých jde přesně
+doložit, který stav se obnovil.
+
+### Co tím doděláno NENÍ
+
+- **Zálohy Firestore.** Session, monitory a projekty jsou v Firestore
+  a tenhle skript se jich netýká. Řetěz bez session se obnovit dá (spis
+  pozná, že session chybí), obráceně to ale znamená audity bez důkazu.
+- **Kopie mimo lokalitu.** Druhý svazek na téže VM ochrání před selháním
+  disku, ne před ztrátou celého stroje nebo regionu.
+- **Šifrování snímků.** Záloha obsahuje adresy auditovaných webů zákazníků.

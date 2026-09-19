@@ -1,0 +1,12 @@
+[Unit]
+Description=AuraGuard — denní záloha řetězu důkazů
+
+[Timer]
+OnCalendar=daily
+# Náhodné zdržení, aby se záloha nepotkala s úklidem artefaktů a
+# ukotvením otisku ve stejnou vteřinu.
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
