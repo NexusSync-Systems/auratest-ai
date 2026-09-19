@@ -4,8 +4,10 @@
 >
 > **Probíhá přepozicování těžiště z EAA na NIS2.** Důvod: EAA má pokutu 10 mil. Kč,
 > kupuje ho vývojář a konkurujeme Deque na jejich vlastním enginu (Axe-Core).
-> NIS2 (zákon č. 264/2025 Sb.) dopadá na ~6 000 subjektů v ČR, přechodné období
-> končí **1. 1. 2027**, pokuty jdou do **250 mil. Kč nebo 2 % obratu** a nese je
+> NIS2 (zákon č. 264/2025 Sb.) dopadá na ~6 000 subjektů v ČR, povinnosti se
+> plní **do 1 roku od doručení rozhodnutí o registraci** (§ 13 odst. 4,
+> § 15 odst. 4) — tedy u každého subjektu jindy, ne k jednomu společnému
+> datu; pokuty jdou do **250 mil. Kč nebo 2 % obratu** a nese je
 > i statutární orgán osobně. Modul NIS2 zde už je — chybí obal, dokumentace
 > doložitelnosti a workflow hlášení incidentu NÚKIB do 24 hodin.
 >
@@ -80,8 +82,15 @@ Nástroj se transformoval na ochránce evropské byrokracie a spolehlivosti.
   náročné úlohy. **Data jsou simulovaná** podle denní doby — nejde o reálné
   měření sítě. Odpověď to označuje polem `simulated: true`. Pro auditní účely
   je potřeba napojení na ENTSO-E nebo Electricity Maps.
-- **Odhad uhlíkové stopy**: Z objemu přenesených dat, koeficientem 0,81 g CO₂/MB.
-  Jde o hrubý odhad podle jednoho zveřejněného modelu, ne o měření.
+- **Odhad uhlíkové stopy**: Z objemu přenesených dat podle **Sustainable Web
+  Design Model v4** — 0,300 kWh/GB × 494 gCO₂e/kWh = **148,2 gCO₂e/GB**.
+  Jde o odhad podle zveřejněného modelu, ne o měření; konkrétní znění modelu
+  nese každý výsledek v poli `scope`.
+
+  > Dřív tu stálo „0,81 g CO₂/MB". To byla jednotková chyba:
+  > `0,81` je `kWh/GB` ze SWDM **v3**, tedy spotřeba energie na gigabajt, ne
+  > emise na megabajt. Výsledek vycházel zhruba **5,5× vyšší**, než model
+  > říká. V kódu se to opravilo (`green-model.js`), v README to zůstalo.
 
 ## 🏛️ Fáze 3: Kybernetická bezpečnost a Ochrana dat
 Plní další kritické body nutné k provozu webových služeb.
@@ -197,7 +206,7 @@ otevřená:
 
 | Proměnná | K čemu | Výchozí bez ní |
 |---|---|---|
-| `ALLOWED_LLM_HOSTS` | Allowlist LLM endpointů (SSRF) | jen `LLM_HOST` |
+| `ALLOWED_LLM_HOSTS` | Allowlist LLM endpointů (SSRF). **Nenastaveno** = jen `LLM_HOST`. **Nastaveno na prázdno** = žádný model, režimy závislé na LLM se odmítnou. | jen `LLM_HOST` |
 | `LLM_HOST` | Výchozí LLM endpoint | `http://localhost:11434` |
 | `ALLOWED_DB_HOSTS` | Allowlist DB pro zdroje překladů | DB zdroje nefungují |
 | `TRANSLATIONS_SQLITE_DIR` | Kořen pro SQLite zdroje překladů | kořen projektu |
