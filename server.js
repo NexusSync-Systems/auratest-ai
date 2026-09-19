@@ -1616,6 +1616,35 @@ async function schedulerTick() {
         //
         // Selhání transakce NESMÍ položit tik: ostatní monitory za tímhle
         // v cyklu o svůj běh nepřijdou kvůli jednomu nedostupnému zápisu.
+        // Monitor běží v režimu `ai`. Na instalaci bez jazykového modelu
+        // takový běh NEMŮŽE uspět — a `/api/run-test` ho proto odmítne
+        // (`llmUnavailableFor`). Plánovač tu pojistku neuplatňoval, takže
+        // se každou minutu spustil běh, který spadl na „fetch failed"
+        // z localhost:11434, a do neměnného záznamu přitékal řádek, který
+        // o auditovaném webu neříká nic. Naměřeno v produkci 19. 9. 2026:
+        // šest běhů, šest selhání, nula kroků.
+        //
+        // Pošesté týž vzorec: pravidlo ošetřené na jedné ze dvou cest.
+        // Komentář u `isLlmConfigured()` přitom tenhle scénář popisuje
+        // slovo za slovem — jen se ta ochrana nikdy nedostala sem.
+        //
+        // Monitor se VYPNE, ne přeskočí. Přeskakování by znamenalo, že
+        // mlčí a nikdo neví proč; `lastError` je vidět v UI. Je to stejné
+        // řešení jako u odmítnutého cíle o několik řádků výš, a stejný
+        // důvod: opakovat každou minutu něco, co nemůže vyjít, není
+        // odolnost, je to smyčka.
+        const chybiModel = llmUnavailableFor('ai');
+        if (chybiModel) {
+          console.warn(
+            `[AuraGuard] Monitor ${monitor.id} deaktivován — instalace nemá jazykový model.`
+          );
+          await db.updateMonitorIfExists(monitor.id, {
+            active: false,
+            lastError: chybiModel,
+          }).catch((e) => console.error(`Deaktivace monitoru ${monitor.id} selhala:`, e.message));
+          continue;
+        }
+
         // sessionId vzniká PŘED rezervací, protože se do ní zapisuje:
         // podle něj se pozná, že běh nikdy neskončil. Musí být
         // nepredikovatelné — je součástí názvu screenshotů.
@@ -2053,6 +2082,15 @@ app.post('/api/monitors', authenticateToken, urlGuard(), async (req, res) => {
   const { name, goal, interval, provider, model, host, maxSteps, trackExceptions, trackPromiseRejections, trackLongTasks, trackNetworkErrors, slowApiThresholdMs } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Chybí název monitoru.' });
+  }
+
+  // Monitor běží vždycky v režimu `ai` (viz `schedulerTick`). Bez modelu
+  // by se založil monitor, který se každou minutu pokusí o něco, co
+  // nemůže vyjít. Odmítnout ho hned je pro uživatele srozumitelnější než
+  // ho nechat založit a pak mu ho vypnout.
+  const chybiModel = llmUnavailableFor('ai');
+  if (chybiModel) {
+    return res.status(400).json({ error: chybiModel });
   }
 
   try {
