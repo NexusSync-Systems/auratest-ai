@@ -4,6 +4,7 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { zapisPokudExistuje } from './firestore-errors.js';
+import { posudRezervaci, STAV_SLOTU } from './monitor-slot.js';
 
 const __dirname = path.resolve();
 const credentialsPath = path.join(__dirname, 'firebase-credentials.json');
@@ -115,6 +116,46 @@ export async function updateMonitor(monitorId, updateData) {
  */
 export async function updateMonitorIfExists(monitorId, updateData) {
   return zapisPokudExistuje(() => updateMonitor(monitorId, updateData));
+}
+
+/**
+ * Atomická rezervace slotu pro běh monitoru.
+ *
+ * Nahrazuje původní `updateMonitorIfExists(id, { lastRunTime: now })`,
+ * které bylo read-then-write: plánovač si přečetl snímek, chvíli s ním
+ * pracoval a pak zapsal bez ohledu na to, co v dokumentu mezitím je.
+ * Napříč instancemi to není atomické — dva procesy si oba mysleli, že
+ * slot mají.
+ *
+ * Transakce dokument přečte ZNOVU a rozhodnutí předá `posudRezervaci`.
+ * Žádná podmínka tady není schválně: kdyby byla, existovalo by rozhodování
+ * na dvou místech a jedno z nich by se při příští opravě přehlédlo.
+ *
+ * Firestore transakci při souběhu sám opakuje, takže z ní vyjde právě
+ * jeden vítěz.
+ *
+ * @param {string} monitorId
+ * @param {number} ocekavanyLastRun hodnota ze snímku, podle které se
+ *   plánovač rozhodl monitor spustit
+ * @param {number} novyCas čas, který se zapíše při úspěchu
+ * @returns {Promise<{stav: string, duvod: string}>} viz `STAV_SLOTU`
+ */
+export async function rezervujSlotMonitoru(monitorId, ocekavanyLastRun, novyCas) {
+  const docRef = firestore.collection('monitors').doc(monitorId);
+
+  return firestore.runTransaction(async (t) => {
+    const snap = await t.get(docRef);
+    const vysledek = posudRezervaci({
+      existuje: snap.exists,
+      data: snap.exists ? snap.data() : undefined,
+      ocekavanyLastRun,
+    });
+
+    if (vysledek.stav === STAV_SLOTU.REZERVOVANO) {
+      t.update(docRef, { lastRunTime: novyCas });
+    }
+    return vysledek;
+  });
 }
 
 export async function deleteMonitor(monitorId) {

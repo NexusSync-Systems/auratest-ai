@@ -22,6 +22,7 @@ import { SCREENSHOTS_DIR, VIDEOS_DIR, SDK_DIR, FRONTEND_DIST_DIR, ensureDir } fr
 import { resolveSpaFallback } from './spa-fallback.js';
 import { popisUkonceni, souhrnneUkonceni } from './finish-policy.js';
 import { zaznamBehu, stavMonitoru } from './run-result.js';
+import { STAV_SLOTU } from './monitor-slot.js';
 import {
   appendRecord,
   verifyChain,
@@ -1528,13 +1529,37 @@ async function schedulerTick() {
           continue;
         }
 
-        // Rezervace slotu. TODO: převést na Firestore transakci (uvnitř znovu
-        // přečíst lastRunTime a zapsat jen když je stále starý) — dnešní
-        // read-then-write není atomická napříč instancemi.
-        // Smazaný monitor se prostě nespustí — a hlavně nezhasne celý tik.
-        const rezervace = await db.updateMonitorIfExists(monitor.id, { lastRunTime: now });
-        if (rezervace === null) {
-          console.warn(`[AuraGuard] Monitor ${monitor.id} byl mezitím smazán, přeskakuji.`);
+        // Rezervace slotu POROVNEJ-A-ZAPIŠ, ne prostý zápis.
+        //
+        // Dřív tu stálo `updateMonitorIfExists(id, { lastRunTime: now })`:
+        // zapsalo se vždycky, bez ohledu na to, co v dokumentu mezitím je.
+        // Mezi `getAllActiveMonitors()` nahoře a tímhle řádkem ale uběhne
+        // celý cyklus přes předchozí monitory včetně `assertPublicHttpUrl`,
+        // což je síťový dotaz. V tom okně stačí druhá instance aplikace
+        // (nebo restart, kdy se překryjí dva plánovače) a monitor se spustí
+        // dvakrát: dva prohlížeče, dvě session, dva zápisy do řetězu auditů.
+        // Pro dokument pro úřad je zdvojený záznam vada.
+        //
+        // `rezervujSlotMonitoru` dokument přečte uvnitř transakce a zapíše
+        // jen tehdy, když `lastRunTime` pořád odpovídá snímku. Každý jiný
+        // výsledek znamená „nespouštět" — ale loguje se jinak, protože
+        // zdvojený tik a smazaný monitor jsou různé věci a v logu se musí
+        // rozeznat.
+        //
+        // Selhání transakce NESMÍ položit tik: ostatní monitory za tímhle
+        // v cyklu o svůj běh nepřijdou kvůli jednomu nedostupnému zápisu.
+        let rezervace;
+        try {
+          rezervace = await db.rezervujSlotMonitoru(monitor.id, monitor.lastRunTime || 0, now);
+        } catch (err) {
+          console.error(`[AuraGuard] Rezervace slotu monitoru ${monitor.id} selhala:`, err.message);
+          continue;
+        }
+
+        if (rezervace.stav !== STAV_SLOTU.REZERVOVANO) {
+          console.warn(
+            `[AuraGuard] Monitor ${monitor.id} se nespustí (${rezervace.stav}): ${rezervace.duvod}`
+          );
           continue;
         }
 
@@ -1581,7 +1606,17 @@ async function schedulerTick() {
             .catch((err) => console.warn(`Odloženou session ${sessionId} se nepodařilo dopsat:`, err.message));
           // Rezervaci vrátíme, aby se monitor zkusil znovu v dalším tiku
           // a nečekal celý svůj interval.
-          await db.updateMonitorIfExists(monitor.id, { lastRunTime: lastRun }).catch(() => {});
+          //
+          // Stejným porovnej-a-zapiš, jen obráceně: očekáváme `now` (naši
+          // rezervaci) a zapisujeme zpátky `lastRun`. Slepý zápis by tu
+          // sice nejspíš prošel — nikdo jiný nemohl mezitím rezervovat,
+          // protože CAS drží nás — ale to je argument, ne záruka. Guard
+          // je levnější než spoléhat na úvahu, která přestane platit při
+          // první změně okolo.
+          //
+          // Vypnutý monitor se tím zároveň nevzkřísí: `posudRezervaci`
+          // vrátí `neaktivni` a nezapíše se nic.
+          await db.rezervujSlotMonitoru(monitor.id, now, lastRun).catch(() => {});
           continue;
         }
 
@@ -2871,4 +2906,7 @@ export { app };
 // které se testovat nedalo, zatímco čistý modul `stale-runs.js` byl
 // v pořádku. Testovat jen to, co se testovat dá, znamená testovat to,
 // kde chyby nejsou.
-export const __test__ = { doucistiZaseknuteBehy, beziciBehy, zacniTepat, prestanTepat, provedBehMonitoru, oznamMonitory };
+// `schedulerTick` je tu proto, že rezervace slotu je rozhodnutí, které
+// se nedá otestovat zvenčí jinak. Bez něj by platilo totéž co u minulých
+// nálezů: vytažená funkce (`posudRezervaci`) otestovaná, volající kód ne.
+export const __test__ = { doucistiZaseknuteBehy, beziciBehy, zacniTepat, prestanTepat, provedBehMonitoru, oznamMonitory, schedulerTick };
