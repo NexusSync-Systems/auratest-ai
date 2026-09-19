@@ -144,6 +144,13 @@ Slouží k provoznímu hlídání. Funguje bez těžkopádného Playwrightu, aby
 
 Aplikace poskytuje vlastní bashový/CMD nástroj, kterým zablokujete pipeline v případě nesplnění legislativy.
 
+> **CLI je brána, ne doklad.** Nevytváří záznam v neměnném řetězu
+> (Epic D), takže z běhu v pipeline nevzniká doložitelný podklad pro
+> úřad — jen návratový kód. Zapsat to bez uložení běhu nelze: spis
+> iteruje přes běhy, takže položka v řetězu bez protějšku by se v něm
+> nikdy neobjevila a důkaz by se ztratil tiše. Doložitelný sken proto
+> spouštějte přes server. CLI to samo vypíše při každém spuštění.
+
 ```bash
 # Nainstalování lokálního balíčku
 npm link

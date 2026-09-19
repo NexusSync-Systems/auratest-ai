@@ -32,3 +32,12 @@ __pycache__
 frontend/dist
 CODE_REVIEW.md
 COMMITS.md
+
+# Živý snímek IP rozsahů do obrazu NEPATŘÍ.
+#
+# Přes compose ho vždy zastíní bind svazek `./data:/app/data`, takže by
+# se 15 MB kopírovalo do obrazu jen proto, aby se nikdy nepoužilo —
+# build context tím vyskočil z 15 na 30 MB. Obraz si nese výchozí snímek
+# (`cloud-ranges.vychozi.json`), na který `loadRanges` spadne, takže
+# i spuštění bez svazku (`docker run`) má rozsahy k dispozici.
+data/cloud-ranges.json

@@ -64,7 +64,27 @@ if (!VALID_AUDITS.includes(auditType)) {
 
 console.log(`\n🛡️  AuraGuard CI/CD Zabezpečení 🛡️`);
 console.log(`Cílové URL: ${url}`);
-console.log(`Spouštím audit: ${auditType.toUpperCase()}\n`);
+console.log(`Spouštím audit: ${auditType.toUpperCase()}`);
+
+// CO TENHLE BĚH NEUMÍ, MUSÍ BÝT VIDĚT PŘEDEM.
+//
+// CLI nepíše do neměnného záznamu auditů (Epic D). Zjistila to kontrolní
+// vlna a je to mezera, ne nepravda — README CLI nabízí jako bránu pro
+// pipeline, ne jako cestu k doložitelnosti. Jenže kdo ho pustí v CI,
+// snadno uvěří, že mu z toho vzniká doklad; proto to říkáme nahlas, a to
+// na začátku, ne v poznámce pod čarou.
+//
+// Zapsat to bez uložení běhu NEJDE: spis iteruje přes běhy, ne přes
+// záznamy, takže položka v řetězu bez protějšku by se ve spisu nikdy
+// neobjevila — důkaz by se ztratil tiše. To je přesně chyba, kterou
+// opravovala úloha o pořadí zápisu. Doložitelný sken musí projít
+// serverem, který běh uloží a teprve pak zapíše do řetězu.
+console.log(
+  'Pozn.: tenhle běh NEVYTVÁŘÍ záznam v neměnném řetězu — je to brána\n'
+  + '      pro pipeline, ne doklad pro úřad. Doložitelný sken spusťte\n'
+  + '      přes server (webové rozhraní nebo /api), který běh uloží\n'
+  + '      a zapíše do záznamu.\n'
+);
 
 /**
  * Skenery vracejí tříhodnotový výsledek: true / false / null (neprůkazné).
