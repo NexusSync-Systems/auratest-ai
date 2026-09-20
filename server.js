@@ -22,7 +22,7 @@ import { SCREENSHOTS_DIR, VIDEOS_DIR, SDK_DIR, FRONTEND_DIST_DIR, ensureDir } fr
 import { resolveSpaFallback } from './spa-fallback.js';
 import { popisUkonceni, souhrnneUkonceni } from './finish-policy.js';
 import { zaznamBehu, stavMonitoru } from './run-result.js';
-import { STAV_SLOTU } from './monitor-slot.js';
+import { STAV_SLOTU, posudSpusteniMonitoru } from './monitor-slot.js';
 import {
   appendRecord,
   verifyChain,
@@ -1558,18 +1558,37 @@ async function schedulerTick() {
     const now = Date.now();
 
     for (const monitor of activeMonitors) {
-      const intervalMap = {
-        '1m': 60000,
-        '5m': 300000,
-        '15m': 900000,
-        '1h': 3600000,
-        '12h': 43200000,
-        '24h': 86400000
-      };
-      const intervalMs = intervalMap[monitor.interval] || 3600000;
       const lastRun = monitor.lastRunTime || 0;
 
-      if (now - lastRun >= intervalMs) {
+      // JEDINÉ rozhodovací místo, a schválně mimo tenhle soubor.
+      //
+      // Dřív tu byla tabulka intervalů a `if` uvnitř cyklu. Do takového
+      // místa se zvenčí nedostane ani jest (spojovací vrstva), ani smoke
+      // test (import `server.js` rozběhne server) — a přesně tam vznikla
+      // vada naměřená v produkci: chybějící jazykový model se neposuzoval
+      // vůbec, takže monitor každou minutu spadl a zapsal prázdný záznam
+      // do spisu pro úřad.
+      //
+      // `posudSpusteniMonitoru` je čistá funkce, takže ji ověřuje jest
+      // s mutacemi i smoke test nad nasazeným artefaktem.
+      const rozhodnuti = posudSpusteniMonitoru({
+        monitor,
+        ted: now,
+        chybiModel: llmUnavailableFor('ai'),
+      });
+
+      if (rozhodnuti.akce === 'vypnout') {
+        // Vypnout, ne přeskočit: mlčící monitor bez vysvětlení je tichý
+        // režim, kterému se vyhýbáme. `lastError` je vidět v UI.
+        console.warn(`[AuraGuard] Monitor ${monitor.id} deaktivován — ${rozhodnuti.duvod}`);
+        await db.updateMonitorIfExists(monitor.id, {
+          active: false,
+          lastError: rozhodnuti.duvod,
+        }).catch((e) => console.error(`Deaktivace monitoru ${monitor.id} selhala:`, e.message));
+        continue;
+      }
+
+      if (rozhodnuti.akce === 'spustit') {
         // Cíl se ověřuje ZNOVU, těsně před spuštěním.
         //
         // `POST /api/monitors` sice `urlGuard` má, ale to je jen jedna ze
@@ -1616,35 +1635,6 @@ async function schedulerTick() {
         //
         // Selhání transakce NESMÍ položit tik: ostatní monitory za tímhle
         // v cyklu o svůj běh nepřijdou kvůli jednomu nedostupnému zápisu.
-        // Monitor běží v režimu `ai`. Na instalaci bez jazykového modelu
-        // takový běh NEMŮŽE uspět — a `/api/run-test` ho proto odmítne
-        // (`llmUnavailableFor`). Plánovač tu pojistku neuplatňoval, takže
-        // se každou minutu spustil běh, který spadl na „fetch failed"
-        // z localhost:11434, a do neměnného záznamu přitékal řádek, který
-        // o auditovaném webu neříká nic. Naměřeno v produkci 19. 9. 2026:
-        // šest běhů, šest selhání, nula kroků.
-        //
-        // Pošesté týž vzorec: pravidlo ošetřené na jedné ze dvou cest.
-        // Komentář u `isLlmConfigured()` přitom tenhle scénář popisuje
-        // slovo za slovem — jen se ta ochrana nikdy nedostala sem.
-        //
-        // Monitor se VYPNE, ne přeskočí. Přeskakování by znamenalo, že
-        // mlčí a nikdo neví proč; `lastError` je vidět v UI. Je to stejné
-        // řešení jako u odmítnutého cíle o několik řádků výš, a stejný
-        // důvod: opakovat každou minutu něco, co nemůže vyjít, není
-        // odolnost, je to smyčka.
-        const chybiModel = llmUnavailableFor('ai');
-        if (chybiModel) {
-          console.warn(
-            `[AuraGuard] Monitor ${monitor.id} deaktivován — instalace nemá jazykový model.`
-          );
-          await db.updateMonitorIfExists(monitor.id, {
-            active: false,
-            lastError: chybiModel,
-          }).catch((e) => console.error(`Deaktivace monitoru ${monitor.id} selhala:`, e.message));
-          continue;
-        }
-
         // sessionId vzniká PŘED rezervací, protože se do ní zapisuje:
         // podle něj se pozná, že běh nikdy neskončil. Musí být
         // nepredikovatelné — je součástí názvu screenshotů.

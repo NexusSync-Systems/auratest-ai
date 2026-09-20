@@ -2,7 +2,10 @@
  * @jest-environment node
  */
 import { jest } from '@jest/globals';
-import { posudRezervaci, jakoCislo, STAV_SLOTU } from '../monitor-slot.js';
+import {
+  posudRezervaci, jakoCislo, posudSpusteniMonitoru, INTERVALY_MS, VYCHOZI_INTERVAL_MS,
+  STAV_SLOTU,
+} from '../monitor-slot.js';
 
 /**
  * Rezervace slotu pro běh monitoru.
@@ -251,5 +254,80 @@ describe('posudRezervaci — mezera v měření', () => {
       ocekavanyLastRun: 500,
       ted,
     }).mezera).toBeNull();
+  });
+});
+
+/**
+ * Rozhodnutí, jestli monitor v tomhle tiku vůbec přijde na řadu.
+ *
+ * Vytaženo z `schedulerTick` poté, co se v produkci ukázalo, že `if`
+ * uvnitř cyklu je mimo dosah jestu (spojovací vrstva bez testu) i smoke
+ * testu (import `server.js` rozběhne server). Právě tam chyběla pojistka
+ * proti chybějícímu jazykovému modelu.
+ */
+describe('posudSpusteniMonitoru', () => {
+  const ted = 10_000_000;
+  const monitor = (over = {}) => ({ interval: '1h', lastRunTime: 0, ...over });
+
+  it('po uplynutí intervalu se spustí', () => {
+    const v = posudSpusteniMonitoru({ monitor: monitor(), ted, chybiModel: null });
+    expect(v.akce).toBe('spustit');
+  });
+
+  it('před uplynutím intervalu se přeskočí a řekne, kolik zbývá', () => {
+    const v = posudSpusteniMonitoru({
+      monitor: monitor({ lastRunTime: ted - 60_000 }), ted, chybiModel: null,
+    });
+    expect(v.akce).toBe('preskocit');
+    expect(v.duvod).toMatch(/zbývá/);
+  });
+
+  it('bez jazykového modelu se monitor VYPNE, ne přeskočí', () => {
+    // Naměřeno v produkci: bez téhle větve se běh spouštěl každou minutu,
+    // spadl na „fetch failed" a zapsal prázdný záznam do spisu pro úřad.
+    const v = posudSpusteniMonitoru({
+      monitor: monitor(), ted, chybiModel: 'Tahle instalace nemá jazykový model.',
+    });
+    expect(v.akce).toBe('vypnout');
+    expect(v.duvod).toMatch(/jazykový model/);
+  });
+
+  it('chybějící model se posuzuje DŘÍV než interval', () => {
+    // Jinak by se monitor s denním intervalem vypnul až za den a do té
+    // doby se tvářil jako funkční.
+    const v = posudSpusteniMonitoru({
+      monitor: monitor({ interval: '24h', lastRunTime: ted }), ted, chybiModel: 'bez modelu',
+    });
+    expect(v.akce).toBe('vypnout');
+  });
+
+  it.each(Object.entries(INTERVALY_MS))(
+    'interval %s se respektuje na obě strany hranice', (nazev, ms) => {
+      const tesnePred = posudSpusteniMonitoru({
+        monitor: monitor({ interval: nazev, lastRunTime: ted - ms + 1 }), ted, chybiModel: null,
+      });
+      const presne = posudSpusteniMonitoru({
+        monitor: monitor({ interval: nazev, lastRunTime: ted - ms }), ted, chybiModel: null,
+      });
+      expect(tesnePred.akce).toBe('preskocit');
+      expect(presne.akce).toBe('spustit');
+    });
+
+  it('neznámý interval propadne na hodinu, ne na nulu', () => {
+    // Nula by znamenala spouštět při každém tiku, tedy každou minutu.
+    const tesnePred = posudSpusteniMonitoru({
+      monitor: monitor({ interval: 'nesmysl', lastRunTime: ted - VYCHOZI_INTERVAL_MS + 1 }),
+      ted,
+      chybiModel: null,
+    });
+    expect(tesnePred.akce).toBe('preskocit');
+    expect(VYCHOZI_INTERVAL_MS).toBe(3_600_000);
+  });
+
+  it('vadný lastRunTime (Timestamp, řetězec) neshodí rozhodnutí', () => {
+    const v = posudSpusteniMonitoru({
+      monitor: monitor({ lastRunTime: { toMillis: () => NaN } }), ted, chybiModel: null,
+    });
+    expect(v.akce).toBe('spustit');
   });
 });

@@ -546,6 +546,122 @@ try {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log('\n8) Plánovač monitorů');
+
+/**
+ * PROČ JE TAHLE SEKCE V SMOKE TESTU
+ *
+ * 19. 9. 2026 se v produkci ukázalo, že monitor na instalaci bez
+ * jazykového modelu se spouštěl každou minutu, spadl na „fetch failed"
+ * a zapsal do neměnného záznamu řádek, který o auditovaném webu neříká
+ * nic. Pojistka existovala, jen ji plánovač nevolal — a nechytilo to ani
+ * 1420 jednotkových testů, ani smoke test, protože plánovač nespouštěl.
+ *
+ * CO TAHLE SEKCE OVĚŘUJE: že rozhodovací funkce plánovače se
+ * v NASAZENÉM artefaktu, pod skutečným Node a bez babelu, chová správně.
+ *
+ * CO NEOVĚŘUJE: že jí `server.js` předá správné vstupy. Zavolat
+ * `schedulerTick` odtud nejde — import `server.js` rozběhne server a na
+ * produkci by to sáhlo na skutečné monitory. Tohle drží jest s mutacemi.
+ * Je to vědomá mezera, ne přehlédnutí.
+ */
+try {
+  const { posudSpusteniMonitoru, posudRezervaci, teloRezervace, INTERVALY_MS, STAV_SLOTU } =
+    await import('../monitor-slot.js');
+
+  const ted = 10_000_000;
+  const monitor = (o = {}) => ({ interval: '1h', lastRunTime: 0, ...o });
+
+  check(
+    'bez jazykového modelu se monitor vypne, ne spustí',
+    posudSpusteniMonitoru({ monitor: monitor(), ted, chybiModel: 'bez modelu' }).akce === 'vypnout',
+    'tohle byla ta produkční vada',
+  );
+  check(
+    's modelem a po uplynutí intervalu se spustí',
+    posudSpusteniMonitoru({ monitor: monitor(), ted, chybiModel: null }).akce === 'spustit',
+  );
+  check(
+    'před uplynutím intervalu se nespouští',
+    posudSpusteniMonitoru({
+      monitor: monitor({ lastRunTime: ted - 1000 }), ted, chybiModel: null,
+    }).akce === 'preskocit',
+  );
+  check(
+    'neznámý interval propadne na hodinu, ne na nulu',
+    posudSpusteniMonitoru({
+      monitor: monitor({ interval: 'nesmysl', lastRunTime: ted - 60_000 }), ted, chybiModel: null,
+    }).akce === 'preskocit',
+    `známých intervalů: ${Object.keys(INTERVALY_MS).length}`,
+  );
+
+  // Zámek běhu — větev, kterou se v produkci vyvolat nepodařilo, protože
+  // by běh musel trvat déle než interval.
+  check(
+    'živý zámek nepustí překrývající se běh',
+    posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 0, bezimDo: ted + 60_000 },
+      ocekavanyLastRun: 0,
+      ted,
+    }).stav === STAV_SLOTU.BEZI,
+  );
+  check(
+    'po doběhnutí (zámek 0) se slot zase rezervuje',
+    posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 0, bezimDo: 0, bezimSession: null },
+      ocekavanyLastRun: 0,
+      ted,
+    }).stav === STAV_SLOTU.REZERVOVANO,
+  );
+  check(
+    'po řádném běhu se NEHLÁSÍ falešná mezera v měření',
+    posudRezervaci({
+      existuje: true,
+      data: { active: true, lastRunTime: 0, bezimDo: 0, bezimSession: null },
+      ocekavanyLastRun: 0,
+      ted,
+    }).mezera === null,
+    'falešná mezera by do spisu napsala, že se neměřilo, ačkoli měřilo',
+  );
+
+  // Transakce rezervace nad dvojníkem — bez Firestoru.
+  const zapisy = [];
+  const t = {
+    get: async () => ({ exists: true, data: () => ({ active: true, lastRunTime: 100 }) }),
+    update: (_ref, data) => zapisy.push(data),
+  };
+  const v = await teloRezervace(t, { id: 'm' }, {
+    ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, zamekSession: 'sx', ted: 400,
+  });
+  check(
+    'rezervace zapíše čas, zámek i identifikátor jedním zápisem',
+    v.stav === STAV_SLOTU.REZERVOVANO
+      && zapisy.length === 1
+      && zapisy[0].lastRunTime === 500
+      && zapisy[0].bezimDo === 9999
+      && zapisy[0].bezimSession === 'sx',
+    JSON.stringify(zapisy[0] || null),
+  );
+
+  const zapisy2 = [];
+  const t2 = {
+    get: async () => ({ exists: true, data: () => ({ active: true, lastRunTime: 777 }) }),
+    update: (_ref, data) => zapisy2.push(data),
+  };
+  const v2 = await teloRezervace(t2, { id: 'm' }, {
+    ocekavanyLastRun: 100, novyCas: 500, zamekDo: 9999, zamekSession: 'sx', ted: 400,
+  });
+  check(
+    'při obsazeném slotu se NEZAPÍŠE nic',
+    v2.stav === STAV_SLOTU.OBSAZENO && zapisy2.length === 0,
+  );
+} catch (err) {
+  check('rozhodování plánovače se podařilo načíst a spustit', false, err.message);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Shrnutí. Záměrně ve DVOU oddílech: exit kód vypovídá o NÁSTROJI, ne
 // o souladu testovaného webu. Míchat obojí by znamenalo zobrazit zelenou
 // tam, kde skener našel porušení — přesně ta záměna, kterou tenhle projekt

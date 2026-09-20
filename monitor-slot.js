@@ -246,3 +246,70 @@ export async function teloRezervace(
   }
   return vysledek;
 }
+
+/**
+ * Délky intervalů monitorů v milisekundách.
+ *
+ * Bývaly deklarované uvnitř cyklu v `schedulerTick`, tedy na místě, kam se
+ * zvenčí nedalo dosáhnout. Překlep v hodnotě by se projevil až tím, že se
+ * monitor spouští jinak často — což si nikdo nevšimne.
+ */
+export const INTERVALY_MS = Object.freeze({
+  '1m': 60_000,
+  '5m': 300_000,
+  '15m': 900_000,
+  '1h': 3_600_000,
+  '12h': 43_200_000,
+  '24h': 86_400_000,
+});
+
+/** Interval, když je v dokumentu nesmysl. Hodina, ne nula. */
+export const VYCHOZI_INTERVAL_MS = INTERVALY_MS['1h'];
+
+/**
+ * Má se monitor v tomhle tiku spustit — a když ne, co s ním?
+ *
+ * PROČ TO NENÍ JEN `if` V PLÁNOVAČI
+ * Dřív to `if` v plánovači bylo, a přesně tam vznikla vada naměřená
+ * v produkci 19. 9. 2026: na instalaci bez jazykového modelu se monitor
+ * spouštěl každou minutu, spadl na „fetch failed" a zapsal do neměnného
+ * záznamu řádek, který o auditovaném webu neříká nic. Pojistka
+ * `llmUnavailableFor` přitom existovala — jen ji plánovač nevolal.
+ *
+ * Nešlo to zachytit ani jednotkovým testem (spojovací vrstva bez testu),
+ * ani smoke testem (ten plánovač vůbec nespouští a spustit ho nemůže,
+ * protože import `server.js` rozběhne server). Rozhodnutí je proto tady:
+ * volá ho plánovač, ověřuje ho jest i smoke test nad nasazeným artefaktem.
+ *
+ * Co SEM NEPATŘÍ: kontrola cíle (`assertPublicHttpUrl`) — je síťová
+ * a asynchronní. Zůstává v plánovači hned za tímhle rozhodnutím.
+ *
+ * @param {object} vstup
+ * @param {object} vstup.monitor dokument monitoru
+ * @param {number} vstup.ted současný čas (ms epoch)
+ * @param {string|null} vstup.chybiModel hláška z `llmUnavailableFor('ai')`,
+ *   nebo `null`, když je model k dispozici
+ * @returns {{akce: 'spustit'|'preskocit'|'vypnout', duvod: string}}
+ */
+export function posudSpusteniMonitoru({ monitor, ted, chybiModel }) {
+  // Chybějící model se posuzuje PRVNÍ.
+  //
+  // Kdyby se posuzoval až po intervalu, monitor s denním intervalem by se
+  // vypnul až za den — a do té doby by se tvářil jako funkční.
+  if (chybiModel) {
+    return { akce: 'vypnout', duvod: chybiModel };
+  }
+
+  const interval = INTERVALY_MS[monitor?.interval] || VYCHOZI_INTERVAL_MS;
+  const posledni = jakoCislo(monitor?.lastRunTime);
+  const uplynulo = jakoCislo(ted) - posledni;
+
+  if (uplynulo < interval) {
+    return {
+      akce: 'preskocit',
+      duvod: `do dalšího běhu zbývá ${Math.round((interval - uplynulo) / 1000)} s`,
+    };
+  }
+
+  return { akce: 'spustit', duvod: 'interval uplynul' };
+}
