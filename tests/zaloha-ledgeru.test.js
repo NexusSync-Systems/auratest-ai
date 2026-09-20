@@ -4,6 +4,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { appendRecord } from '../audit-ledger.js';
 import {
   rozborArgumentu, keSmazani, najdiSnimky, stejnySvazek, zalohuj, overSnimek,
 } from '../ledger-zaloha.js';
@@ -70,20 +71,66 @@ describe('stejnySvazek', () => {
 
 describe('zalohuj a overSnimek', () => {
   let cil;
+  let zdroj;
+  let ledgerFile;
 
+  /**
+   * Test si nosí VLASTNÍ řetěz.
+   *
+   * První verze četla `ledger/audit-ledger.jsonl` z repozitáře. Ten je
+   * v `.gitignore`, takže v čistém checkoutu neexistuje — a testy padaly
+   * v CI, zatímco lokálně procházely. Lokálně ho totiž stihl vyrobit jiný
+   * testovací soubor jako vedlejší efekt, takže závislost byla neviditelná
+   * a závisela na pořadí, ve kterém jest soubory pustí.
+   */
   beforeEach(() => {
     cil = fs.mkdtempSync(path.join(os.tmpdir(), 'zaloha-test-'));
+    zdroj = fs.mkdtempSync(path.join(os.tmpdir(), 'zaloha-zdroj-'));
+    ledgerFile = path.join(zdroj, 'audit-ledger.jsonl');
+    for (let i = 1; i <= 3; i++) {
+      appendRecord(
+        { sessionId: `s${i}`, target: `https://priklad${i}.cz`, result: { i } },
+        ledgerFile,
+      );
+    }
   });
   afterEach(() => {
     fs.rmSync(cil, { recursive: true, force: true });
+    fs.rmSync(zdroj, { recursive: true, force: true });
+    delete process.env.POVOL_STEJNY_DISK;
+  });
+
+  /**
+   * Zdroj i cíl jsou v `/tmp`, tedy na stejném svazku — a skript to
+   * schválně odmítá. Ostatní testy si tedy musí povolení vyžádat, jinak
+   * by testovaly jen tuhle jedinou zábranu.
+   *
+   * Aby se tím zábrana nezakryla, má vlastní test hned pod tímhle.
+   */
+  const povolStejnyDisk = () => { process.env.POVOL_STEJNY_DISK = '1'; };
+
+  it('cíl na stejném svazku se BEZ povolení odmítne', () => {
+    // Celý smysl zálohy: kopie vedle originálu není ochrana proti ztrátě
+    // disku. Kdyby tahle zábrana zmizela, vypadalo by zálohování funkčně
+    // a nechránilo by před tím, kvůli čemu vzniklo.
+    expect(() => zalohuj({ cil, drzet: 30, ledgerFile })).toThrow(/stejném svazku/);
+  });
+
+  it('odmítnutá záloha po sobě nenechá prázdný cíl', () => {
+    // Jinak v cíli zůstane adresář, který vypadá, že se tam zálohuje.
+    const novy = path.join(cil, 'jeste-neexistuje');
+    expect(() => zalohuj({ cil: novy, drzet: 30, ledgerFile })).toThrow(/stejném svazku/);
+    expect(fs.existsSync(novy)).toBe(false);
   });
 
   it('bez cíle odmítne pracovat', () => {
-    expect(() => zalohuj({ cil: null, drzet: 30 })).toThrow(/--cil/);
+    expect(() => zalohuj({ cil: null, drzet: 30, ledgerFile })).toThrow(/--cil/);
   });
 
   it('suchý běh nic nezapíše', () => {
-    const v = zalohuj({ cil, drzet: 30, suchy: true });
+    povolStejnyDisk();
+    povolStejnyDisk();
+    const v = zalohuj({ cil, drzet: 30, suchy: true, ledgerFile });
     expect(v.suchy).toBe(true);
     expect(najdiSnimky(cil)).toEqual([]);
   });
@@ -91,7 +138,8 @@ describe('zalohuj a overSnimek', () => {
   it('snímek nese manifest s otiskem hlavy a počtem záznamů', () => {
     // Bez otisku hlavy je to soubor s neznámým obsahem — po obnově by se
     // nedalo říct, KTERÝ stav řetězu snímek zachytil.
-    const v = zalohuj({ cil, drzet: 30 });
+    povolStejnyDisk();
+    const v = zalohuj({ cil, drzet: 30, ledgerFile });
     const manifest = JSON.parse(fs.readFileSync(path.join(v.cilovy, 'manifest.json'), 'utf8'));
     expect(manifest.hlava).toMatch(/^[0-9a-f]{64}$/);
     expect(manifest.zaznamu).toBe(v.zaznamu);
@@ -99,13 +147,15 @@ describe('zalohuj a overSnimek', () => {
   });
 
   it('pořízený snímek projde vlastním ověřením', () => {
-    const v = zalohuj({ cil, drzet: 30 });
+    povolStejnyDisk();
+    const v = zalohuj({ cil, drzet: 30, ledgerFile });
     expect(overSnimek(v.cilovy).ok).toBe(true);
   });
 
   it('změna v kopii se při ověření pozná', () => {
     // Tohle je celý smysl otisků v manifestu.
-    const v = zalohuj({ cil, drzet: 30 });
+    povolStejnyDisk();
+    const v = zalohuj({ cil, drzet: 30, ledgerFile });
     const soubor = path.join(v.cilovy, 'audit-ledger.jsonl');
     fs.appendFileSync(soubor, '{"podvrzeno":true}\n');
     const o = overSnimek(v.cilovy);
@@ -134,7 +184,8 @@ describe('zalohuj a overSnimek', () => {
     fs.mkdirSync(path.join(cil, 'auraguard-ledger-2026-01-01T00-00-00-000Z'));
     fs.mkdirSync(path.join(cil, 'auraguard-ledger-2026-02-01T00-00-00-000Z'));
 
-    const v = zalohuj({ cil, drzet: 1 });
+    povolStejnyDisk();
+    const v = zalohuj({ cil, drzet: 1, ledgerFile });
 
     expect(fs.existsSync(path.join(cil, 'aaa-cizi-zaloha'))).toBe(true);
     // A právě pořízený snímek musí zůstat — retence nesmí smazat to,
@@ -149,7 +200,8 @@ describe('zalohuj a overSnimek', () => {
     // a bez vyloučení čerstvého snímku by šel ke smazání jako první.
     fs.mkdirSync(path.join(cil, 'auraguard-ledger-zzz-rucni-kopie'));
 
-    const v = zalohuj({ cil, drzet: 1 });
+    povolStejnyDisk();
+    const v = zalohuj({ cil, drzet: 1, ledgerFile });
 
     expect(fs.existsSync(v.cilovy)).toBe(true);
   });
@@ -166,7 +218,8 @@ describe('zalohuj a overSnimek', () => {
     // hotová záloha.
     const io = { ...fs, writeFileSync: () => { throw new Error('disk plný'); } };
 
-    expect(() => zalohuj({ cil, drzet: 30 }, io)).toThrow('disk plný');
+    povolStejnyDisk();
+    expect(() => zalohuj({ cil, drzet: 30, ledgerFile }, io)).toThrow('disk plný');
     expect(najdiSnimky(cil)).toEqual([]);
   });
 });

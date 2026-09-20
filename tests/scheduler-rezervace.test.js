@@ -75,6 +75,28 @@ jest.mock('../ssrf-guard.js', () => ({
 // ale až po doběhnutí testu — jest pak hlásí „Cannot log after tests are
 // done" a celá sada je nestabilní (jeden běh spadl, druhý prošel).
 // V CI, kde Playwright funguje, by test navíc opravdu chodil na example.com.
+// `audit-ledger.js` se podvrhuje, aby testy NEZAPISOVALY do skutečného
+// řetězu důkazů.
+//
+// NAMĚŘENO: bez tohohle podvržení zapsal tenhle soubor osm záznamů do
+// `ledger/audit-ledger.jsonl` v repozitáři. `schedulerTick` spustí
+// `provedBehMonitoru`, ta volá `recordInLedger` a ten `appendRecord`
+// s výchozí cestou. Sada testů tedy dopisovala do řetězu, který má
+// dokládat, že audity proběhly — a kdyby někdo pustil testy na serveru,
+// šlo by to rovnou do důkazů předkládaných úřadu.
+//
+// Vedlejší škoda byla stejně zrádná: ten soubor pak v repozitáři
+// existoval, takže testy zálohy, které na něj spoléhaly, lokálně
+// procházely a padaly až v CI na čistém checkoutu.
+//
+// Podvrhuje se JEN `appendRecord`, zbytek modulu zůstává skutečný:
+// `ledger-anchor.js` si z něj bere konstanty (`LEDGER_DIR`) a úplná
+// náhrada ho rozbila na „path argument must be of type string".
+jest.mock('../audit-ledger.js', () => ({
+  ...jest.requireActual('../audit-ledger.js'),
+  appendRecord: jest.fn(() => ({ hash: 'x'.repeat(64), recordedAt: new Date().toISOString() })),
+}));
+
 jest.mock('../agent.js', () => ({
   runAutonomousTest: jest.fn(async () => ({ steps: [], bugs: [], summary: 'mock' })),
   comparePages: jest.fn(), auditTranslations: jest.fn(), extractInternalLinks: jest.fn(),

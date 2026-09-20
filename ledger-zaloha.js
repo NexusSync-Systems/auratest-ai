@@ -102,16 +102,29 @@ export function keSmazani(snimky, drzet) {
   return snimky.length <= drzet ? [] : snimky.slice(0, snimky.length - drzet);
 }
 
-export function zalohuj({ cil, drzet, suchy }, io = fs) {
+export function zalohuj(
+  { cil, drzet, suchy, ledgerFile = LEDGER_FILE, anchorFile = ANCHOR_FILE },
+  io = fs,
+) {
   if (!cil) throw new Error('Chybí --cil. Kam se má zálohovat?');
-  if (!io.existsSync(LEDGER_FILE)) {
-    throw new Error(`Řetěz ${LEDGER_FILE} neexistuje — není co zálohovat.`);
+  if (!io.existsSync(ledgerFile)) {
+    throw new Error(`Řetěz ${ledgerFile} neexistuje — není co zálohovat.`);
   }
 
-  const zdrojovyAdresar = path.dirname(LEDGER_FILE);
+  const zdrojovyAdresar = path.dirname(ledgerFile);
+
+  // Cíl se zakládá PŘED kontrolou svazku, protože `stejnySvazek` potřebuje
+  // existující cestu — `statSync` na neexistujícím adresáři nic neřekne.
+  // Když ale kontrola neprojde, musí se po sobě uklidit: první verze tu
+  // adresář nechávala ležet, takže po odmítnuté záloze zůstal prázdný
+  // adresář, který vypadá, že se tam zálohuje.
+  const cilExistoval = io.existsSync(cil);
   io.mkdirSync(cil, { recursive: true });
 
   const stejny = stejnySvazek(zdrojovyAdresar, cil);
+  if (stejny && process.env.POVOL_STEJNY_DISK !== '1' && !cilExistoval) {
+    try { io.rmdirSync(cil); } catch { /* neprázdný cíl se nemaže */ }
+  }
   if (stejny && process.env.POVOL_STEJNY_DISK !== '1') {
     throw new Error(
       `Cíl ${cil} leží na stejném svazku jako řetěz. Kopie vedle originálu `
@@ -121,8 +134,8 @@ export function zalohuj({ cil, drzet, suchy }, io = fs) {
   }
 
   // Ověření PŘED kopií. Porušený řetěz se zálohuje taky — viz hlavička.
-  const kontrola = verifyChain();
-  const zaznamy = readLedger();
+  const kontrola = verifyChain(ledgerFile);
+  const zaznamy = readLedger(ledgerFile);
 
   const razitko = new Date().toISOString().replace(/[:.]/g, '-');
   const cilovy = path.join(cil, `${PREDPONA}${razitko}`);
@@ -136,7 +149,7 @@ export function zalohuj({ cil, drzet, suchy }, io = fs) {
 
   io.mkdirSync(docasny, { recursive: true });
   const soubory = {};
-  for (const zdroj of [LEDGER_FILE, ANCHOR_FILE]) {
+  for (const zdroj of [ledgerFile, anchorFile]) {
     if (!io.existsSync(zdroj)) continue; // kotvy nemusí existovat
     const jmeno = path.basename(zdroj);
     io.copyFileSync(zdroj, path.join(docasny, jmeno));
@@ -147,7 +160,7 @@ export function zalohuj({ cil, drzet, suchy }, io = fs) {
     porizeno: new Date().toISOString(),
     // Otisk hlavy: podle něj se pozná, KTERÝ stav řetězu snímek zachytil.
     // Bez něj je to jen soubor s neznámým obsahem.
-    hlava: headHash(),
+    hlava: headHash(ledgerFile),
     zaznamu: zaznamy.length,
     // Tři stavy, ne „ok: true". Výsledek ověření patří do zálohy,
     // protože po obnově se nikdo nedozví, jaký byl stav při pořízení.
