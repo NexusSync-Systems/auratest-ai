@@ -16,7 +16,57 @@
 import http from 'http';
 import dns from 'dns';
 import zlib from 'zlib';
+import { execFileSync } from 'child_process';
 import { fetchPripnute, MAX_TELO_BAJTU } from '../safe-fetch.js';
+
+/**
+ * Dva z testů níž potřebují DVĚ různé adresy na loopbacku a na STEJNÉM portu
+ * — jinak by procházely i tehdy, kdyby se připnutí neuplatnilo, protože by
+ * stačilo rozlišit port. Celý smysl těch testů je, že se rozhoduje podle
+ * adresy, ne podle dvojice host+port.
+ *
+ * Linux routuje na loopback celý rozsah 127.0.0.0/8, takže 127.0.0.2 je tam
+ * k dispozici. macOS přiřazuje rozhraní lo0 jen 127.0.0.1; bind na 127.0.0.2
+ * skončí na EADDRNOTAVAIL, dokud si člověk alias nepřidá ručně
+ * (`sudo ifconfig lo0 alias 127.0.0.2`).
+ *
+ * Dřív ty dva testy na Macu prostě padaly. Červená, se kterou nejde nic
+ * udělat, přitom není měření — je to šum, který učí přehlížet i skutečné
+ * nálezy. Proto se tu neptáme na platformu, ale MĚŘÍME, jestli se dá
+ * bindovat; ve vedlejším procesu, protože jest definuje testy synchronně.
+ *
+ * Když to nejde, testy se PŘESKOČÍ, ne zelené odbydou. Přeskočený test je
+ * v reportu vidět, falešně zelený ne — a tenhle projekt má na to pravidlo:
+ * splněno / nesplněno / neprůkazné, nikdy tiché „splněno".
+ */
+function lzeBindovat(adresa) {
+  // `node -e <skript> <adresa>`: argument dorazí jako process.argv[1].
+  const skript = [
+    "const net = require('net');",
+    'const s = net.createServer();',
+    's.once("error", () => process.exit(1));',
+    's.listen(0, process.argv[1], () => s.close(() => process.exit(0)));',
+  ].join('\n');
+  try {
+    execFileSync(process.execPath, ['-e', skript, adresa], { stdio: 'ignore', timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const DRUHA_ADRESA = '127.0.0.2';
+const LZE_DRUHA_ADRESA = lzeBindovat(DRUHA_ADRESA);
+/** test, nebo test.skip — podle toho, co stroj umí. Viz komentář výš. */
+const testSDvemaAdresami = LZE_DRUHA_ADRESA ? test : test.skip;
+
+if (!LZE_DRUHA_ADRESA) {
+  console.warn(
+    `[safe-fetch] ${DRUHA_ADRESA} na tomhle stroji nejde bindovat, ` +
+    'takže dva testy připnutí adresy se přeskakují. Na Linuxu v CI běží. ' +
+    `Lokálně je zapneš přes: sudo ifconfig lo0 alias ${DRUHA_ADRESA}`
+  );
+}
 
 /** Spustí server na loopbacku a vrátí jeho port. */
 function server(handler) {
@@ -74,12 +124,12 @@ describe('fetchPripnute', () => {
    * Dva servery musí být na STEJNÉM portu a lišit se jen adresou,
    * jinak by test procházel i z jiného důvodu.
    */
-  test('rebind neprojde: odpověď přijde z ověřené adresy, ne z přepsaného DNS', async () => {
+  testSDvemaAdresami('rebind neprojde: odpověď přijde z ověřené adresy, ne z přepsaného DNS', async () => {
     const verejny = http.createServer((_q, r) => r.end('VEREJNY-SERVER'));
     const vnitrni = http.createServer((_q, r) => r.end('VNITRNI-SLUZBA'));
     await new Promise((r) => verejny.listen(0, '127.0.0.1', r));
     const port = verejny.address().port;
-    await new Promise((r) => vnitrni.listen(port, '127.0.0.2', r));
+    await new Promise((r) => vnitrni.listen(port, DRUHA_ADRESA, r));
 
     const puvodniLookup = dns.lookup;
     // DNS lže: každý překlad `rebind.example` míří na vnitřní službu.
@@ -87,7 +137,7 @@ describe('fetchPripnute', () => {
       if (hostname === 'rebind.example') {
         const callback = typeof options === 'function' ? options : cb;
         const vse = typeof options === 'object' && options !== null && options.all;
-        return callback(null, vse ? [{ address: '127.0.0.2', family: 4 }] : '127.0.0.2', 4);
+        return callback(null, vse ? [{ address: DRUHA_ADRESA, family: 4 }] : DRUHA_ADRESA, 4);
       }
       return puvodniLookup(hostname, options, cb);
     };
@@ -114,12 +164,12 @@ describe('fetchPripnute', () => {
    * protože v klíči poolu adresa není — kontrolní vlna to předvedla.
    * Dva požadavky za sebou na stejnou doménu a port, různé piny.
    */
-  test('druhý požadavek nesáhne po spojení navázaném na jinou adresu', async () => {
+  testSDvemaAdresami('druhý požadavek nesáhne po spojení navázaném na jinou adresu', async () => {
     const a = http.createServer((_q, r) => r.end('SERVER-A'));
     const b = http.createServer((_q, r) => r.end('SERVER-B'));
     await new Promise((r) => a.listen(0, '127.0.0.1', r));
     const port = a.address().port;
-    await new Promise((r) => b.listen(port, '127.0.0.2', r));
+    await new Promise((r) => b.listen(port, DRUHA_ADRESA, r));
 
     const cil = (address) => ({
       url: `http://shodny-host.example:${port}/`,
@@ -127,7 +177,7 @@ describe('fetchPripnute', () => {
     });
     try {
       expect(await (await fetchPripnute(cil('127.0.0.1'))).text()).toBe('SERVER-A');
-      expect(await (await fetchPripnute(cil('127.0.0.2'))).text()).toBe('SERVER-B');
+      expect(await (await fetchPripnute(cil(DRUHA_ADRESA))).text()).toBe('SERVER-B');
     } finally {
       await new Promise((r) => a.close(r));
       await new Promise((r) => b.close(r));
