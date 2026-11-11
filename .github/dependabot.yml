@@ -1,4 +1,17 @@
 # Projekt skenuje CVE v závislostech cizích webů, ale vlastní neaktualizoval.
+#
+# Skupiny tu nejsou kvůli pořádku, ale proto, že samostatné PR na svázané
+# balíčky nejdou sloučit. Stalo se to dvakrát za sebou:
+#
+#   • React 19 přišel jako čtyři PR (#73, #75 a dva zavřené). Každý sám padal
+#     na `npm ci`, protože mu chyběly průvodní balíčky — `react-dom`,
+#     `@types/react-dom` a `lucide-react`, který peeruje na react.
+#   • vite 8 (#74) a `@vitejs/plugin-react` 6 (#76) se blokovaly navzájem:
+#     plugin vyžaduje `vite ^8`, zatímco `vitest` 2 držel `vite ^5`. Žádný
+#     z nich nešel sloučit sám a Dependabot ten třetí ani nenavrhl.
+#
+# Pravidlo, podle kterého jsou skupiny složené: co na sebe peeruje, musí jít
+# jedním PR. Pořadí skupin rozhoduje — balíček spadne do první, která sedí.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -7,6 +20,18 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # `playwright` je runtime závislost, `@playwright/test` vývojová, takže
+      # bez skupiny chodí každý zvlášť — a verze se přitom musí shodovat i s
+      # tagem image v Dockerfile (`mcr.microsoft.com/playwright:vX.Y.Z-jammy`),
+      # jinak běh končí na „Executable doesn't exist". Verze jsou proto
+      # připnuté přesně, bez caretu, a drží je i `overrides.playwright-core`.
+      #
+      # Musí být před `dev-dependencies`, jinak by `@playwright/test` spadl tam.
+      playwright:
+        patterns:
+          - playwright
+          - "@playwright/*"
+          - playwright-core
       dev-dependencies:
         dependency-type: development
 
@@ -15,12 +40,38 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # Všechno, co peeruje na react. `lucide-react` sem patří právě proto —
+      # jeho peer na react 19 byl důvod, proč #75 nešlo sloučit bez #73.
+      react:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+          - lucide-react
+      # `vitest` peeruje na vite a `@vitejs/plugin-react` taky, takže všichni
+      # tři musí jedním PR. Musí být před `dev-dependencies` i před `testing`.
+      vite:
+        patterns:
+          - vite
+          - vitest
+          - "@vitejs/*"
+      testing:
+        patterns:
+          - "@testing-library/*"
+          - jsdom
+      dev-dependencies:
+        dependency-type: development
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
 
+  # Tag image musí odpovídat verzi `playwright` v package.json. Dependabot to
+  # sám nepohlídá — jsou to pro něj dva nesouvisející ekosystémy — takže PR
+  # odsud se slučuje jen spolu s tím z `npm` skupiny `playwright`.
   - package-ecosystem: docker
     directory: /
     schedule:

@@ -1,9 +1,12 @@
 name: CI
 
-# Dřív bylo `on: push:` bez omezení. V repozitáři jsou desítky větví po
+# Dřív bylo `on: push:` bez omezení. V repozitáři byly desítky větví po
 # automatických výkonnostních pokusech a každý push do kterékoli z nich
-# spustil celou sadu jobů. Ve firemním privátním repozitáři se to platí
-# a nikdo ty běhy nečetl.
+# spustil celou sadu jobů, které nikdo nečetl.
+#
+# Původně tu stálo, že „ve firemním privátním repozitáři se to platí".
+# To neplatí: repozitář je veřejný, takže Actions nic nestojí. Omezení
+# na master dává smysl dál, ale kvůli šumu a době běhu, ne kvůli ceně.
 #
 # `pull_request` zůstává, protože bez něj by se změny z forků netestovaly.
 # Omezení `push` na master zároveň ruší dvojí běh u pull requestů z větví
