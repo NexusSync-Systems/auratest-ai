@@ -109,9 +109,15 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
 
       # Ironie, kterou tenhle projekt měl: skenuje CVE v knihovnách cizích
       # webů (/api/auraguard/cra-vuln-audit), ale vlastní závislosti
@@ -119,6 +125,17 @@ jobs:
       # `overrides` v package.json.
       - name: npm audit
         run: npm audit --omit=dev --audit-level=high
+
+      # Druhá polovina té samé ironie: audit běžel jen v kořeni. `frontend/`
+      # má vlastní package.json i lockfile, takže se do něj nikdy nepodíval,
+      # přestože je to kód, který se servíruje návštěvníkům.
+      #
+      # `--omit=dev` je tu ze stejného důvodu jako v kořeni: vývojové
+      # závislosti se nikam nenasazují. Blokovat kvůli nim CI by znamenalo
+      # vyrobit červený job, se kterým nejde nic udělat — a přesně takový
+      # job tu už jednou maskoval stav všech ostatních PR.
+      - name: npm audit (frontend)
+        run: npm audit --prefix frontend --omit=dev --audit-level=high
 
   frontend:
     name: Frontend (testy + build)
