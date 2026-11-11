@@ -27,7 +27,7 @@ concurrency:
 env:
   # Verze, na které běží produkce.
   #
-  # Produkční image `mcr.microsoft.com/playwright:v1.60.0-jammy` má
+  # Produkční image `mcr.microsoft.com/playwright:v1.64.1-jammy` má
   # `ARG NODE_VERSION=24`, takže server běží na Node 24. CI dřív používalo
   # Node 20 — a to není kosmetický rozdíl: TLS sondy závisí na verzi
   # OpenSSL, se kterou je Node sestavený, a na Node 20 je to 3.0, kde

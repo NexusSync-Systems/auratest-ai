@@ -95,10 +95,10 @@ berou výhradně z prostředí, nikdy z requestu: umí vypnout sandbox.
 
 Oracle Always Free je ARM (Ampere A1). Playwright publikuje multi-arch images,
 takže `docker pull` by měl vzít arm64 variantu sám — ale je to potřeba ověřit
-pro konkrétní `v1.60.0-jammy`, ne předpokládat.
+pro konkrétní `v1.64.1-jammy`, ne předpokládat.
 
 ```bash
-docker manifest inspect mcr.microsoft.com/playwright:v1.60.0-jammy \
+docker manifest inspect mcr.microsoft.com/playwright:v1.64.1-jammy \
   | grep -A2 '"architecture"'
 ```
 
@@ -107,10 +107,19 @@ Pokud arm64 chybí, jsou dvě cesty: povýšit Playwright na verzi, která ho m�
 exist"), nebo vzít x86 Oracle instanci (1/8 OCPU, 1 GB RAM — na Chromium málo)
 a přesunout hlavní běh na Cloud Run.
 
-**✅ Ověřeno — arm64 existuje.** V registru MCR jsou vedle holého tagu
-i explicitní varianty `v1.60.0-jammy-arm64` a `v1.60.0-noble-arm64`
-(kontrolní neexistující tag vrací 404, takže je to skutečný signál).
-Holý tag je multi-arch manifest, `docker pull` na A1 vybere arm64 sám.
+**✅ Ověřeno — arm64 existuje.** Multi-arch manifest tagu `v1.64.1-jammy`
+obsahuje `linux/amd64` i `linux/arm64`, takže `docker pull` na A1 vybere
+arm64 sám.
+
+Pozor na posun proti verzi 1.60.0: explicitní varianty tagů
+(`v1.64.1-jammy-arm64`, `v1.64.1-noble-arm64`) už v registru **nejsou** —
+u téhle verze je Playwright nepublikuje. Jejich 404 proto není signálem, že
+arm64 chybí; rozhodující je obsah manifestu, ne existence tagu. Dřívější
+ověření u 1.60.0 se opíralo právě o existenci těch tagů, takže ten postup
+už neplatí.
+
+Měřeno proti registru MCR (manifest list), ne `docker pull` na A1 —
+kontrolní neexistující tag vrací 404 také, takže měření rozlišuje.
 
 Dvě věci ale hlídej:
 

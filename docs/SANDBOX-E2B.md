@@ -76,7 +76,7 @@ Výchozí sandbox (2 vCPU, 4 GiB) ≈ 0,17 USD/h. Přehrání testu na `base`
 
 ## Další kroky
 
-2. Vlastní šablona z `mcr.microsoft.com/playwright:v1.60.0-jammy` (stejný
+2. Vlastní šablona z `mcr.microsoft.com/playwright:v1.64.1-jammy` (stejný
    obraz jako v `Dockerfile`) → odpadne instalace při každém běhu.
 3. Zapojení do běhu agenta: po vygenerování skriptu volitelně přehrát
    v sandboxu a výsledek zapsat do spisu jako samostatné měření
